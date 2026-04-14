@@ -1,5 +1,4 @@
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../../../shared/config/prisma');
 
 const createApplication = async (data) => {
   return await prisma.membershipApplication.create({

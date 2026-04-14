@@ -1,5 +1,4 @@
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../../../shared/config/prisma');
 
 const getAllLoans = async () => {
   return await prisma.loan.findMany({
