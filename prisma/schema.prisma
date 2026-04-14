@@ -1,0 +1,225 @@
+// This is your Prisma schema file.
+// Learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  FINANCE
+  MEMBER
+}
+
+enum MemberType {
+  EMPLOYEE
+  NON_EMPLOYEE
+}
+
+enum TransactionType {
+  DEPOSIT
+  WITHDRAWAL
+  DIVIDEND
+  LOAN_DISBURSEMENT
+  LOAN_REPAYMENT
+  MEMBERSHIP_FEE
+}
+
+enum PaymentMethod {
+  SALARY
+  MPESA
+  MANUAL
+}
+
+enum TransactionStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+enum LoanStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  ACTIVE
+  COMPLETED
+}
+
+enum LoanType {
+  EMERGENCY
+  EDUCATION
+  WELFARE
+  DEVELOPMENT
+}
+
+enum ApplicationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum LoanApprovalStage {
+  INITIAL
+  CREDIT_COMMITTEE
+  MANAGEMENT
+  HR
+  FINANCE
+}
+
+model User {
+  id             String   @id @default(uuid())
+  name           String
+  email          String   @unique
+  phone          String
+  password       String
+  role           Role
+  consentGiven   Boolean  @default(false)
+  consentGivenAt DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  member    Member?
+  approvals MembershipApplication[] @relation("ApplicationApprovals")
+}
+
+model Member {
+  id            String   @id @default(uuid())
+  userId        String   @unique
+  memberNumber  String   @unique
+  type          MemberType
+  nationalId    String
+  isVerified    Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user            User @relation(fields: [userId], references: [id])
+  savings         SavingsAccount?
+  shares          ShareAccount?
+  loans           Loan[]
+  transactions    Transaction[]
+  dividends       Dividend[]
+  salaryDeductions SalaryDeduction[]
+}
+
+model SavingsAccount {
+  id        String  @id @default(uuid())
+  memberId  String  @unique
+  balance   Float   @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  member Member @relation(fields: [memberId], references: [id])
+}
+
+model ShareAccount {
+  id         String  @id @default(uuid())
+  memberId   String  @unique
+  shares     Float   @default(0)
+  shareValue Float   @default(100)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  member Member @relation(fields: [memberId], references: [id])
+}
+
+model Transaction {
+  id        String   @id @default(uuid())
+  memberId  String
+  loanId    String?
+  type      TransactionType
+  amount    Float
+  method    PaymentMethod
+  status    TransactionStatus
+  reference String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  member Member @relation(fields: [memberId], references: [id])
+  loan   Loan?  @relation(fields: [loanId], references: [id])
+}
+
+model Loan {
+  id            String   @id @default(uuid())
+  memberId      String
+  amount        Float
+  interestRate  Float
+  duration      Int
+  multiplier    Float?
+  status        LoanStatus @default(PENDING)
+  type          LoanType
+  approvalStage LoanApprovalStage @default(INITIAL)
+  approvedById  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  member Member @relation(fields: [memberId], references: [id])
+  guarantors Guarantor[]
+  transactions Transaction[]
+}
+
+model Guarantor {
+  id        String @id @default(uuid())
+  loanId    String
+  memberId  String
+  amount    Float
+  createdAt DateTime @default(now())
+
+  loan   Loan   @relation(fields: [loanId], references: [id])
+  member Member @relation(fields: [memberId], references: [id])
+}
+
+model Dividend {
+  id         String   @id @default(uuid())
+  memberId   String
+  year       Int
+  amount     Float
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  member Member @relation(fields: [memberId], references: [id])
+}
+
+model SystemConfig {
+  id                String  @id @default(uuid())
+  shareCapital      Float   @default(20000)
+  minMonthlySavings Float   @default(1000)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model MembershipApplication {
+  id             String            @id @default(uuid())
+  name           String
+  nationalId     String
+  phone          String
+  email          String
+  type           MemberType
+  status         ApplicationStatus @default(PENDING)
+  feePaid        Boolean           @default(false)
+  consentGiven   Boolean           @default(false)
+  consentGivenAt DateTime?
+  approvedById   String?
+  rejectedReason String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  approvedBy User? @relation("ApplicationApprovals", fields: [approvedById], references: [id])
+}
+
+model SalaryDeduction {
+  id            String   @id @default(uuid())
+  memberId      String
+  shareAmount   Float
+  contribution  Float
+  startDate     DateTime
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  member Member @relation(fields: [memberId], references: [id])
+}
