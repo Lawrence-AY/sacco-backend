@@ -1,115 +1,255 @@
-const asyncHandler = require("express-async-handler");
-const jwt = require("jsonwebtoken");
-const bcrypt = require("bcrypt");
+const bcrypt = require('bcrypt');
+const jwtUtils = require('../utils/jwt');
+const ResponseHandler = require('../utils/response');
+const { UnauthorizedError, ForbiddenError, ValidationError } = require('../utils/errors');
+const asyncHandler = require('../utils/asyncHandler');
 
 // Import User model
-const User = require("../../models/user.model");
+const User = require('../../models/user.model');
 
-// Generate JWT
-const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "30d" });
-};
-
-// Protect routes - verify JWT token
+/**
+ * Protect routes - verify JWT token
+ */
 const protect = asyncHandler(async (req, res, next) => {
-  let token;
+  const token = extractToken(req);
 
-  if (
-    req.headers.authorization &&
-    req.headers.authorization.startsWith("Bearer")
-  ) {
-    try {
-      // Get token from header
-      token = req.headers.authorization.split(" ")[1];
+  if (!token) {
+    throw new UnauthorizedError('No token provided. Please authenticate.');
+  }
 
-      // Verify token
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+  try {
+    const decoded = jwtUtils.verifyToken(token);
+    const user = await User.findByPk(decoded.id);
 
-      // Get user from the token
-      req.user = await User.findByPk(decoded.id);
-
-      if (!req.user) {
-        return res.status(401).json({ message: "User not found" });
-      }
-
-      next();
-    } catch (error) {
-      console.error(error);
-      return res.status(401).json({ message: "Not authorized, token failed" });
+    if (!user) {
+      throw new UnauthorizedError('User not found');
     }
-  } else {
-    return res.status(401).json({ message: "Not authorized, no token" });
+
+    req.user = user;
+    next();
+  } catch (error) {
+    if (error instanceof UnauthorizedError) {
+      throw error;
+    }
+    throw new UnauthorizedError(error.message || 'Token verification failed');
   }
 });
 
-// Admin middleware - check if user is admin
-const admin = (req, res, next) => {
-  if (req.user && req.user.role === "ADMIN") {
-    next();
-  } else {
-    return res.status(403).json({ message: "Not authorized as an admin" });
+/**
+ * Extract token from request header
+ */
+const extractToken = (req) => {
+  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
+    return req.headers.authorization.substring(7);
   }
+  return null;
 };
 
-// Finance middleware - check if user is finance or admin
-const finance = (req, res, next) => {
-  if (req.user && (req.user.role === "ADMIN" || req.user.role === "FINANCE")) {
+/**
+ * Role-based access control middleware factory
+ */
+const authorize = (allowedRoles = []) => {
+  return (req, res, next) => {
+    if (!req.user) {
+      throw new UnauthorizedError('User not authenticated');
+    }
+
+    if (!allowedRoles.includes(req.user.role)) {
+      throw new ForbiddenError(
+        `Access denied. Required roles: ${allowedRoles.join(', ')}. Your role: ${req.user.role}`
+      );
+    }
+
     next();
-  } else {
-    return res.status(403).json({ message: "Not authorized as finance/admin" });
-  }
+  };
 };
 
-// Member middleware - check if user is member
-const member = (req, res, next) => {
-  if (req.user && req.user.role === "MEMBER") {
-    next();
-  } else {
-    return res.status(403).json({ message: "Not authorized as a member" });
+/**
+ * Admin middleware - check if user is admin
+ */
+const admin = authorize(['ADMIN']);
+
+/**
+ * Finance middleware - check if user is finance or admin
+ */
+const finance = authorize(['ADMIN', 'FINANCE']);
+
+/**
+ * Member middleware - check if user is member
+ */
+const member = authorize(['MEMBER', 'ADMIN']);
+
+/**
+ * Hash password using bcrypt
+ */
+const hashPassword = async (password) => {
+  if (!password || password.length < 6) {
+    throw new ValidationError('Password must be at least 6 characters long');
   }
+  const salt = await bcrypt.genSalt(10);
+  return await bcrypt.hash(password, salt);
 };
 
-// @desc    Login user & get token
-// @route   POST /api/auth/login
-// @access  Public
+/**
+ * Verify password
+ */
+const verifyPassword = async (password, hashedPassword) => {
+  return await bcrypt.compare(password, hashedPassword);
+};
+
+/**
+ * Login user & get tokens
+ * @route   POST /api/auth/login
+ * @access  Public
+ */
 const loginUser = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
 
   // Validate input
   if (!email || !password) {
-    return res.status(400).json({ message: "Email and password are required" });
+    throw new ValidationError('Email and password are required');
   }
 
   // Find user by email
   const user = await User.findOne({ where: { email } });
 
   if (!user) {
-    return res.status(401).json({ message: "Invalid credentials" });
+    throw new UnauthorizedError('Invalid email or password');
   }
 
-  // Compare passwords using bcrypt
-  const isPasswordValid = await bcrypt.compare(password, user.password);
+  // Compare passwords
+  const isPasswordValid = await verifyPassword(password, user.password);
 
-  if (isPasswordValid) {
-    res.json({
+  if (!isPasswordValid) {
+    throw new UnauthorizedError('Invalid email or password');
+  }
+
+  // Generate tokens
+  const tokens = jwtUtils.generateTokens(user.id, {
+    email: user.email,
+    role: user.role
+  });
+
+  // Return success response
+  return ResponseHandler.success(res, {
+    user: {
       id: user.id,
       name: user.name,
       email: user.email,
       role: user.role,
-      token: generateToken(user.id),
+      consentGiven: user.consentGiven
+    },
+    tokens,
+  }, 'Login successful', 200);
+});
+
+/**
+ * Refresh access token
+ * @route   POST /api/auth/refresh
+ * @access  Public
+ */
+const refreshToken = asyncHandler(async (req, res) => {
+  const { refreshToken } = req.body;
+
+  if (!refreshToken) {
+    throw new UnauthorizedError('Refresh token is required');
+  }
+
+  try {
+    const decoded = jwtUtils.verifyToken(refreshToken);
+    
+    if (decoded.type !== 'refresh') {
+      throw new UnauthorizedError('Invalid token type');
+    }
+
+    const user = await User.findByPk(decoded.id);
+
+    if (!user) {
+      throw new UnauthorizedError('User not found');
+    }
+
+    const newTokens = jwtUtils.generateTokens(user.id, {
+      email: user.email,
+      role: user.role
     });
-  } else {
-    res.status(401).json({ message: "Invalid credentials" });
+
+    return ResponseHandler.success(res, newTokens, 'Token refreshed successfully', 200);
+  } catch (error) {
+    throw new UnauthorizedError('Failed to refresh token: ' + error.message);
   }
 });
 
-// @desc    Hash password
-// @access  Private
-const hashPassword = async (password) => {
-  const salt = await bcrypt.genSalt(10);
-  return await bcrypt.hash(password, salt);
-};
+/**
+ * Logout user (client-side token deletion)
+ * Note: Since we use stateless JWT, logout is primarily a client-side operation
+ */
+const logoutUser = asyncHandler(async (req, res) => {
+  // Client should delete the token
+  return ResponseHandler.success(res, null, 'Logged out successfully', 200);
+});
 
-module.exports = { protect, admin, finance, member, loginUser, generateToken, hashPassword };
+/**
+ * Register new user
+ * @route   POST /api/auth/register
+ * @access  Public
+ */
+const registerUser = asyncHandler(async (req, res) => {
+  const { name, email, password, phone, role = 'MEMBER' } = req.body;
+
+  // Validate input
+  if (!name || !email || !password) {
+    throw new ValidationError('Name, email, and password are required');
+  }
+
+  // Check if user already exists
+  const existingUser = await User.findOne({ where: { email } });
+  if (existingUser) {
+    throw new ValidationError('User with this email already exists', { email: 'Email already in use' });
+  }
+
+  // Hash password
+  const hashedPassword = await hashPassword(password);
+
+  // Create user
+  const user = await User.create({
+    name,
+    email,
+    password: hashedPassword,
+    phone,
+    role
+  });
+
+  // Generate tokens
+  const tokens = jwtUtils.generateTokens(user.id, {
+    email: user.email,
+    role: user.role
+  });
+
+  return ResponseHandler.created(res, {
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      phone: user.phone
+    },
+    tokens,
+  }, 'User registered successfully');
+});
+
+module.exports = {
+  protect,
+  authorize,
+  admin,
+  finance,
+  member,
+  hashPassword,
+  verifyPassword,
+  extractToken,
+  loginUser,
+  refreshToken,
+  logoutUser,
+  registerUser
+};
 
 

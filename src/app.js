@@ -5,7 +5,10 @@ const dotenv = require('dotenv');
 // Load environment variables
 dotenv.config();
 
-// Import routes
+// Middleware
+const { errorHandler, notFoundHandler } = require('./shared/middleware/errorMiddleware');
+
+// Routes
 const roleRoutes = require('./features/roles/routes/roleRoutes');
 const transactionRoutes = require('./features/transactions/routes/transactionRoutes');
 const dividendRoutes = require('./features/dividends/routes/dividendRoutes');
@@ -13,14 +16,52 @@ const flowRoutes = require('./features/flows/routes/flowRoutes');
 const applicationRoutes = require('./features/applications/routes/applicationRoutes');
 const deductionRoutes = require('./features/deductions/routes/deductionRoutes');
 const loanRoutes = require('./features/loans/routes/loanRoutes');
+const userRoutes = require('./features/users/routes/userRoutes');
+
+// Auth module (will be created)
+const { loginUser, refreshToken, logoutUser, registerUser } = require('./shared/middleware/authMiddleware');
+const asyncHandler = require('./shared/utils/asyncHandler');
 
 const app = express();
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+// ============= BASIC MIDDLEWARE =============
+// CORS configuration
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || '*',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
-// Routes
+// Body parsing middleware
+app.use(express.json({ limit: '10kb' }));
+app.use(express.urlencoded({ limit: '10kb', extended: true }));
+
+// Request logging middleware (development)
+if (process.env.NODE_ENV === 'development') {
+  app.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+    next();
+  });
+}
+
+// ============= HEALTH CHECK =============
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'Server is running',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
+});
+
+// ============= AUTH ROUTES =============
+app.post('/api/auth/register', asyncHandler(registerUser));
+app.post('/api/auth/login', asyncHandler(loginUser));
+app.post('/api/auth/refresh', asyncHandler(refreshToken));
+app.post('/api/auth/logout', asyncHandler(logoutUser));
+
+// ============= API ROUTES =============
 app.use('/api/roles', roleRoutes);
 app.use('/api/transactions', transactionRoutes);
 app.use('/api/dividends', dividendRoutes);
@@ -28,10 +69,13 @@ app.use('/api/flows', flowRoutes);
 app.use('/api/applications', applicationRoutes);
 app.use('/api/deductions', deductionRoutes);
 app.use('/api/loans', loanRoutes);
+app.use('/api/users', userRoutes);
 
-// Health check
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'OK' });
-});
+// ============= 404 HANDLER =============
+app.use(notFoundHandler);
+
+// ============= ERROR HANDLING MIDDLEWARE =============
+// Must be at the end
+app.use(errorHandler);
 
 module.exports = app;
