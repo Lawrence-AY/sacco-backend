@@ -23,7 +23,7 @@ const User = sequelize.define('User', {
   },
   consentGivenAt: DataTypes.DATE
 }, {
-  timestamps: trueb
+  timestamps: true
 });
 
 module.exports = User;

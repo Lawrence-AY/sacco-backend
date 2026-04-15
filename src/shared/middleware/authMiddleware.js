@@ -1,6 +1,9 @@
 const asyncHandler = require("express-async-handler");
 const jwt = require("jsonwebtoken");
-const User = require("../models/userModel");
+const bcrypt = require("bcrypt");
+
+// Import User model
+const User = require("../../models/user.model");
 
 // Generate JWT
 const generateToken = (id) => {
@@ -23,65 +26,90 @@ const protect = asyncHandler(async (req, res, next) => {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
       // Get user from the token
-      req.user = await User.findById(decoded.id).select("-password");
+      req.user = await User.findByPk(decoded.id);
+
+      if (!req.user) {
+        return res.status(401).json({ message: "User not found" });
+      }
 
       next();
     } catch (error) {
       console.error(error);
-      res.status(401);
-      throw new Error("Not authorized, token failed");
+      return res.status(401).json({ message: "Not authorized, token failed" });
     }
-  }
-
-  if (!token) {
-    res.status(401);
-    throw new Error("Not authorized, no token");
+  } else {
+    return res.status(401).json({ message: "Not authorized, no token" });
   }
 });
 
 // Admin middleware - check if user is admin
 const admin = (req, res, next) => {
-  if (req.user && (req.user.role === "admin" || req.user.isAdmin)) {
+  if (req.user && req.user.role === "ADMIN") {
     next();
   } else {
-    res.status(401);
-    throw new Error("Not authorized as an admin");
+    return res.status(403).json({ message: "Not authorized as an admin" });
   }
 };
 
-// Employee middleware - check if user is employee or admin
-const employee = (req, res, next) => {
-  if (req.user && (req.user.role === "admin" || req.user.role === "employee" || req.user.isAdmin)) {
+// Finance middleware - check if user is finance or admin
+const finance = (req, res, next) => {
+  if (req.user && (req.user.role === "ADMIN" || req.user.role === "FINANCE")) {
     next();
   } else {
-    res.status(401);
-    throw new Error("Not authorized as an employee or admin");
+    return res.status(403).json({ message: "Not authorized as finance/admin" });
+  }
+};
+
+// Member middleware - check if user is member
+const member = (req, res, next) => {
+  if (req.user && req.user.role === "MEMBER") {
+    next();
+  } else {
+    return res.status(403).json({ message: "Not authorized as a member" });
   }
 };
 
 // @desc    Login user & get token
-// @route   POST /api/users/login
+// @route   POST /api/auth/login
 // @access  Public
 const loginUser = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
 
-  // Find user by email
-  const user = await User.findOne({ email });
+  // Validate input
+  if (!email || !password) {
+    return res.status(400).json({ message: "Email and password are required" });
+  }
 
-  if (user && (await user.matchPassword(password))) {
+  // Find user by email
+  const user = await User.findOne({ where: { email } });
+
+  if (!user) {
+    return res.status(401).json({ message: "Invalid credentials" });
+  }
+
+  // Compare passwords using bcrypt
+  const isPasswordValid = await bcrypt.compare(password, user.password);
+
+  if (isPasswordValid) {
     res.json({
-      _id: user._id,
+      id: user.id,
       name: user.name,
       email: user.email,
       role: user.role,
-      isAdmin: user.isAdmin,
-      token: generateToken(user._id),
+      token: generateToken(user.id),
     });
   } else {
     res.status(401).json({ message: "Invalid credentials" });
   }
 });
 
-module.exports = { protect, admin, employee, loginUser };
+// @desc    Hash password
+// @access  Private
+const hashPassword = async (password) => {
+  const salt = await bcrypt.genSalt(10);
+  return await bcrypt.hash(password, salt);
+};
+
+module.exports = { protect, admin, finance, member, loginUser, generateToken, hashPassword };
 
 

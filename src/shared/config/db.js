@@ -1,14 +1,20 @@
 const { Sequelize } = require('sequelize');
 
-const sequelize = new Sequelize(
-  process.env.DB_NAME || 'ayedos_db',
-  process.env.DB_USER || 'postgres',
-  process.env.DB_PASSWORD || 'password',
-  {
-    host: process.env.DB_HOST || 'localhost',
-    dialect: 'postgres',
-    logging: false
-  }
-);
+// Fix DB_URL if it starts with https instead of postgres
+let dbUrl = process.env.DATABASE_URL;
+if (dbUrl && dbUrl.startsWith('https://')) {
+  dbUrl = dbUrl.replace('https://', 'postgres://');
+}
+
+const sequelize = new Sequelize(dbUrl, {
+  dialect: 'postgres',
+  dialectOptions: {
+    ssl: {
+      require: true,
+      rejectUnauthorized: false
+    }
+  },
+  logging: process.env.NODE_ENV === 'development' ? console.log : false
+});
 
 module.exports = sequelize;
