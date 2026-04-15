@@ -1,32 +1,23 @@
-const prisma = require('../../../shared/config/prisma');
+const db = require('../../../shared/config/db');
 
 const getAllDividends = async () => {
-  return await prisma.dividend.findMany();
+  return await db.Dividend.findAll();
 };
 
 const getDividendById = async (id) => {
-  return await prisma.dividend.findUnique({
-    where: { id: parseInt(id) },
-  });
+  return await db.Dividend.findByPk(id);
 };
 
 const createDividend = async (data) => {
-  return await prisma.dividend.create({
-    data,
-  });
+  return await db.Dividend.create(data);
 };
 
 const updateDividend = async (id, data) => {
-  return await prisma.dividend.update({
-    where: { id: parseInt(id) },
-    data,
-  });
+  return await db.Dividend.update(data, { where: { id } });
 };
 
 const deleteDividend = async (id) => {
-  return await prisma.dividend.delete({
-    where: { id: parseInt(id) },
-  });
+  return await db.Dividend.destroy({ where: { id } });
 };
 
 module.exports = {

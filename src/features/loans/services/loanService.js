@@ -1,62 +1,63 @@
-const prisma = require('../../../shared/config/prisma');
+const db = require('../../../shared/config/db');
 
 const getAllLoans = async () => {
-  return await prisma.loan.findMany({
-    include: { guarantors: true },
-    orderBy: { createdAt: 'desc' },
+  return await db.Loan.findAll({
+    include: [db.Guarantor],
+    order: [['createdAt', 'DESC']],
   });
 };
 
 const getLoanById = async (id) => {
-  return await prisma.loan.findUnique({
-    where: { id },
-    include: { guarantors: true },
+  return await db.Loan.findByPk(id, {
+    include: [db.Guarantor],
   });
 };
 
 const createLoan = async (data) => {
-  return await prisma.loan.create({
-    data: {
-      memberId: data.memberId,
-      amount: data.amount,
-      interestRate: data.interestRate,
-      duration: data.duration,
-      status: data.status || 'PENDING',
-      type: data.type,
-      multiplier: data.multiplier,
-      approvedById: data.approvedById,
-      approvalStage: data.approvalStage || 'INITIAL',
-      guarantors: {
-        create: (data.guarantors || []).map((guarantor) => ({
-          memberId: guarantor.memberId,
-          amount: guarantor.amount,
-        })),
-      },
-    },
-    include: { guarantors: true },
+  const loan = await db.Loan.create({
+    memberId: data.memberId,
+    amount: data.amount,
+    interestRate: data.interestRate,
+    duration: data.duration,
+    status: data.status || 'PENDING',
+    type: data.type,
+    multiplier: data.multiplier,
+    approvedById: data.approvedById,
+    approvalStage: data.approvalStage || 'INITIAL',
   });
+
+  if (data.guarantors && data.guarantors.length > 0) {
+    for (const guarantor of data.guarantors) {
+      await db.Guarantor.create({
+        loanId: loan.id,
+        memberId: guarantor.memberId,
+        amount: guarantor.amount,
+      });
+    }
+  }
+
+  return loan;
 };
 
 const updateLoan = async (id, data) => {
-  return await prisma.loan.update({
-    where: { id },
-    data: {
-      amount: data.amount,
-      interestRate: data.interestRate,
-      duration: data.duration,
-      status: data.status,
-      type: data.type,
-      multiplier: data.multiplier,
-      approvalStage: data.approvalStage,
-    },
-  });
+  return await db.Loan.update({
+    amount: data.amount,
+    interestRate: data.interestRate,
+    duration: data.duration,
+    status: data.status,
+    type: data.type,
+    multiplier: data.multiplier,
+    approvalStage: data.approvalStage,
+    approvedById: data.approvedById,
+  }, { where: { id } });
+};
+
+const deleteLoan = async (id) => {
+  return await db.Loan.destroy({ where: { id } });
 };
 
 const updateLoanStatus = async (id, status) => {
-  return await prisma.loan.update({
-    where: { id },
-    data: { status },
-  });
+  return await db.Loan.update({ status }, { where: { id } });
 };
 
 module.exports = {
@@ -64,5 +65,6 @@ module.exports = {
   getLoanById,
   createLoan,
   updateLoan,
+  deleteLoan,
   updateLoanStatus,
 };
