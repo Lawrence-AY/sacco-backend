@@ -1,30 +1,25 @@
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const db = require('../../../shared/config/db');
 
 const createApplication = async (data) => {
-  return await prisma.membershipApplication.create({
-    data: {
-      name: data.name,
-      email: data.email,
-      phone: data.phone,
-      nationalId: data.nationalId,
-      type: data.type,
-      consentGiven: data.consentGiven ?? false,
-      feePaid: data.feePaid ?? false,
-    },
+  return await db.MembershipApplication.create({
+    name: data.name,
+    email: data.email,
+    phone: data.phone,
+    nationalId: data.nationalId,
+    type: data.type,
+    consentGiven: data.consentGiven ?? false,
+    feePaid: data.feePaid ?? false,
   });
 };
 
 const getAllApplications = async () => {
-  return await prisma.membershipApplication.findMany({
-    orderBy: { createdAt: 'desc' },
+  return await db.MembershipApplication.findAll({
+    order: [['createdAt', 'DESC']],
   });
 };
 
 const approveApplication = async (applicationId, adminId) => {
-  const application = await prisma.membershipApplication.findUnique({
-    where: { id: applicationId },
-  });
+  const application = await db.MembershipApplication.findByPk(applicationId);
 
   if (!application) {
     throw new Error('Application not found');
@@ -38,62 +33,45 @@ const approveApplication = async (applicationId, adminId) => {
     throw new Error('Consent must be given before approval');
   }
 
-  const user = await prisma.user.create({
-    data: {
-      name: application.name,
-      email: application.email,
-      phone: application.phone,
-      password: '',
-      role: 'MEMBER',
-      consentGiven: application.consentGiven,
-      consentGivenAt: application.consentGivenAt ?? new Date(),
-    },
+  const user = await db.User.create({
+    name: application.name,
+    email: application.email,
+    phone: application.phone,
+    password: '',
+    role: 'MEMBER',
+    consentGiven: application.consentGiven,
+    consentGivenAt: application.consentGivenAt ?? new Date(),
   });
 
-  const member = await prisma.member.create({
-    data: {
-      userId: user.id,
-      memberNumber: `M-${Date.now()}`,
-      type: application.type,
-      nationalId: application.nationalId,
-      isVerified: true,
-    },
+  const member = await db.Member.create({
+    userId: user.id,
+    memberNumber: `M-${Date.now()}`,
+    type: application.type,
+    nationalId: application.nationalId,
+    isVerified: true,
   });
 
-  await prisma.savingsAccount.create({
-    data: {
-      memberId: member.id,
-      balance: 0,
-    },
+  await db.SavingsAccount.create({
+    memberId: member.id,
   });
 
-  await prisma.shareAccount.create({
-    data: {
-      memberId: member.id,
-      shares: 0,
-      shareValue: 100,
-    },
+  await db.ShareAccount.create({
+    memberId: member.id,
   });
 
-  await prisma.membershipApplication.update({
-    where: { id: applicationId },
-    data: {
-      status: 'APPROVED',
-      approvedById: adminId,
-    },
-  });
+  await db.MembershipApplication.update({
+    status: 'APPROVED',
+    approvedById: adminId,
+  }, { where: { id: applicationId } });
 
-  return member;
+  return { user, member };
 };
 
 const rejectApplication = async (applicationId, reason) => {
-  return await prisma.membershipApplication.update({
-    where: { id: applicationId },
-    data: {
-      status: 'REJECTED',
-      rejectedReason: reason,
-    },
-  });
+  return await db.MembershipApplication.update({
+    status: 'REJECTED',
+    rejectedReason: reason,
+  }, { where: { id: applicationId } });
 };
 
 module.exports = {

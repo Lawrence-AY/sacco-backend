@@ -1,33 +1,23 @@
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const db = require('../../../shared/config/db');
 
 const getAllFlows = async () => {
-  return await prisma.flow.findMany();
+  return await db.Transaction.findAll();
 };
 
 const getFlowById = async (id) => {
-  return await prisma.flow.findUnique({
-    where: { id: parseInt(id) },
-  });
+  return await db.Transaction.findByPk(id);
 };
 
 const createFlow = async (data) => {
-  return await prisma.flow.create({
-    data,
-  });
+  return await db.Transaction.create(data);
 };
 
 const updateFlow = async (id, data) => {
-  return await prisma.flow.update({
-    where: { id: parseInt(id) },
-    data,
-  });
+  return await db.Transaction.update(data, { where: { id } });
 };
 
 const deleteFlow = async (id) => {
-  return await prisma.flow.delete({
-    where: { id: parseInt(id) },
-  });
+  return await db.Transaction.destroy({ where: { id } });
 };
 
 module.exports = {
