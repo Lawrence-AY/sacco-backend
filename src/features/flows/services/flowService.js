@@ -1,4 +1,4 @@
-const db = require('../../../shared/config/db');
+const db = require('../../../models');
 
 const getAllFlows = async () => {
   return await db.Transaction.findAll();

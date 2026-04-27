@@ -1,7 +1,7 @@
 const applicationService = require('../services/applicationService');
 const asyncHandler = require('../../../shared/utils/asyncHandler');
 const ResponseHandler = require('../../../shared/utils/response');
-const { ValidationError } = require('../../../shared/utils/errors');
+const { NotFoundError, ValidationError } = require('../../../shared/utils/errors');
 
 /**
  * Submit new membership application
@@ -9,11 +9,45 @@ const { ValidationError } = require('../../../shared/utils/errors');
  * @access  Public
  */
 const submitApplication = asyncHandler(async (req, res) => {
-  if (!req.body.userId || !req.body.type) {
-    throw new ValidationError('UserId and application type are required');
+  const { name, email, phone, nationalId, type } = req.body;
+
+  if (!name || !email || !phone || !nationalId || !type) {
+    throw new ValidationError('Name, email, phone, national ID, and application type are required');
   }
+
   const application = await applicationService.createApplication(req.body);
   return ResponseHandler.created(res, application, 'Application submitted successfully');
+});
+
+const getApplicationById = asyncHandler(async (req, res) => {
+  const application = await applicationService.getApplicationById(req.params.id);
+
+  if (!application) {
+    throw new NotFoundError('Application not found');
+  }
+
+  return ResponseHandler.success(res, application, 'Application retrieved successfully', 200);
+});
+
+const updateApplication = asyncHandler(async (req, res) => {
+  const { feePaid, paymentReference, paymentPhone, consentGiven } = req.body;
+
+  if (
+    feePaid === undefined &&
+    paymentReference === undefined &&
+    paymentPhone === undefined &&
+    consentGiven === undefined
+  ) {
+    throw new ValidationError('At least one application field is required to update');
+  }
+
+  const application = await applicationService.updateApplication(req.params.id, req.body);
+
+  if (!application) {
+    throw new NotFoundError('Application not found');
+  }
+
+  return ResponseHandler.success(res, application, 'Application updated successfully', 200);
 });
 
 /**
@@ -55,6 +89,8 @@ const rejectApplication = asyncHandler(async (req, res) => {
 module.exports = {
   submitApplication,
   getApplications,
+  getApplicationById,
+  updateApplication,
   approveApplication,
   rejectApplication,
 };

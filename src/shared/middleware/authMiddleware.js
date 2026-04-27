@@ -117,6 +117,10 @@ const loginUser = asyncHandler(async (req, res) => {
     throw new UnauthorizedError('Invalid email or password');
   }
 
+  if (!user.password) {
+    throw new UnauthorizedError('Your account has not been activated yet. Please contact the SACCO team for assistance.');
+  }
+
   // Compare passwords
   const isPasswordValid = await verifyPassword(password, user.password);
 

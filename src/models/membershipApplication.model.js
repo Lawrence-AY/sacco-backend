@@ -23,6 +23,9 @@ const MembershipApplication = sequelize.define('MembershipApplication', {
     type: DataTypes.BOOLEAN,
     defaultValue: false
   },
+  paymentReference: DataTypes.STRING,
+  paymentPhone: DataTypes.STRING,
+  paymentConfirmedAt: DataTypes.DATE,
   consentGiven: {
     type: DataTypes.BOOLEAN,
     defaultValue: false

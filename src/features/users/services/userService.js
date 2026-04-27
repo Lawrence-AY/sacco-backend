@@ -1,10 +1,14 @@
-const db = require('../../../shared/config/db');
+const db = require('../../../models');
 const { DatabaseError } = require('../../../shared/utils/errors');
 
 const getAllUsers = async () => {
   try {
     return await db.User.findAll({
       attributes: { exclude: ['password'] },
+      include: [{
+        model: db.Member,
+        attributes: ['id', 'memberNumber', 'type', 'nationalId', 'isVerified'],
+      }],
       order: [['createdAt', 'DESC']]
     });
   } catch (error) {
@@ -15,7 +19,11 @@ const getAllUsers = async () => {
 const getUserById = async (id) => {
   try {
     return await db.User.findByPk(id, {
-      attributes: { exclude: ['password'] }
+      attributes: { exclude: ['password'] },
+      include: [{
+        model: db.Member,
+        attributes: ['id', 'memberNumber', 'type', 'nationalId', 'isVerified'],
+      }],
     });
   } catch (error) {
     throw new DatabaseError('Failed to retrieve user', error.message);
@@ -29,7 +37,7 @@ const updateUser = async (id, data) => {
       return null;
     }
 
-    const updated = await user.update({
+    await user.update({
       name: data.name ?? user.name,
       email: data.email ?? user.email,
       phone: data.phone ?? user.phone,
@@ -38,7 +46,15 @@ const updateUser = async (id, data) => {
       consentGivenAt: data.consentGivenAt ?? user.consentGivenAt
     });
 
-    const result = updated.toJSON();
+    const refreshedUser = await db.User.findByPk(id, {
+      attributes: { exclude: ['password'] },
+      include: [{
+        model: db.Member,
+        attributes: ['id', 'memberNumber', 'type', 'nationalId', 'isVerified'],
+      }],
+    });
+
+    const result = refreshedUser.toJSON();
     delete result.password;
     return result;
   } catch (error) {
