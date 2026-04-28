@@ -10,6 +10,7 @@ const MembershipApplication = sequelize.define('MembershipApplication', {
   },
   name: DataTypes.STRING,
   nationalId: DataTypes.STRING,
+  kraPin: DataTypes.STRING,
   phone: DataTypes.STRING,
   email: DataTypes.STRING,
   type: {

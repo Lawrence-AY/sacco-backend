@@ -6,6 +6,7 @@ const createApplication = async (data) => {
     email: data.email,
     phone: data.phone,
     nationalId: data.nationalId,
+    kraPin: data.kraPin,
     type: data.type,
     consentGiven: data.consentGiven ?? false,
     consentGivenAt: data.consentGiven ? new Date() : null,
