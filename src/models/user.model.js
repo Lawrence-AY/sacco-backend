@@ -15,8 +15,14 @@ const User = sequelize.define('User', {
   phone: DataTypes.STRING,
   password: DataTypes.STRING,
   role: {
-    type: DataTypes.ENUM('ADMIN', 'FINANCE', 'MEMBER')
+    type: DataTypes.ENUM('PENDING', 'ADMIN', 'FINANCE', 'MEMBER')
   },
+  isVerified: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false
+  },
+  otp: DataTypes.STRING(6),
+  otpExpiresAt: DataTypes.DATE,
   consentGiven: {
     type: DataTypes.BOOLEAN,
     defaultValue: false

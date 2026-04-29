@@ -13,14 +13,14 @@ const roleRoutes = require('./features/roles/routes/roleRoutes');
 const transactionRoutes = require('./features/transactions/routes/transactionRoutes');
 const dividendRoutes = require('./features/dividends/routes/dividendRoutes');
 const flowRoutes = require('./features/flows/routes/flowRoutes');
-const applicationRoutes = require('./features/applications/routes/applicationRoutes');
+const applicationRoutes = require('./features/applications/routes/applications.routes');
 const deductionRoutes = require('./features/deductions/routes/deductionRoutes');
 const loanRoutes = require('./features/loans/routes/loanRoutes');
 const userRoutes = require('./features/users/routes/userRoutes');
 const shareRoutes = require('./features/shares/routes/shareRoutes');
 
-// Auth module (will be created)
-const { loginUser, refreshToken, logoutUser, registerUser } = require('./shared/middleware/authMiddleware');
+// Auth module
+const { loginUser, refreshToken, logoutUser, registerUser, verifyOTP, resendOTP, setPassword } = require('./shared/middleware/authMiddleware');
 const asyncHandler = require('./shared/utils/asyncHandler');
 
 const app = express();
@@ -58,9 +58,12 @@ app.get('/health', (req, res) => {
 
 // ============= AUTH ROUTES =============
 app.post('/api/auth/register', asyncHandler(registerUser));
+app.post('/api/auth/verify-otp', asyncHandler(verifyOTP));
+app.post('/api/auth/resend-otp', asyncHandler(resendOTP));
 app.post('/api/auth/login', asyncHandler(loginUser));
 app.post('/api/auth/refresh', asyncHandler(refreshToken));
 app.post('/api/auth/logout', asyncHandler(logoutUser));
+app.post('/api/auth/set-password', asyncHandler(setPassword));
 
 // ============= API ROUTES =============
 app.use('/api/roles', roleRoutes);

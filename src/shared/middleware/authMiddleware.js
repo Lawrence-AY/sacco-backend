@@ -3,9 +3,11 @@ const jwtUtils = require('../utils/jwt');
 const ResponseHandler = require('../utils/response');
 const { UnauthorizedError, ForbiddenError, ValidationError } = require('../utils/errors');
 const asyncHandler = require('../utils/asyncHandler');
+const { sendOTP } = require('../utils/sendOTP');
 
-// Import User model
+// Import models
 const User = require('../../models/user.model');
+const MembershipApplication = require('../../models/membershipApplication.model');
 
 /**
  * Protect routes - verify JWT token
@@ -80,6 +82,13 @@ const finance = authorize(['ADMIN', 'FINANCE']);
 const member = authorize(['MEMBER', 'ADMIN']);
 
 /**
+ * Generate 6-digit OTP
+ */
+const generateOTP = () => {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+};
+
+/**
  * Hash password using bcrypt
  */
 const hashPassword = async (password) => {
@@ -117,6 +126,9 @@ const loginUser = asyncHandler(async (req, res) => {
     throw new UnauthorizedError('Invalid email or password');
   }
 
+  if (!user.isVerified) {
+    throw new UnauthorizedError('Please verify your email address before logging in.');
+  }
   if (!user.password) {
     throw new UnauthorizedError('Your account has not been activated yet. Please contact the SACCO team for assistance.');
   }
@@ -198,11 +210,33 @@ const logoutUser = asyncHandler(async (req, res) => {
  * @access  Public
  */
 const registerUser = asyncHandler(async (req, res) => {
-  const { name, email, password, phone, role = 'MEMBER' } = req.body;
+  const { name, email, phone, role = 'MEMBER', applicationId } = req.body;
 
   // Validate input
-  if (!name || !email || !password) {
-    throw new ValidationError('Name, email, and password are required');
+  if (!name || !email) {
+    throw new ValidationError('Name and email are required');
+  }
+
+  const application = applicationId
+    ? await MembershipApplication.findByPk(applicationId)
+    : await MembershipApplication.findOne({ where: { email } });
+
+  if (applicationId) {
+    if (!application) {
+      throw new ValidationError('Associated application not found');
+    }
+
+    if (application.email !== email) {
+      throw new ValidationError('Email does not match approved application');
+    }
+
+    if (application.status !== 'APPROVED') {
+      throw new ValidationError('Your application must be approved before registration');
+    }
+  } else if (application) {
+    if (application.status !== 'APPROVED') {
+      throw new ValidationError('Your membership application must be approved before you can register');
+    }
   }
 
   // Check if user already exists
@@ -211,17 +245,115 @@ const registerUser = asyncHandler(async (req, res) => {
     throw new ValidationError('User with this email already exists', { email: 'Email already in use' });
   }
 
-  // Hash password
-  const hashedPassword = await hashPassword(password);
+  // Generate OTP
+  const otp = generateOTP();
+  const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min
 
-  // Create user
+  // Create pending user (no password yet)
   const user = await User.create({
     name,
     email,
-    password: hashedPassword,
     phone,
-    role
+    role: 'PENDING',
+    otp,
+    otpExpiresAt,
+    isVerified: false
   });
+
+  // Send OTP email
+  await sendOTP(email, otp);
+
+  return ResponseHandler.created(res, {
+    message: 'OTP sent to your email'
+  }, 'OTP sent to email');
+});
+
+const setPassword = asyncHandler(async (req, res) => {
+  const { token, newPassword } = req.body;
+
+  if (!token || !newPassword) {
+    throw new ValidationError('Token and new password are required');
+  }
+
+  const application = await MembershipApplication.findOne({
+    where: {
+      activationToken: token,
+      status: 'APPROVED',
+    }
+  });
+
+  if (!application) {
+    throw new UnauthorizedError('Activation token is invalid or expired');
+  }
+
+  if (application.activationTokenExpiresAt && application.activationTokenExpiresAt < new Date()) {
+    throw new UnauthorizedError('Activation token has expired');
+  }
+
+  const existingUser = await User.findOne({ where: { email: application.email } });
+  if (existingUser) {
+    throw new Conflict('User already exists for this application');
+  }
+
+  const hashedPassword = await hashPassword(newPassword);
+
+  const user = await User.create({
+    name: application.name,
+    email: application.email,
+    phone: application.phone,
+    password: hashedPassword,
+    role: 'MEMBER'
+  });
+
+  application.activationToken = null;
+  application.activationTokenExpiresAt = null;
+  await application.save();
+
+  return ResponseHandler.success(res, {
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      phone: user.phone
+    }
+  }, 'Password set and account activated successfully', 200);
+});
+
+/**
+ * Verify OTP
+ * @route POST /api/auth/verify-otp
+ */
+const verifyOTP = asyncHandler(async (req, res) => {
+  const { email, otp } = req.body;
+
+  if (!email || !otp) {
+    throw new ValidationError('Email and OTP are required');
+  }
+
+  const user = await User.findOne({ where: { email } });
+  if (!user) {
+    throw new UnauthorizedError('User not found');
+  }
+
+  if (user.isVerified) {
+    throw new ValidationError('User already verified');
+  }
+
+  if (user.otp !== otp) {
+    throw new UnauthorizedError('Invalid OTP');
+  }
+
+  if (user.otpExpiresAt < new Date()) {
+    throw new UnauthorizedError('OTP expired');
+  }
+
+  // Update user to verified (store password later at login/set-password? For now clear OTP)
+  user.isVerified = true;
+  user.otp = null;
+  user.otpExpiresAt = null;
+  user.role = user.role === 'PENDING' ? 'MEMBER' : user.role; // promote from PENDING
+  await user.save();
 
   // Generate tokens
   const tokens = jwtUtils.generateTokens(user.id, {
@@ -229,7 +361,7 @@ const registerUser = asyncHandler(async (req, res) => {
     role: user.role
   });
 
-  return ResponseHandler.created(res, {
+  return ResponseHandler.success(res, {
     user: {
       id: user.id,
       name: user.name,
@@ -237,8 +369,44 @@ const registerUser = asyncHandler(async (req, res) => {
       role: user.role,
       phone: user.phone
     },
-    tokens,
-  }, 'User registered successfully');
+    tokens
+  }, 'Email verified successfully');
+});
+
+/**
+ * Resend OTP
+ * @route POST /api/auth/resend-otp
+ */
+const resendOTP = asyncHandler(async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    throw new ValidationError('Email is required');
+  }
+
+  const user = await User.findOne({ where: { email } });
+  if (!user) {
+    throw new UnauthorizedError('User not found');
+  }
+
+  if (user.isVerified) {
+    throw new ValidationError('User already verified');
+  }
+
+  // Generate new OTP
+  const newOtp = generateOTP();
+  const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+  user.otp = newOtp;
+  user.otpExpiresAt = otpExpiresAt;
+  await user.save();
+
+  // Send new OTP
+  await sendOTP(email, newOtp);
+
+  return ResponseHandler.success(res, {
+    message: 'New OTP sent to your email'
+  }, 'OTP resent successfully');
 });
 
 module.exports = {
@@ -253,7 +421,10 @@ module.exports = {
   loginUser,
   refreshToken,
   logoutUser,
-  registerUser
+  registerUser,
+  verifyOTP,
+  resendOTP,
+  setPassword
 };
 
 
