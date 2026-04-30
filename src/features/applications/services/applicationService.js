@@ -7,6 +7,10 @@ const createApplication = async (data) => {
     phone: data.phone,
     nationalId: data.nationalId,
     kraPin: data.kraPin,
+    occupation: data.occupation ?? null,
+    address: data.address ?? null,
+    idDocumentName: data.idDocumentName ?? null,
+    passportPhotoName: data.passportPhotoName ?? null,
     type: data.type,
     consentGiven: data.consentGiven ?? false,
     consentGivenAt: data.consentGiven ? new Date() : null,
@@ -47,6 +51,10 @@ const updateApplication = async (id, data) => {
       data.feePaid === true
         ? application.paymentConfirmedAt ?? new Date()
         : application.paymentConfirmedAt,
+    occupation: data.occupation ?? application.occupation,
+    address: data.address ?? application.address,
+    idDocumentName: data.idDocumentName ?? application.idDocumentName,
+    passportPhotoName: data.passportPhotoName ?? application.passportPhotoName,
   });
 };
 

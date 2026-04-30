@@ -34,7 +34,25 @@ const updateUser = asyncHandler(async (req, res) => {
     throw new ForbiddenError('You are not allowed to update this user');
   }
 
-  if (!req.body.name && !req.body.email && !req.body.phone && !req.body.role && req.body.consentGiven === undefined) {
+  const updateFields = [
+    'firstName',
+    'lastName',
+    'name',
+    'email',
+    'phone',
+    'role',
+    'nationalId',
+    'kraPin',
+    'occupation',
+    'address',
+    'idDocumentUrl',
+    'passportPhotoUrl',
+    'consentGiven',
+    'consentGivenAt'
+  ];
+
+  const hasUpdate = updateFields.some((field) => req.body[field] !== undefined);
+  if (!hasUpdate) {
     throw new ValidationError('At least one field is required to update the user');
   }
 

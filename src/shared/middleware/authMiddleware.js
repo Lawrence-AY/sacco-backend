@@ -1,7 +1,7 @@
 const bcrypt = require('bcrypt');
 const jwtUtils = require('../utils/jwt');
 const ResponseHandler = require('../utils/response');
-const { UnauthorizedError, ForbiddenError, ValidationError } = require('../utils/errors');
+const { UnauthorizedError, ForbiddenError, ValidationError, ConflictError } = require('../utils/errors');
 const asyncHandler = require('../utils/asyncHandler');
 const { sendOTP } = require('../utils/sendOTP');
 
@@ -150,8 +150,11 @@ const loginUser = asyncHandler(async (req, res) => {
   return ResponseHandler.success(res, {
     user: {
       id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
       name: user.name,
       email: user.email,
+      phone: user.phone,
       role: user.role,
       consentGiven: user.consentGiven
     },
@@ -210,12 +213,14 @@ const logoutUser = asyncHandler(async (req, res) => {
  * @access  Public
  */
 const registerUser = asyncHandler(async (req, res) => {
-  const { name, email, phone, role = 'MEMBER', applicationId } = req.body;
+  const { firstName, lastName, name, email, phone, password, role = 'MEMBER', applicationId } = req.body;
 
   // Validate input
-  if (!name || !email) {
-    throw new ValidationError('Name and email are required');
+  if (!firstName || !lastName || !email || !password) {
+    throw new ValidationError('First name, last name, email and password are required');
   }
+
+  const fullName = name?.trim() || [firstName, lastName].filter(Boolean).join(' ').trim();
 
   const application = applicationId
     ? await MembershipApplication.findByPk(applicationId)
@@ -245,15 +250,20 @@ const registerUser = asyncHandler(async (req, res) => {
     throw new ValidationError('User with this email already exists', { email: 'Email already in use' });
   }
 
+  const hashedPassword = await hashPassword(password);
+
   // Generate OTP
   const otp = generateOTP();
   const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min
 
-  // Create pending user (no password yet)
+  // Create pending user with hashed password
   const user = await User.create({
-    name,
-    email,
-    phone,
+    firstName: firstName.trim(),
+    lastName: lastName.trim(),
+    name: fullName,
+    email: email.trim(),
+    phone: phone ? phone.trim() : null,
+    password: hashedPassword,
     role: 'PENDING',
     otp,
     otpExpiresAt,
@@ -292,7 +302,7 @@ const setPassword = asyncHandler(async (req, res) => {
 
   const existingUser = await User.findOne({ where: { email: application.email } });
   if (existingUser) {
-    throw new Conflict('User already exists for this application');
+    throw new ConflictError('User already exists for this application');
   }
 
   const hashedPassword = await hashPassword(newPassword);
@@ -312,10 +322,12 @@ const setPassword = asyncHandler(async (req, res) => {
   return ResponseHandler.success(res, {
     user: {
       id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
       name: user.name,
       email: user.email,
-      role: user.role,
-      phone: user.phone
+      phone: user.phone,
+      role: user.role
     }
   }, 'Password set and account activated successfully', 200);
 });
@@ -364,10 +376,12 @@ const verifyOTP = asyncHandler(async (req, res) => {
   return ResponseHandler.success(res, {
     user: {
       id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
       name: user.name,
       email: user.email,
-      role: user.role,
-      phone: user.phone
+      phone: user.phone,
+      role: user.role
     },
     tokens
   }, 'Email verified successfully');

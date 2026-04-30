@@ -6,45 +6,76 @@ const { BadRequest, Unauthorized, NotFound, Conflict } = require('../../../share
 
 // Create a new membership application
 exports.createApplication = asyncHandler(async (req, res) => {
-  const { name, nationalId, kraPin, phone, email, type } = req.body;
-
-  // Validate required fields
-  if (!name || !nationalId || !kraPin || !phone || !email || !type) {
-    throw new BadRequest('All fields are required');
-  }
-
-  // Check if email already registered
-  const existingUser = await User.findOne({ where: { email } });
-  if (existingUser) {
-    throw new Conflict('Email already registered');
-  }
-
-  // Check if application already exists with this email/national ID
-  const existingApplication = await MembershipApplication.findOne({
-    where: { email },
-  });
-  if (existingApplication) {
-    throw new Conflict('Application already exists for this email');
-  }
-
-  // Create new application
-  const application = await MembershipApplication.create({
+  const {
     name,
+    firstName,
+    surname,
     nationalId,
     kraPin,
     phone,
     email,
     type,
+    occupation,
+    address,
+    consentGiven,
+    idDocumentName,
+    passportPhotoName,
+  } = req.body;
+
+  const applicationName = name?.trim() || [firstName, surname].filter(Boolean).join(' ').trim();
+
+  // Validate required fields (minimum required for initial submission)
+  if (!applicationName || !phone || !email) {
+    throw new BadRequest('Name, phone, and email are required');
+  }
+
+  // Check if email already registered as a user
+  const existingUser = await User.findOne({ where: { email } });
+  if (existingUser) {
+    throw new Conflict('Email already registered');
+  }
+
+  // Check if application already exists with this email that is not rejected
+  const existingApplication = await MembershipApplication.findOne({
+    where: { email },
+  });
+  if (existingApplication && existingApplication.status !== 'REJECTED') {
+    throw new Conflict('Application already exists for this email');
+  }
+
+  // Create new application with available fields
+  const applicationData = {
+    name: applicationName,
+    phone,
+    email,
     status: 'PENDING_PAYMENT',
     feePaid: false,
-  });
+  }
+
+  // Add optional fields if provided
+  if (nationalId) applicationData.nationalId = nationalId
+  if (kraPin) applicationData.kraPin = kraPin
+  if (occupation) applicationData.occupation = occupation
+  if (type) applicationData.type = type
+  else if (occupation) {
+    applicationData.type = occupation === 'Employed' ? 'EMPLOYEE' : 'NON_EMPLOYEE'
+  }
+  if (address) applicationData.address = address
+  if (idDocumentName) applicationData.idDocumentName = idDocumentName
+  if (passportPhotoName) applicationData.passportPhotoName = passportPhotoName
+  if (consentGiven) {
+    applicationData.consentGiven = consentGiven
+    applicationData.consentGivenAt = new Date()
+  }
+
+  const application = await MembershipApplication.create(applicationData)
 
   res.status(201).json({
     success: true,
     message: 'Membership application created successfully',
     data: application,
-  });
-});
+  })
+})
 
 // Get application by ID
 exports.getApplication = asyncHandler(async (req, res) => {

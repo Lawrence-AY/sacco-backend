@@ -38,10 +38,18 @@ const updateUser = async (id, data) => {
     }
 
     await user.update({
+      firstName: data.firstName ?? user.firstName,
+      lastName: data.lastName ?? user.lastName,
       name: data.name ?? user.name,
       email: data.email ?? user.email,
       phone: data.phone ?? user.phone,
       role: data.role ?? user.role,
+      nationalId: data.nationalId ?? user.nationalId,
+      kraPin: data.kraPin ?? user.kraPin,
+      occupation: data.occupation ?? user.occupation,
+      address: data.address ?? user.address,
+      idDocumentUrl: data.idDocumentUrl ?? user.idDocumentUrl,
+      passportPhotoUrl: data.passportPhotoUrl ?? user.passportPhotoUrl,
       consentGiven: data.consentGiven ?? user.consentGiven,
       consentGivenAt: data.consentGivenAt ?? user.consentGivenAt
     });

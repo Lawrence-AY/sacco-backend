@@ -13,6 +13,10 @@ const MembershipApplication = sequelize.define('MembershipApplication', {
   kraPin: DataTypes.STRING,
   phone: DataTypes.STRING,
   email: DataTypes.STRING,
+  address: DataTypes.STRING,
+  occupation: DataTypes.STRING,
+  idDocumentName: DataTypes.STRING,
+  passportPhotoName: DataTypes.STRING,
   type: {
     type: DataTypes.ENUM('EMPLOYEE', 'NON_EMPLOYEE')
   },
