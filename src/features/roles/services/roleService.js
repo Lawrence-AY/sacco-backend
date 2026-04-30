@@ -1,4 +1,4 @@
-const db = require('../../../shared/config/db');
+const db = require('../../../models');
 
 const getAllRoles = async () => {
   return await db.Role.findAll();

@@ -1,4 +1,4 @@
-const db = require('../../../shared/config/db');
+const db = require('../../../models');
 
 const createApplication = async (data) => {
   return await db.MembershipApplication.create({
@@ -6,15 +6,55 @@ const createApplication = async (data) => {
     email: data.email,
     phone: data.phone,
     nationalId: data.nationalId,
+    kraPin: data.kraPin,
+    occupation: data.occupation ?? null,
+    address: data.address ?? null,
+    idDocumentName: data.idDocumentName ?? null,
+    passportPhotoName: data.passportPhotoName ?? null,
     type: data.type,
     consentGiven: data.consentGiven ?? false,
+    consentGivenAt: data.consentGiven ? new Date() : null,
     feePaid: data.feePaid ?? false,
+    paymentReference: data.paymentReference ?? null,
+    paymentPhone: data.paymentPhone ?? null,
+    paymentConfirmedAt: data.feePaid ? new Date() : null,
   });
 };
 
 const getAllApplications = async () => {
   return await db.MembershipApplication.findAll({
     order: [['createdAt', 'DESC']],
+  });
+};
+
+const getApplicationById = async (id) => {
+  return await db.MembershipApplication.findByPk(id);
+};
+
+const updateApplication = async (id, data) => {
+  const application = await db.MembershipApplication.findByPk(id);
+
+  if (!application) {
+    return null;
+  }
+
+  return await application.update({
+    feePaid: data.feePaid ?? application.feePaid,
+    consentGiven: data.consentGiven ?? application.consentGiven,
+    consentGivenAt:
+      data.consentGiven === true
+        ? application.consentGivenAt ?? new Date()
+        : application.consentGivenAt,
+    paymentReference: data.paymentReference ?? application.paymentReference,
+    paymentPhone: data.paymentPhone ?? application.paymentPhone,
+    paymentConfirmedAt:
+      data.feePaid === true
+        ? application.paymentConfirmedAt ?? new Date()
+        : application.paymentConfirmedAt,
+    occupation: data.occupation ?? application.occupation,
+    address: data.address ?? application.address,
+    idDocumentName: data.idDocumentName ?? application.idDocumentName,
+    passportPhotoName: data.passportPhotoName ?? application.passportPhotoName,
   });
 };
 
@@ -77,6 +117,8 @@ const rejectApplication = async (applicationId, reason) => {
 module.exports = {
   createApplication,
   getAllApplications,
+  getApplicationById,
+  updateApplication,
   approveApplication,
   rejectApplication,
 };

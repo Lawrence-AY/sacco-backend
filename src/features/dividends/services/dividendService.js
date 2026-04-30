@@ -1,4 +1,4 @@
-const db = require('../../../shared/config/db');
+const db = require('../../../models');
 
 const getAllDividends = async () => {
   return await db.Dividend.findAll();

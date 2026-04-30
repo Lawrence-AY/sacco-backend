@@ -1,4 +1,4 @@
-const db = require('../../../shared/config/db');
+const db = require('../../../models');
 
 const createSalaryDeduction = async (data) => {
   return await db.SalaryDeduction.create({
