@@ -1,0 +1,44 @@
+const { DataTypes } = require('sequelize');
+const sequelize = require('../shared/config/db');
+
+const User = sequelize.define('User', {
+  id: {
+    type: DataTypes.UUID,
+    defaultValue: DataTypes.UUIDV4,
+    primaryKey: true
+  },
+  firstName: DataTypes.STRING,
+  lastName: DataTypes.STRING,
+  name: DataTypes.STRING,
+  email: {
+    type: DataTypes.STRING,
+    unique: true
+  },
+  phone: DataTypes.STRING,
+  password: DataTypes.STRING,
+  nationalId: DataTypes.STRING,
+  kraPin: DataTypes.STRING,
+  occupation: DataTypes.STRING,
+  address: DataTypes.TEXT,
+  idDocumentUrl: DataTypes.STRING,
+  passportPhotoUrl: DataTypes.STRING,
+  role: {
+    type: DataTypes.ENUM('PENDING', 'ADMIN', 'FINANCE', 'MEMBER'),
+    defaultValue: 'PENDING'
+  },
+  isVerified: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false
+  },
+  otp: DataTypes.STRING(6),
+  otpExpiresAt: DataTypes.DATE,
+  consentGiven: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false
+  },
+  consentGivenAt: DataTypes.DATE
+}, {
+  timestamps: true
+});
+
+module.exports = User;

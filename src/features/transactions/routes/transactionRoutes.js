@@ -1,8 +1,12 @@
 const express = require('express');
 const router = express.Router();
+const { protect } = require('../../../shared/middleware/authMiddleware');
 
 // Import controllers
 const transactionController = require('../controllers/transactionController');
+
+// All routes require authentication
+router.use(protect);
 
 // Routes
 router.get('/', transactionController.getAllTransactions);
