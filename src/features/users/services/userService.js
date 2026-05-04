@@ -50,6 +50,7 @@ const updateUser = async (id, data) => {
       address: data.address ?? user.address,
       idDocumentUrl: data.idDocumentUrl ?? user.idDocumentUrl,
       passportPhotoUrl: data.passportPhotoUrl ?? user.passportPhotoUrl,
+      isVerified: data.isVerified ?? user.isVerified,
       consentGiven: data.consentGiven ?? user.consentGiven,
       consentGivenAt: data.consentGivenAt ?? user.consentGivenAt
     });

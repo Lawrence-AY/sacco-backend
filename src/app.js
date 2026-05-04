@@ -18,6 +18,9 @@ const deductionRoutes = require('./features/deductions/routes/deductionRoutes');
 const loanRoutes = require('./features/loans/routes/loanRoutes');
 const userRoutes = require('./features/users/routes/userRoutes');
 const shareRoutes = require('./features/shares/routes/shareRoutes');
+const memberRoutes = require('./features/member/routes/memberRoutes');
+const financeRoutes = require('./features/finance/routes/financeRoutes');
+const adminRoutes = require('./features/admin/routes/adminRoutes');
 
 // Auth module
 const { loginUser, refreshToken, logoutUser, registerUser, verifyOTP, resendOTP, setPassword } = require('./shared/middleware/authMiddleware');
@@ -75,6 +78,9 @@ app.use('/api/deductions', deductionRoutes);
 app.use('/api/loans', loanRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/shares', shareRoutes);
+app.use('/api/member', memberRoutes);
+app.use('/api/finance', financeRoutes);
+app.use('/api/admin', adminRoutes);
 
 // ============= 404 HANDLER =============
 app.use(notFoundHandler);

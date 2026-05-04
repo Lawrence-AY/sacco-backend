@@ -17,12 +17,19 @@ const getSalaryDeductions = async () => {
 };
 
 const updateSalaryDeduction = async (id, data) => {
-  return await db.SalaryDeduction.update({
-    shareAmount: data.shareAmount,
-    contribution: data.contribution,
-    startDate: data.startDate ? new Date(data.startDate) : undefined,
-    isActive: data.isActive,
-  }, { where: { id } });
+  const deduction = await db.SalaryDeduction.findByPk(id);
+  if (!deduction) {
+    return null;
+  }
+
+  await deduction.update({
+    shareAmount: data.shareAmount ?? deduction.shareAmount,
+    contribution: data.contribution ?? deduction.contribution,
+    startDate: data.startDate ? new Date(data.startDate) : deduction.startDate,
+    isActive: data.isActive ?? deduction.isActive,
+  });
+
+  return deduction;
 };
 
 const processSalaryDeductions = async () => {
