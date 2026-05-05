@@ -1,8 +1,41 @@
+// src/features/applications/controllers/applications.controller.js
 const crypto = require('crypto');
 const MembershipApplication = require('../../../models/membershipApplication.model');
 const User = require('../../../models/user.model');
 const asyncHandler = require('../../../shared/utils/asyncHandler');
-const { BadRequest, Unauthorized, NotFound, Conflict } = require('../../../shared/utils/errors');
+
+// Define custom error classes locally
+class BadRequest extends Error {
+  constructor(message) {
+    super(message);
+    this.statusCode = 400;
+    this.name = 'BadRequest';
+  }
+}
+
+class Unauthorized extends Error {
+  constructor(message) {
+    super(message);
+    this.statusCode = 401;
+    this.name = 'Unauthorized';
+  }
+}
+
+class NotFound extends Error {
+  constructor(message) {
+    super(message);
+    this.statusCode = 404;
+    this.name = 'NotFound';
+  }
+}
+
+class Conflict extends Error {
+  constructor(message) {
+    super(message);
+    this.statusCode = 409;
+    this.name = 'Conflict';
+  }
+}
 
 // Create a new membership application
 exports.createApplication = asyncHandler(async (req, res) => {
@@ -18,13 +51,11 @@ exports.createApplication = asyncHandler(async (req, res) => {
     occupation,
     address,
     consentGiven,
-    idDocumentName,
-    passportPhotoName,
-  } = req.body;
+  } = req.body; // Removed idDocumentName, passportPhotoName
 
   const applicationName = name?.trim() || [firstName, surname].filter(Boolean).join(' ').trim();
 
-  // Validate required fields (minimum required for initial submission)
+  // Validate required fields
   if (!applicationName || !phone || !email) {
     throw new BadRequest('Name, phone, and email are required');
   }
@@ -50,32 +81,30 @@ exports.createApplication = asyncHandler(async (req, res) => {
     email,
     status: 'PENDING_PAYMENT',
     feePaid: false,
-  }
+  };
 
   // Add optional fields if provided
-  if (nationalId) applicationData.nationalId = nationalId
-  if (kraPin) applicationData.kraPin = kraPin
-  if (occupation) applicationData.occupation = occupation
-  if (type) applicationData.type = type
+  if (nationalId) applicationData.nationalId = nationalId;
+  if (kraPin) applicationData.kraPin = kraPin;
+  if (occupation) applicationData.occupation = occupation;
+  if (type) applicationData.type = type;
   else if (occupation) {
-    applicationData.type = occupation === 'Employed' ? 'EMPLOYEE' : 'NON_EMPLOYEE'
+    applicationData.type = occupation === 'Employed' ? 'EMPLOYEE' : 'NON_EMPLOYEE';
   }
-  if (address) applicationData.address = address
-  if (idDocumentName) applicationData.idDocumentName = idDocumentName
-  if (passportPhotoName) applicationData.passportPhotoName = passportPhotoName
+  if (address) applicationData.address = address;
   if (consentGiven) {
-    applicationData.consentGiven = consentGiven
-    applicationData.consentGivenAt = new Date()
+    applicationData.consentGiven = consentGiven;
+    applicationData.consentGivenAt = new Date();
   }
 
-  const application = await MembershipApplication.create(applicationData)
+  const application = await MembershipApplication.create(applicationData);
 
   res.status(201).json({
     success: true,
     message: 'Membership application created successfully',
     data: application,
-  })
-})
+  });
+});
 
 // Get application by ID
 exports.getApplication = asyncHandler(async (req, res) => {
@@ -110,11 +139,7 @@ exports.verifyPayment = asyncHandler(async (req, res) => {
     throw new BadRequest('Application is not in PENDING_PAYMENT status');
   }
 
-  // Verify payment reference with payment provider (M-Pesa)
-  // For now, we'll accept any reference and mark as verified
-  // In production, integrate with actual payment API
-
-  // Update application with payment details
+  // For now, accept any reference as verified
   application.paymentReference = paymentReference.toUpperCase();
   application.paymentPhone = paymentPhone;
   application.feePaid = true;
@@ -183,7 +208,6 @@ exports.getApplicationStatus = asyncHandler(async (req, res) => {
 exports.approveApplication = asyncHandler(async (req, res) => {
   const { applicationId } = req.params;
 
-  // Check if user is admin
   if (req.user?.role !== 'ADMIN') {
     throw new Unauthorized('Only admins can approve applications');
   }
@@ -208,7 +232,7 @@ exports.approveApplication = asyncHandler(async (req, res) => {
 
   const activationUrl = `${process.env.FRONTEND_URL || 'http://localhost:5174'}/set-password?token=${token}`;
 
-  // TODO: Send activation email to user with activationUrl
+  // TODO: Send activation email
 
   res.json({
     success: true,
@@ -225,7 +249,6 @@ exports.rejectApplication = asyncHandler(async (req, res) => {
   const { applicationId } = req.params;
   const { reason } = req.body;
 
-  // Check if user is admin
   if (req.user?.role !== 'ADMIN') {
     throw new Unauthorized('Only admins can reject applications');
   }
@@ -239,13 +262,12 @@ exports.rejectApplication = asyncHandler(async (req, res) => {
     throw new BadRequest('Application is not pending approval');
   }
 
-  // Update application status
   application.status = 'REJECTED';
   application.rejectedReason = reason || 'No reason provided';
   application.approvedById = req.user.id;
   await application.save();
 
-  // TODO: Send rejection email to user
+  // TODO: Send rejection email
 
   res.json({
     success: true,
@@ -256,7 +278,6 @@ exports.rejectApplication = asyncHandler(async (req, res) => {
 
 // Get all applications (Admin only)
 exports.getApplications = asyncHandler(async (req, res) => {
-  // Check if user is admin
   if (req.user?.role !== 'ADMIN') {
     throw new Unauthorized('Only admins can view all applications');
   }
@@ -279,8 +300,8 @@ exports.getApplications = asyncHandler(async (req, res) => {
     data: rows,
     pagination: {
       total: count,
-      page,
-      limit,
+      page: Number(page),
+      limit: Number(limit),
       pages: Math.ceil(count / limit),
     },
   });

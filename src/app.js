@@ -22,6 +22,9 @@ const memberRoutes = require('./features/member/routes/memberRoutes');
 const financeRoutes = require('./features/finance/routes/financeRoutes');
 const adminRoutes = require('./features/admin/routes/adminRoutes');
 
+// Import the application controller to get the STK status handler
+const applicationController = require('./features/applications/controllers/applicationController');
+
 // Auth module
 const { loginUser, refreshToken, logoutUser, registerUser, verifyOTP, resendOTP, setPassword } = require('./shared/middleware/authMiddleware');
 const asyncHandler = require('./shared/utils/asyncHandler');
@@ -81,6 +84,9 @@ app.use('/api/shares', shareRoutes);
 app.use('/api/member', memberRoutes);
 app.use('/api/finance', financeRoutes);
 app.use('/api/admin', adminRoutes);
+
+// ============= ADD STK STATUS ROUTE (direct, not under /api/applications) =============
+app.get('/api/stk-status', applicationController.checkStkStatus);
 
 // ============= 404 HANDLER =============
 app.use(notFoundHandler);
