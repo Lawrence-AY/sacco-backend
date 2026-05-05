@@ -1,3 +1,4 @@
+// services/applicationService.js
 const db = require('../../../models');
 
 const createApplication = async (data) => {
@@ -9,8 +10,6 @@ const createApplication = async (data) => {
     kraPin: data.kraPin,
     occupation: data.occupation ?? null,
     address: data.address ?? null,
-    idDocumentName: data.idDocumentName ?? null,
-    passportPhotoName: data.passportPhotoName ?? null,
     type: data.type,
     consentGiven: data.consentGiven ?? false,
     consentGivenAt: data.consentGiven ? new Date() : null,
@@ -53,8 +52,7 @@ const updateApplication = async (id, data) => {
         : application.paymentConfirmedAt,
     occupation: data.occupation ?? application.occupation,
     address: data.address ?? application.address,
-    idDocumentName: data.idDocumentName ?? application.idDocumentName,
-    passportPhotoName: data.passportPhotoName ?? application.passportPhotoName,
+    // Removed idDocumentName and passportPhotoName
   });
 };
 
