@@ -23,19 +23,8 @@ const adminRoutes = require('./features/admin/routes/adminRoutes');
 const applicationController = require('./features/applications/controllers/applicationController');
 
 const { loginUser, refreshToken, logoutUser, registerUser, verifyOTP, resendOTP, setPassword } = require('./shared/middleware/authMiddleware');
-const asyncHandler = require('./shared/utils/asyncHandler');
 
 const app = express();
-
-// ============= RAW BODY CAPTURE (BEFORE JSON PARSER) =============
-app.use((req, res, next) => {
-  let data = '';
-  req.on('data', chunk => { data += chunk; });
-  req.on('end', () => {
-    req.rawBody = data;
-    next();
-  });
-});
 
 // ============= CORS =============
 app.use(cors({
@@ -46,7 +35,12 @@ app.use(cors({
 }));
 
 // ============= BODY PARSING MIDDLEWARE =============
-app.use(express.json({ limit: '10kb' }));
+app.use(express.json({
+  limit: '10kb',
+  verify: (req, res, buffer) => {
+    req.rawBody = buffer?.length ? buffer.toString('utf8') : '';
+  }
+}));
 app.use(express.urlencoded({ limit: '10kb', extended: true }));
 
 // ============= REQUEST LOGGING (DEV) =============
@@ -69,13 +63,13 @@ app.get('/health', (req, res) => {
 
 // ============= AUTH ROUTES =============
 app.use('/api/auth', authRoutes);
-app.post('/api/auth/register', asyncHandler(registerUser));
-app.post('/api/auth/verify-otp', asyncHandler(verifyOTP));
-app.post('/api/auth/resend-otp', asyncHandler(resendOTP));
-app.post('/api/auth/login', asyncHandler(loginUser));
-app.post('/api/auth/refresh', asyncHandler(refreshToken));
-app.post('/api/auth/logout', asyncHandler(logoutUser));
-app.post('/api/auth/set-password', asyncHandler(setPassword));
+app.post('/api/auth/register', registerUser);
+app.post('/api/auth/verify-otp', verifyOTP);
+app.post('/api/auth/resend-otp', resendOTP);
+app.post('/api/auth/login', loginUser);
+app.post('/api/auth/refresh', refreshToken);
+app.post('/api/auth/logout', logoutUser);
+app.post('/api/auth/set-password', setPassword);
 
 // ============= API ROUTES =============
 app.use('/api/roles', roleRoutes);

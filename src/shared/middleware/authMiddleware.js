@@ -112,7 +112,7 @@ const verifyPassword = async (password, hashedPassword) => {
  * @access  Public
  */
 const loginUser = asyncHandler(async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password } = req.body || {};
 
   // Validate input
   if (!email || !password) {
@@ -168,7 +168,7 @@ const loginUser = asyncHandler(async (req, res) => {
  * @access  Public
  */
 const refreshToken = asyncHandler(async (req, res) => {
-  const { refreshToken } = req.body;
+  const { refreshToken } = req.body || {};
 
   if (!refreshToken) {
     throw new UnauthorizedError('Refresh token is required');
@@ -213,7 +213,7 @@ const logoutUser = asyncHandler(async (req, res) => {
  * @access  Public
  */
 const registerUser = asyncHandler(async (req, res) => {
-  const { firstName, lastName, name, email, phone, password, role = 'MEMBER', applicationId } = req.body;
+  const { firstName, lastName, name, email, phone, password, role = 'MEMBER', applicationId } = req.body || {};
 
   // Validate input
   if (!firstName || !lastName || !email || !password) {
@@ -279,7 +279,7 @@ const registerUser = asyncHandler(async (req, res) => {
 });
 
 const setPassword = asyncHandler(async (req, res) => {
-  const { token, newPassword } = req.body;
+  const { token, newPassword } = req.body || {};
 
   if (!token || !newPassword) {
     throw new ValidationError('Token and new password are required');
@@ -337,7 +337,7 @@ const setPassword = asyncHandler(async (req, res) => {
  * @route POST /api/auth/verify-otp
  */
 const verifyOTP = asyncHandler(async (req, res) => {
-  const { email, otp } = req.body;
+  const { email, otp } = req.body || {};
 
   if (!email || !otp) {
     throw new ValidationError('Email and OTP are required');
@@ -392,7 +392,7 @@ const verifyOTP = asyncHandler(async (req, res) => {
  * @route POST /api/auth/resend-otp
  */
 const resendOTP = asyncHandler(async (req, res) => {
-  const { email } = req.body;
+  const { email } = req.body || {};
 
   if (!email) {
     throw new ValidationError('Email is required');
