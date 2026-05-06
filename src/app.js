@@ -2,19 +2,16 @@ const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 
-// Load environment variables
 dotenv.config();
 
-// Middleware
 const { errorHandler, notFoundHandler } = require('./shared/middleware/errorMiddleware');
 
-// Routes
 const roleRoutes = require('./features/roles/routes/roleRoutes');
 const transactionRoutes = require('./features/transactions/routes/transactionRoutes');
 const dividendRoutes = require('./features/dividends/routes/dividendRoutes');
 const flowRoutes = require('./features/flows/routes/flowRoutes');
 const authRoutes = require('./features/auth/routes/authRoutes');
-const applicationRoutes = require('./features/applications/routes/applications.routes');
+const applicationRoutes = require('./features/applications/routes/applicationRoutes');
 const deductionRoutes = require('./features/deductions/routes/deductionRoutes');
 const loanRoutes = require('./features/loans/routes/loanRoutes');
 const userRoutes = require('./features/users/routes/userRoutes');
@@ -23,17 +20,24 @@ const memberRoutes = require('./features/member/routes/memberRoutes');
 const financeRoutes = require('./features/finance/routes/financeRoutes');
 const adminRoutes = require('./features/admin/routes/adminRoutes');
 
-// Import the application controller to get the STK status handler
 const applicationController = require('./features/applications/controllers/applicationController');
 
-// Auth module
 const { loginUser, refreshToken, logoutUser, registerUser, verifyOTP, resendOTP, setPassword } = require('./shared/middleware/authMiddleware');
 const asyncHandler = require('./shared/utils/asyncHandler');
 
 const app = express();
 
-// ============= BASIC MIDDLEWARE =============
-// CORS configuration
+// ============= RAW BODY CAPTURE (BEFORE JSON PARSER) =============
+app.use((req, res, next) => {
+  let data = '';
+  req.on('data', chunk => { data += chunk; });
+  req.on('end', () => {
+    req.rawBody = data;
+    next();
+  });
+});
+
+// ============= CORS =============
 app.use(cors({
   origin: process.env.CORS_ORIGIN || '*',
   credentials: true,
@@ -41,11 +45,11 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Body parsing middleware
+// ============= BODY PARSING MIDDLEWARE =============
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ limit: '10kb', extended: true }));
 
-// Request logging middleware (development)
+// ============= REQUEST LOGGING (DEV) =============
 if (process.env.NODE_ENV === 'development') {
   app.use((req, res, next) => {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
@@ -87,14 +91,11 @@ app.use('/api/member', memberRoutes);
 app.use('/api/finance', financeRoutes);
 app.use('/api/admin', adminRoutes);
 
-// ============= ADD STK STATUS ROUTE (direct, not under /api/applications) =============
+// ============= STK STATUS ROUTE =============
 app.get('/api/stk-status', applicationController.checkStkStatus);
 
-// ============= 404 HANDLER =============
+// ============= 404 & ERROR HANDLERS =============
 app.use(notFoundHandler);
-
-// ============= ERROR HANDLING MIDDLEWARE =============
-// Must be at the end
 app.use(errorHandler);
 
 module.exports = app;
