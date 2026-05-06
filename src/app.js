@@ -13,6 +13,7 @@ const roleRoutes = require('./features/roles/routes/roleRoutes');
 const transactionRoutes = require('./features/transactions/routes/transactionRoutes');
 const dividendRoutes = require('./features/dividends/routes/dividendRoutes');
 const flowRoutes = require('./features/flows/routes/flowRoutes');
+const authRoutes = require('./features/auth/routes/authRoutes');
 const applicationRoutes = require('./features/applications/routes/applications.routes');
 const deductionRoutes = require('./features/deductions/routes/deductionRoutes');
 const loanRoutes = require('./features/loans/routes/loanRoutes');
@@ -63,6 +64,7 @@ app.get('/health', (req, res) => {
 });
 
 // ============= AUTH ROUTES =============
+app.use('/api/auth', authRoutes);
 app.post('/api/auth/register', asyncHandler(registerUser));
 app.post('/api/auth/verify-otp', asyncHandler(verifyOTP));
 app.post('/api/auth/resend-otp', asyncHandler(resendOTP));

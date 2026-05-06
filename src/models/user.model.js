@@ -33,13 +33,29 @@ const User = sequelize.define('User', {
   },
   otp: DataTypes.STRING(6),
   otpExpiresAt: DataTypes.DATE,
+  passwordResetToken: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
+  passwordResetExpires: {
+    type: DataTypes.DATE,
+    allowNull: true
+  },
   consentGiven: {
     type: DataTypes.BOOLEAN,
     defaultValue: false
   },
   consentGivenAt: DataTypes.DATE
 }, {
-  timestamps: true
+  timestamps: true,
+  indexes: [
+    {
+      fields: ['email']
+    },
+    {
+      fields: ['passwordResetToken']
+    }
+  ]
 });
 
 module.exports = User;
