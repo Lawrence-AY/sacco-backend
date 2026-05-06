@@ -4,11 +4,12 @@ const router = express.Router();
 const { protect, authorize } = require('../../../shared/middleware/authMiddleware');
 const applicationController = require('../controllers/applicationController');
 
-// Routes
+// ✅ FORCE JSON PARSING FOR THIS SPECIFIC ROUTE
+router.post('/:id/verify-payment', express.json(), applicationController.verifyPayment);
 
-// Public routes – specific paths must come before generic :id
+// Public routes (specific paths before generic :id)
 router.post('/', applicationController.submitApplication);
-router.get('/stk-status', applicationController.checkStkStatus);   // <-- ADD THIS LINE
+router.get('/stk-status', applicationController.checkStkStatus);
 router.get('/:id', applicationController.getApplicationById);
 router.patch('/:id', applicationController.updateApplication);
 

@@ -2,11 +2,11 @@ const app = require('./src/app');
 const db = require('./src/models');
 
 const PORT = process.env.PORT || 3000;
-const DB_URL = process.env.DATABASE_URL;
+//const DB_URL = process.env.DATABASE_URL;
 
 // Start the server
 app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}, ${DB_URL}`);
+  console.log(`Server is running on port ${PORT}`);
 });
 
 // Sync database asynchronously (non-blocking)
