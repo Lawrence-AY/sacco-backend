@@ -86,6 +86,7 @@ const rejectApplication = asyncHandler(async (req, res) => {
   return ResponseHandler.success(res, application, 'Application rejected successfully', 200);
 });
 
+
 const checkStkStatus = asyncHandler(async (req, res) => {
   const { checkoutRequestId } = req.query;
   if (!checkoutRequestId) {
