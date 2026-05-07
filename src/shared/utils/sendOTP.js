@@ -1,31 +1,39 @@
-const { Resend } = require('resend');
+const { createClient } = require('@supabase/supabase-js');
 
-const sendOTP = async (email, otp) => {
-  if (!process.env.RESEND_API_KEY) {
-    console.error('RESEND_API_KEY not set');
-    throw new Error('Email service not configured');
-  }
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
-  const resend = new Resend(process.env.RESEND_API_KEY);
+/**
+ * Send OTP via Supabase Auth
+ * @param {string} email
+ */
+const sendOTP = async (email) => {
   try {
-    await resend.emails.send({
-      from:'walace.owili@cowriex.io',
-      to: email,
-      subject: 'Your Ayedos OTP Code',
-      html: `<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-  <h2>Your OTP Code</h2>
-  <p>Use this one-time code to verify your email:</p>
-  <div style="background: #f0f0f0; padding: 20px; text-align: center; font-size: 24px; font-weight: bold; letter-spacing: 10px;">
-    ${otp}
-  </div>
-  <p>This code expires in 10 minutes.</p>
-  <p>If you didn't request this, please ignore this email.</p>
-</div>`
+    const { data, error } = await supabase.auth.signInWithOtp({
+      email,
+      options: {
+        shouldCreateUser: true
+      }
     });
-    console.log(`OTP email sent to ${email}`);
-  } catch (error) {
-    console.error('Email send failed:', error);
-    throw new Error('Failed to send OTP email');
+
+    console.log(
+      'Supabase OTP response:',
+      JSON.stringify(data, null, 2)
+    );
+
+    if (error) {
+      console.error('Supabase OTP error:', error);
+      throw new Error(error.message);
+    }
+
+    console.log(`✅ OTP email sent to ${email}`);
+
+    return data;
+  } catch (err) {
+    console.error('Failed to send OTP:', err.message);
+    throw err;
   }
 };
 

@@ -1,0 +1,53 @@
+const nodemailer = require('nodemailer');
+
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST,
+  port: Number(process.env.SMTP_PORT),
+  secure: true, // IMPORTANT for 465
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS
+  }
+});
+
+const sendOTPEmail = async (email, otp) => {
+  try {
+    const info = await transporter.sendMail({
+      from: `"Ayedos SACCO" <${process.env.SMTP_USER}>`,
+      to: email,
+      subject: 'Verify Your Email Address',
+      html: `
+        <div style="font-family: Arial, sans-serif;">
+          <h2>Email Verification</h2>
+
+          <p>
+            Please use the verification code below:
+          </p>
+
+          <div style="
+            font-size: 32px;
+            font-weight: bold;
+            letter-spacing: 5px;
+            margin: 20px 0;
+          ">
+            ${otp}
+          </div>
+
+          <p>
+            This OTP expires in 10 minutes.
+          </p>
+        </div>
+      `
+    });
+
+    console.log('✅ Email sent:', info.messageId);
+
+    return info;
+
+  } catch (error) {
+    console.error('Email send error:', error);
+    throw error;
+  }
+};
+
+module.exports = { sendOTPEmail };
