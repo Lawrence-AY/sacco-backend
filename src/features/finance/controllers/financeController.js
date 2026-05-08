@@ -113,6 +113,27 @@ const voidTransaction = asyncHandler(async (req, res) => {
   }, 'Transaction voided successfully', 200);
 });
 
+const verifyTransaction = asyncHandler(async (req, res) => {
+  const transaction = await db.Transaction.findByPk(req.params.transactionId);
+  if (!transaction) {
+    throw new NotFoundError('Transaction not found');
+  }
+
+  await transaction.update({ status: 'SUCCESS' });
+  return ResponseHandler.success(res, {
+    id: transaction.id,
+    type: transaction.type,
+    amount: transaction.amount,
+    description: buildTransactionDescription(transaction),
+    createdAt: transaction.createdAt,
+    status: transaction.status,
+    method: transaction.method,
+    reference: transaction.reference,
+    memberId: transaction.memberId,
+    loanId: transaction.loanId,
+  }, 'Transaction verified successfully', 200);
+});
+
 const getAllLoans = asyncHandler(async (req, res) => {
   const where = {};
   if (req.query.status) where.status = req.query.status;
@@ -263,6 +284,7 @@ module.exports = {
   getAllTransactions,
   createTransaction,
   voidTransaction,
+  verifyTransaction,
   getAllLoans,
   getLoanById,
   approveLoan,

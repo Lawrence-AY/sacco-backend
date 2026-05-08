@@ -1,13 +1,28 @@
 const nodemailer = require('nodemailer');
 
+const requiredEnv = [
+  'SMTP_HOST',
+  'SMTP_PORT',
+  'SMTP_USER',
+  'SMTP_PASS'
+];
+
+const missingEnv = requiredEnv.filter((key) => !process.env[key]);
+if (missingEnv.length) {
+  throw new Error(
+    `Missing SMTP configuration: ${missingEnv.join(', ')}. ` +
+      'Please set these values in your .env file before sending email.'
+  );
+}
+
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
   port: Number(process.env.SMTP_PORT),
-  secure: true, // IMPORTANT for 465
+  secure: process.env.SMTP_PORT === '465',
   auth: {
     user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS
-  }
+    pass: process.env.SMTP_PASS,
+  },
 });
 
 const sendOTPEmail = async (email, otp) => {

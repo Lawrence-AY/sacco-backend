@@ -22,7 +22,7 @@ const adminRoutes = require('./features/admin/routes/adminRoutes');
 
 const applicationController = require('./features/applications/controllers/applicationController');
 
-const { loginUser, refreshToken, logoutUser, registerUser, verifyOTP, resendOTP, setPassword } = require('./shared/middleware/authMiddleware');
+const { loginUser, verifyLoginOTP, refreshToken, logoutUser, registerUser, verifyOTP, resendOTP, setPassword } = require('./shared/middleware/authMiddleware');
 
 const app = express();
 
@@ -67,6 +67,7 @@ app.post('/api/auth/register', registerUser);
 app.post('/api/auth/verify-otp', verifyOTP);
 app.post('/api/auth/resend-otp', resendOTP);
 app.post('/api/auth/login', loginUser);
+app.post('/api/auth/login/verify-otp', verifyLoginOTP);
 app.post('/api/auth/refresh', refreshToken);
 app.post('/api/auth/logout', logoutUser);
 app.post('/api/auth/set-password', setPassword);

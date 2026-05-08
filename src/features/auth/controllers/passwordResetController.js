@@ -126,7 +126,47 @@ const resetPassword = async (req, res, next) => {
   }
 };
 
+const changePassword = async (req, res, next) => {
+  try {
+    const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
+    const newPassword = typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
+
+    if (!currentPassword || !newPassword) {
+      throw new ValidationError('Current password and new password are required');
+    }
+
+    const passwordIssues = validatePasswordStrength(newPassword);
+    if (passwordIssues.length > 0) {
+      throw new ValidationError('Password does not meet strength requirements', {
+        password: passwordIssues
+      });
+    }
+
+    const user = await User.findByPk(req.user.id);
+    if (!user) {
+      throw new UnauthorizedError('User not found');
+    }
+
+    const isCurrentPasswordValid = await bcrypt.compare(currentPassword, user.password);
+    if (!isCurrentPasswordValid) {
+      throw new UnauthorizedError('Current password is incorrect');
+    }
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save({ fields: ['password'] });
+
+    return ResponseHandler.success(res, null, 'Password changed successfully', 200);
+  } catch (error) {
+    console.error('[AUTH] Change password failed', {
+      name: error.name,
+      message: error.message
+    });
+    return next(error);
+  }
+};
+
 module.exports = {
   forgotPassword,
-  resetPassword
+  resetPassword,
+  changePassword
 };

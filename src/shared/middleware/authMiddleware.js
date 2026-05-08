@@ -111,6 +111,46 @@ const loginUser = asyncHandler(async (req, res) => {
   if (!isValid) {
     throw new UnauthorizedError('Invalid email or password');
   }
+
+  const otp = generateOTP();
+  user.otp = otp;
+  user.otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+  await user.save({ fields: ['otp', 'otpExpiresAt'] });
+  await sendOTPEmail(user.email, otp);
+
+  return ResponseHandler.success(
+    res,
+    {
+      requiresOtp: true,
+      email: user.email,
+      role: user.role
+    },
+    'Login verification code sent',
+    200
+  );
+});
+
+const verifyLoginOTP = asyncHandler(async (req, res) => {
+  const { email, otp } = req.body || {};
+  if (!email || !otp) {
+    throw new ValidationError('Email and OTP required');
+  }
+
+  const user = await User.findOne({ where: { email } });
+  if (!user) {
+    throw new UnauthorizedError('User not found');
+  }
+  if (String(user.otp) !== String(otp)) {
+    throw new UnauthorizedError('Invalid OTP');
+  }
+  if (new Date(user.otpExpiresAt) < new Date()) {
+    throw new UnauthorizedError('OTP expired');
+  }
+
+  user.otp = null;
+  user.otpExpiresAt = null;
+  await user.save({ fields: ['otp', 'otpExpiresAt'] });
+
   const tokens = jwtUtils.generateTokens(user.id, {
     email: user.email,
     role: user.role
@@ -359,6 +399,7 @@ module.exports = {
   verifyPassword,
   extractToken,
   loginUser,
+  verifyLoginOTP,
   refreshToken,
   registerUser,
   setPassword,

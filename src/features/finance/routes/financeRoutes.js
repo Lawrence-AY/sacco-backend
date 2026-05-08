@@ -7,6 +7,7 @@ router.use(protect, authorize(['ADMIN', 'FINANCE']));
 
 router.get('/transactions', financeController.getAllTransactions);
 router.post('/transactions', financeController.createTransaction);
+router.post('/transactions/:transactionId/verify', financeController.verifyTransaction);
 router.post('/transactions/:transactionId/void', financeController.voidTransaction);
 
 router.get('/loans', financeController.getAllLoans);
