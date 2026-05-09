@@ -12,10 +12,37 @@ const asyncHandler = require('../utils/asyncHandler');
 // 🔐 LOCAL OTP SYSTEM (configurable digit length)
 const { generateOTP } = require('../utils/generateOTP');  // default 6-digit
 const { sendOTPEmail } = require('../utils/sendOTPEmail');
+const sessionService = require('../../services/sessionService');
 
 // Models
 const User = require('../../models/user.model');
 const MembershipApplication = require('../../models/membershipApplication.model');
+const db = require('../../models');
+
+const ensureMemberRecords = async (user, source = {}) => {
+  let member = await db.Member.findOne({ where: { userId: user.id } });
+  if (!member) {
+    member = await db.Member.create({
+      userId: user.id,
+      memberNumber: `M-${Date.now()}`,
+      type: source.type || 'NON_EMPLOYEE',
+      nationalId: source.nationalId || user.nationalId || null,
+      isVerified: true,
+    });
+  }
+
+  const savings = await db.SavingsAccount.findOne({ where: { memberId: member.id } });
+  if (!savings) {
+    await db.SavingsAccount.create({ memberId: member.id });
+  }
+
+  const shares = await db.ShareAccount.findOne({ where: { memberId: member.id } });
+  if (!shares) {
+    await db.ShareAccount.create({ memberId: member.id });
+  }
+
+  return member;
+};
 
 /**
  * =========================
@@ -49,6 +76,10 @@ const protect = asyncHandler(async (req, res, next) => {
       throw new UnauthorizedError('User not found');
     }
     req.user = user;
+    req.sessionId = decoded.sessionId || req.headers['x-session-id'] || null;
+    if (req.sessionId) {
+      sessionService.touchSession(req.sessionId, user.id).catch(() => {});
+    }
     next();
   } catch (error) {
     throw new UnauthorizedError(error.message || 'Token verification failed');
@@ -116,6 +147,7 @@ const loginUser = asyncHandler(async (req, res) => {
   user.otp = otp;
   user.otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
   await user.save({ fields: ['otp', 'otpExpiresAt'] });
+  const loginSession = await sessionService.createOtpSession(user, req);
   await sendOTPEmail(user.email, otp);
 
   return ResponseHandler.success(
@@ -123,7 +155,9 @@ const loginUser = asyncHandler(async (req, res) => {
     {
       requiresOtp: true,
       email: user.email,
-      role: user.role
+      role: user.role,
+      sessionId: loginSession.id,
+      newDevice: loginSession.isNewDevice
     },
     'Login verification code sent',
     200
@@ -150,12 +184,14 @@ const verifyLoginOTP = asyncHandler(async (req, res) => {
   user.otp = null;
   user.otpExpiresAt = null;
   await user.save({ fields: ['otp', 'otpExpiresAt'] });
+  const loginSession = await sessionService.activateSession(user, req);
 
   const tokens = jwtUtils.generateTokens(user.id, {
     email: user.email,
-    role: user.role
+    role: user.role,
+    sessionId: loginSession.id
   });
-  return ResponseHandler.success(res, { user, tokens }, 'Login successful');
+  return ResponseHandler.success(res, { user, tokens, sessionId: loginSession.id, newDevice: loginSession.isNewDevice }, 'Login successful');
 });
 
 /**
@@ -179,7 +215,8 @@ const refreshToken = asyncHandler(async (req, res) => {
     }
     const newTokens = jwtUtils.generateTokens(user.id, {
       email: user.email,
-      role: user.role
+      role: user.role,
+      sessionId: decoded.sessionId
     });
     return ResponseHandler.success(res, newTokens, 'Token refreshed', 200);
   } catch (error) {
@@ -272,20 +309,35 @@ const setPassword = asyncHandler(async (req, res) => {
     throw new UnauthorizedError('Activation token has expired');
   }
 
-  const existingUser = await User.findOne({ where: { email: application.email } });
-  if (existingUser) {
-    throw new ConflictError('User already exists for this application');
-  }
-
   const hashedPassword = await hashPassword(newPassword);
-  const user = await User.create({
+  const existingUser = await User.findOne({ where: { email: application.email } });
+  const user = existingUser || await User.create({
     name: application.name,
     email: application.email,
     phone: application.phone,
     password: hashedPassword,
+    nationalId: application.nationalId,
+    kraPin: application.kraPin,
+    occupation: application.occupation,
+    address: application.address,
     role: 'MEMBER',
     isVerified: true
   });
+
+  if (existingUser) {
+    existingUser.password = hashedPassword;
+    existingUser.role = 'MEMBER';
+    existingUser.isVerified = true;
+    existingUser.nationalId = existingUser.nationalId || application.nationalId;
+    existingUser.kraPin = existingUser.kraPin || application.kraPin;
+    existingUser.occupation = existingUser.occupation || application.occupation;
+    existingUser.address = existingUser.address || application.address;
+    await existingUser.save({
+      fields: ['password', 'role', 'isVerified', 'nationalId', 'kraPin', 'occupation', 'address']
+    });
+  }
+
+  await ensureMemberRecords(user, application);
 
   application.activationToken = null;
   application.activationTokenExpiresAt = null;
@@ -336,6 +388,7 @@ const verifyOTP = asyncHandler(async (req, res) => {
   user.otp = null;
   user.otpExpiresAt = null;
   await user.save();
+  await ensureMemberRecords(user);
 
   const tokens = jwtUtils.generateTokens(user.id, {
     email: user.email,
@@ -381,7 +434,17 @@ const resendOTP = asyncHandler(async (req, res) => {
  * =========================
  */
 const logoutUser = asyncHandler(async (req, res) => {
+  const sessionId = req.body?.sessionId || req.sessionId || null;
+  const userId = req.user?.id;
+  if (sessionId && userId) {
+    await sessionService.logoutSession(sessionId, userId);
+  }
   return ResponseHandler.success(res, null, 'Logged out');
+});
+
+const getSessions = asyncHandler(async (req, res) => {
+  const sessions = await sessionService.listSessions(req.user.id, req.sessionId);
+  return ResponseHandler.success(res, sessions, 'Sessions retrieved successfully', 200);
 });
 
 /**
@@ -405,5 +468,6 @@ module.exports = {
   setPassword,
   verifyOTP,
   resendOTP,
-  logoutUser
+  logoutUser,
+  getSessions
 };
