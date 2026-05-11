@@ -19,11 +19,11 @@ const sendOTP = async (email, metadata = {}) => {
   });
 
   if (error) {
-    console.error('Supabase OTP failed:', error.message);
+    console.error('[AUTH] Supabase OTP failed', { message: error.message });
     throw new Error(error.message);
   }
 
-  console.log(`✅ OTP sent to ${email}`);
+  console.info('[AUTH] OTP email sent');
 };
 
 module.exports = { sendOTP };

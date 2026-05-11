@@ -18,21 +18,18 @@ const sendOTP = async (email) => {
       }
     });
 
-    console.log(
-      'Supabase OTP response:',
-      JSON.stringify(data, null, 2)
-    );
+    console.debug('[AUTH] Supabase OTP response received');
 
     if (error) {
-      console.error('Supabase OTP error:', error);
+      console.error('[AUTH] Supabase OTP error', { message: error.message });
       throw new Error(error.message);
     }
 
-    console.log(`✅ OTP email sent to ${email}`);
+    console.info('[AUTH] OTP email sent');
 
     return data;
   } catch (err) {
-    console.error('Failed to send OTP:', err.message);
+    console.error('[AUTH] Failed to send OTP', { message: err.message });
     throw err;
   }
 };

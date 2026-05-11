@@ -55,12 +55,12 @@ const sendOTPEmail = async (email, otp) => {
       `
     });
 
-    console.log('✅ Email sent:', info.messageId);
+    console.info('[AUTH] Email sent', { messageId: info.messageId });
 
     return info;
 
   } catch (error) {
-    console.error('Email send error:', error);
+    console.error('[AUTH] Email send error', { message: error.message });
     throw error;
   }
 };

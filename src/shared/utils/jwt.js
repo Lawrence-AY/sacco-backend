@@ -31,12 +31,13 @@ const generateAccessToken = (userId, additionalData = {}) => {
  * @param {string} userId - User ID
  * @returns {string} JWT refresh token
  */
-const generateRefreshToken = (userId) => {
+const generateRefreshToken = (userId, additionalData = {}) => {
   try {
     return jwt.sign(
       {
         id: userId,
-        type: 'refresh'
+        type: 'refresh',
+        ...additionalData
       },
       JWT_SECRET,
       { expiresIn: REFRESH_TOKEN_EXPIRE }
@@ -74,7 +75,7 @@ const verifyToken = (token) => {
 const generateTokens = (userId, additionalData = {}) => {
   return {
     accessToken: generateAccessToken(userId, additionalData),
-    refreshToken: generateRefreshToken(userId)
+    refreshToken: generateRefreshToken(userId, additionalData)
   };
 };
 

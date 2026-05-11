@@ -22,7 +22,7 @@ const adminRoutes = require('./features/admin/routes/adminRoutes');
 
 const applicationController = require('./features/applications/controllers/applicationController');
 
-const { loginUser, verifyLoginOTP, refreshToken, logoutUser, registerUser, verifyOTP, resendOTP, setPassword, protect, getSessions } = require('./shared/middleware/authMiddleware');
+const { loginUser, verifyLoginOTP, refreshToken, logoutUser, registerUser, verifyOTP, resendOTP, setPassword, protect, getSessions, revokeSession } = require('./shared/middleware/authMiddleware');
 
 const app = express();
 
@@ -31,7 +31,7 @@ app.use(cors({
   origin: process.env.CORS_ORIGIN || '*',
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Device-Id', 'X-Device-Name', 'X-Session-Id']
 }));
 
 // ============= BODY PARSING MIDDLEWARE =============
@@ -72,6 +72,7 @@ app.post('/api/auth/refresh', refreshToken);
 app.post('/api/auth/logout', protect, logoutUser);
 app.post('/api/auth/set-password', setPassword);
 app.get('/api/auth/sessions', protect, getSessions);
+app.post('/api/auth/sessions/:sessionId/revoke', protect, revokeSession);
 
 // ============= API ROUTES =============
 app.use('/api/roles', roleRoutes);

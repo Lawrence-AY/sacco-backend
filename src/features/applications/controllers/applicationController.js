@@ -99,7 +99,7 @@ const checkStkStatus = asyncHandler(async (req, res) => {
     .maybeSingle();
 
   if (error) {
-    console.error('Supabase error:', error);
+    console.error('[APPLICATION] Failed to fetch payment status', { message: error.message });
     throw new Error('Failed to fetch payment status');
   }
   
@@ -117,7 +117,7 @@ const verifyPayment = asyncHandler(async (req, res) => {
   const { id } = req.params;
   let { paymentReference, phone, checkoutRequestId } = req.body;
 
-  console.log(`[Verify] Checking App ID: ${id}`);
+  console.info('[APPLICATION] Payment verification requested');
 
   // 1. Resolve missing details using checkoutRequestId if needed
   if ((!paymentReference || !phone) && checkoutRequestId) {

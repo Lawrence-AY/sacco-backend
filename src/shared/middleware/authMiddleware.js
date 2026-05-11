@@ -19,6 +19,21 @@ const User = require('../../models/user.model');
 const MembershipApplication = require('../../models/membershipApplication.model');
 const db = require('../../models');
 
+const serializeUser = (user) => {
+  if (!user) return null;
+  const source = typeof user.toJSON === 'function' ? user.toJSON() : { ...user };
+  [
+    'password',
+    'otp',
+    'otpExpiresAt',
+    'passwordResetToken',
+    'passwordResetExpires'
+  ].forEach((field) => {
+    delete source[field];
+  });
+  return source;
+};
+
 const ensureMemberRecords = async (user, source = {}) => {
   let member = await db.Member.findOne({ where: { userId: user.id } });
   if (!member) {
@@ -78,7 +93,10 @@ const protect = asyncHandler(async (req, res, next) => {
     req.user = user;
     req.sessionId = decoded.sessionId || req.headers['x-session-id'] || null;
     if (req.sessionId) {
-      sessionService.touchSession(req.sessionId, user.id).catch(() => {});
+      const session = await sessionService.touchSession(req.sessionId, user.id);
+      if (!session) {
+        throw new UnauthorizedError('This login session has expired or was revoked');
+      }
     }
     next();
   } catch (error) {
@@ -187,11 +205,14 @@ const verifyLoginOTP = asyncHandler(async (req, res) => {
   const loginSession = await sessionService.activateSession(user, req);
 
   const tokens = jwtUtils.generateTokens(user.id, {
-    email: user.email,
     role: user.role,
     sessionId: loginSession.id
   });
-  return ResponseHandler.success(res, { user, tokens, sessionId: loginSession.id, newDevice: loginSession.isNewDevice }, 'Login successful');
+  return ResponseHandler.success(
+    res,
+    { user: serializeUser(user), tokens, sessionId: loginSession.id, newDevice: loginSession.isNewDevice },
+    'Login successful'
+  );
 });
 
 /**
@@ -213,8 +234,13 @@ const refreshToken = asyncHandler(async (req, res) => {
     if (!user) {
       throw new UnauthorizedError('User not found');
     }
+    if (decoded.sessionId) {
+      const session = await sessionService.assertActiveSession(decoded.sessionId, user.id);
+      if (!session) {
+        throw new UnauthorizedError('This login session has expired or was revoked');
+      }
+    }
     const newTokens = jwtUtils.generateTokens(user.id, {
-      email: user.email,
       role: user.role,
       sessionId: decoded.sessionId
     });
@@ -346,7 +372,7 @@ const setPassword = asyncHandler(async (req, res) => {
   return ResponseHandler.success(
     res,
     {
-      user: {
+      user: serializeUser({
         id: user.id,
         firstName: user.firstName,
         lastName: user.lastName,
@@ -354,7 +380,7 @@ const setPassword = asyncHandler(async (req, res) => {
         email: user.email,
         phone: user.phone,
         role: user.role
-      }
+      })
     },
     'Password set and account activated successfully',
     200
@@ -391,11 +417,10 @@ const verifyOTP = asyncHandler(async (req, res) => {
   await ensureMemberRecords(user);
 
   const tokens = jwtUtils.generateTokens(user.id, {
-    email: user.email,
     role: user.role
   });
 
-  return ResponseHandler.success(res, { user, tokens }, 'Email verified successfully');
+  return ResponseHandler.success(res, { user: serializeUser(user), tokens }, 'Email verified successfully');
 });
 
 /**
@@ -447,6 +472,19 @@ const getSessions = asyncHandler(async (req, res) => {
   return ResponseHandler.success(res, sessions, 'Sessions retrieved successfully', 200);
 });
 
+const revokeSession = asyncHandler(async (req, res) => {
+  const sessionId = req.params.sessionId;
+  if (!sessionId) {
+    throw new ValidationError('Session ID is required');
+  }
+  if (sessionId === req.sessionId) {
+    throw new ValidationError('Use logout to end the current session');
+  }
+  await sessionService.revokeSession(sessionId, req.user.id);
+  const sessions = await sessionService.listSessions(req.user.id, req.sessionId);
+  return ResponseHandler.success(res, sessions, 'Session revoked successfully', 200);
+});
+
 /**
  * =========================
  * EXPORTS
@@ -469,5 +507,6 @@ module.exports = {
   verifyOTP,
   resendOTP,
   logoutUser,
-  getSessions
+  getSessions,
+  revokeSession
 };

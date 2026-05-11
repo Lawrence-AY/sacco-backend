@@ -14,7 +14,7 @@ const sequelize = new Sequelize(dbUrl, {
       rejectUnauthorized: false
     }
   },
-  logging: process.env.NODE_ENV === 'development' ? console.log : false
+  logging: process.env.DB_LOGGING === 'true' ? (sql) => console.debug('[DB]', String(sql).replace(/\s+/g, ' ').trim()) : false
 });
 
 module.exports = sequelize;

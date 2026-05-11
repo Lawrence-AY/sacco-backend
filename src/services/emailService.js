@@ -23,7 +23,7 @@ async function sendApplicationConfirmationEmail(email, name, applicationId) {
 
   if (error) throw error;
 
-  console.log(`📩 Confirmation email triggered for ${email}`);
+  console.info('[APPLICATION] Confirmation email triggered', { applicationId });
   return data;
 }
 
