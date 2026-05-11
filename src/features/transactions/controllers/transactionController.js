@@ -1,58 +1,69 @@
 const transactionService = require('../services/transactionService');
+const asyncHandler = require('../../../shared/utils/asyncHandler');
+const ResponseHandler = require('../../../shared/utils/response');
+const { NotFoundError, ValidationError } = require('../../../shared/utils/errors');
 
-const getAllTransactions = async (req, res) => {
-  try {
-    const transactions = await transactionService.getAllTransactions();
-    res.json(transactions);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-};
+/**
+ * Get all transactions
+ * @route   GET /api/transactions
+ * @access  Private
+ */
+const getAllTransactions = asyncHandler(async (req, res) => {
+  const transactions = await transactionService.getAllTransactions();
+  return ResponseHandler.success(res, transactions, 'Transactions retrieved successfully', 200);
+});
 
-const getTransactionById = async (req, res) => {
-  try {
-    const transaction = await transactionService.getTransactionById(req.params.id);
-    if (!transaction) {
-      return res.status(404).json({ error: 'Transaction not found' });
-    }
-    res.json(transaction);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+/**
+ * Get transaction by ID
+ * @route   GET /api/transactions/:id
+ * @access  Private
+ */
+const getTransactionById = asyncHandler(async (req, res) => {
+  const transaction = await transactionService.getTransactionById(req.params.id);
+  if (!transaction) {
+    throw new NotFoundError('Transaction not found');
   }
-};
+  return ResponseHandler.success(res, transaction, 'Transaction retrieved successfully', 200);
+});
 
-const createTransaction = async (req, res) => {
-  try {
-    const transaction = await transactionService.createTransaction(req.body);
-    res.status(201).json(transaction);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+/**
+ * Create new transaction
+ * @route   POST /api/transactions
+ * @access  Private
+ */
+const createTransaction = asyncHandler(async (req, res) => {
+  if (!req.body.amount || !req.body.type) {
+    throw new ValidationError('Amount and type are required');
   }
-};
+  const transaction = await transactionService.createTransaction(req.body);
+  return ResponseHandler.created(res, transaction, 'Transaction created successfully');
+});
 
-const updateTransaction = async (req, res) => {
-  try {
-    const transaction = await transactionService.updateTransaction(req.params.id, req.body);
-    if (!transaction) {
-      return res.status(404).json({ error: 'Transaction not found' });
-    }
-    res.json(transaction);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+/**
+ * Update transaction
+ * @route   PUT /api/transactions/:id
+ * @access  Private
+ */
+const updateTransaction = asyncHandler(async (req, res) => {
+  const transaction = await transactionService.updateTransaction(req.params.id, req.body);
+  if (!transaction) {
+    throw new NotFoundError('Transaction not found');
   }
-};
+  return ResponseHandler.success(res, transaction, 'Transaction updated successfully', 200);
+});
 
-const deleteTransaction = async (req, res) => {
-  try {
-    const result = await transactionService.deleteTransaction(req.params.id);
-    if (!result) {
-      return res.status(404).json({ error: 'Transaction not found' });
-    }
-    res.status(204).send();
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+/**
+ * Delete transaction
+ * @route   DELETE /api/transactions/:id
+ * @access  Private
+ */
+const deleteTransaction = asyncHandler(async (req, res) => {
+  const result = await transactionService.deleteTransaction(req.params.id);
+  if (!result) {
+    throw new NotFoundError('Transaction not found');
   }
-};
+  return ResponseHandler.noContent(res);
+});
 
 module.exports = {
   getAllTransactions,

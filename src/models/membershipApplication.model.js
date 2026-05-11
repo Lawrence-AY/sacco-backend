@@ -10,19 +10,30 @@ const MembershipApplication = sequelize.define('MembershipApplication', {
   },
   name: DataTypes.STRING,
   nationalId: DataTypes.STRING,
+  kraPin: DataTypes.STRING,
   phone: DataTypes.STRING,
   email: DataTypes.STRING,
+  address: DataTypes.STRING,
+  occupation: DataTypes.STRING,
+  idDocumentName: DataTypes.STRING,
+  passportPhotoName: DataTypes.STRING,
   type: {
     type: DataTypes.ENUM('EMPLOYEE', 'NON_EMPLOYEE')
   },
   status: {
-    type: DataTypes.ENUM('PENDING', 'APPROVED', 'REJECTED'),
-    defaultValue: 'PENDING'
+    type: DataTypes.ENUM('PENDING_PAYMENT', 'PENDING_APPROVAL', 'APPROVED', 'REJECTED'),
+    defaultValue: 'PENDING_PAYMENT'
   },
   feePaid: {
     type: DataTypes.BOOLEAN,
     defaultValue: false
   },
+  paymentVerifiedAt: DataTypes.DATE,
+  paymentReference: DataTypes.STRING,
+  paymentPhone: DataTypes.STRING,
+  paymentConfirmedAt: DataTypes.DATE,
+  activationToken: DataTypes.STRING,
+  activationTokenExpiresAt: DataTypes.DATE,
   consentGiven: {
     type: DataTypes.BOOLEAN,
     defaultValue: false

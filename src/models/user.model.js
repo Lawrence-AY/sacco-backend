@@ -1,3 +1,4 @@
+// src/models/user.model.js
 const { DataTypes } = require('sequelize');
 const sequelize = require('../shared/config/db');
 
@@ -7,6 +8,8 @@ const User = sequelize.define('User', {
     defaultValue: DataTypes.UUIDV4,
     primaryKey: true
   },
+  firstName: DataTypes.STRING,
+  lastName: DataTypes.STRING,
   name: DataTypes.STRING,
   email: {
     type: DataTypes.STRING,
@@ -14,8 +17,29 @@ const User = sequelize.define('User', {
   },
   phone: DataTypes.STRING,
   password: DataTypes.STRING,
+  nationalId: DataTypes.STRING,
+  kraPin: DataTypes.STRING,
+  occupation: DataTypes.STRING,
+  address: DataTypes.TEXT,
+  idDocumentUrl: DataTypes.STRING,
+  passportPhotoUrl: DataTypes.STRING,
   role: {
-    type: DataTypes.ENUM('ADMIN', 'FINANCE', 'MEMBER')
+    type: DataTypes.ENUM('PENDING', 'ADMIN', 'FINANCE', 'MEMBER'),
+    defaultValue: 'PENDING'
+  },
+  isVerified: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false
+  },
+  otp: DataTypes.STRING(8),
+  otpExpiresAt: DataTypes.DATE,
+  passwordResetToken: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
+  passwordResetExpires: {
+    type: DataTypes.DATE,
+    allowNull: true
   },
   consentGiven: {
     type: DataTypes.BOOLEAN,
@@ -23,7 +47,15 @@ const User = sequelize.define('User', {
   },
   consentGivenAt: DataTypes.DATE
 }, {
-  timestamps: trueb
+  timestamps: true,
+  indexes: [
+    {
+      fields: ['email']
+    },
+    {
+      fields: ['passwordResetToken']
+    }
+  ]
 });
 
 module.exports = User;

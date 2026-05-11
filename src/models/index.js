@@ -1,5 +1,3 @@
-const sequelize = require('../shared/config/db');
-
 const User = require('./user.model');
 const Member = require('./member.model');
 const Role = require('./role.model');
@@ -12,6 +10,9 @@ const Dividend = require('./dividend.model');
 const SystemConfig = require('./systemConfig.model');
 const MembershipApplication = require('./membershipApplication.model');
 const SalaryDeduction = require('./salaryDeduction.model');
+const LoginSession = require('./loginSession.model');
+
+const sequelize = require('../shared/config/db');
 
 // Associations
 User.hasOne(Member, { foreignKey: 'userId' });
@@ -19,6 +20,9 @@ Member.belongsTo(User, { foreignKey: 'userId' });
 
 User.hasMany(MembershipApplication, { foreignKey: 'approvedById', as: 'approvals' });
 MembershipApplication.belongsTo(User, { foreignKey: 'approvedById', as: 'approvedBy' });
+
+User.hasMany(LoginSession, { foreignKey: 'userId' });
+LoginSession.belongsTo(User, { foreignKey: 'userId' });
 
 Member.hasOne(SavingsAccount, { foreignKey: 'memberId' });
 SavingsAccount.belongsTo(Member, { foreignKey: 'memberId' });
@@ -61,7 +65,8 @@ const db = {
   Dividend,
   SystemConfig,
   MembershipApplication,
-  SalaryDeduction
+  SalaryDeduction,
+  LoginSession
 };
 
 module.exports = db;
