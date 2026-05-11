@@ -8,6 +8,33 @@ const getClientIp = (req) => {
   return req.ip || req.socket?.remoteAddress || null;
 };
 
+const getHeaderValue = (req, headerName) => {
+  const value = req.headers[headerName.toLowerCase()];
+  if (Array.isArray(value)) return value[0];
+  return value ? String(value) : '';
+};
+
+const decodeHeaderLocation = (value) => {
+  if (!value) return '';
+  try {
+    return decodeURIComponent(String(value).replace(/\+/g, ' '));
+  } catch {
+    return String(value);
+  }
+};
+
+const getLoginLocation = (req) => {
+  const city = decodeHeaderLocation(getHeaderValue(req, 'x-vercel-ip-city'));
+  const region = decodeHeaderLocation(getHeaderValue(req, 'x-vercel-ip-country-region'));
+  const country =
+    decodeHeaderLocation(getHeaderValue(req, 'x-vercel-ip-country')) ||
+    decodeHeaderLocation(getHeaderValue(req, 'cf-ipcountry')) ||
+    decodeHeaderLocation(getHeaderValue(req, 'cloudfront-viewer-country'));
+
+  const parts = [city, region, country].filter(Boolean);
+  return parts.length ? parts.join(', ') : 'Location unavailable';
+};
+
 const getDeviceInfo = (req) => {
   const userAgent = req.headers['user-agent'] || 'Unknown browser';
   return {
@@ -15,7 +42,7 @@ const getDeviceInfo = (req) => {
     deviceName: req.headers['x-device-name'] || userAgent,
     userAgent,
     ipAddress: getClientIp(req),
-    location: req.headers['x-device-location'] || 'Unknown location'
+    location: getLoginLocation(req)
   };
 };
 
@@ -85,6 +112,22 @@ const activateSession = async (user, req) => {
   });
 
   const record = session || await createOtpSession(user, req);
+  await db.LoginSession.update(
+    {
+      status: 'LOGGED_OUT',
+      event: 'Revoked by new device sign-in',
+      logoutAt: new Date(),
+      lastActiveAt: new Date()
+    },
+    {
+      where: {
+        userId: user.id,
+        id: { [Op.ne]: record.id },
+        status: 'ACTIVE'
+      }
+    }
+  );
+
   await record.update({
     ...device,
     status: 'ACTIVE',
@@ -110,11 +153,33 @@ const touchSession = async (sessionId, userId) => {
   return session;
 };
 
+const assertActiveSession = async (sessionId, userId) => {
+  if (!sessionId) return null;
+  const session = await db.LoginSession.findOne({ where: { id: sessionId, userId } });
+  if (!session || session.status !== 'ACTIVE') {
+    return null;
+  }
+  return session;
+};
+
 const logoutSession = async (sessionId, userId) => {
   if (!sessionId) return null;
   const session = await db.LoginSession.findOne({ where: { id: sessionId, userId } });
   if (!session) return null;
   await session.update({ status: 'LOGGED_OUT', event: 'Logout', logoutAt: new Date(), lastActiveAt: new Date() });
+  return session;
+};
+
+const revokeSession = async (sessionId, userId) => {
+  if (!sessionId) return null;
+  const session = await db.LoginSession.findOne({ where: { id: sessionId, userId } });
+  if (!session || session.status !== 'ACTIVE') return session;
+  await session.update({
+    status: 'LOGGED_OUT',
+    event: 'Revoked by account owner',
+    logoutAt: new Date(),
+    lastActiveAt: new Date()
+  });
   return session;
 };
 
@@ -144,7 +209,9 @@ module.exports = {
   getDeviceInfo,
   createOtpSession,
   activateSession,
+  assertActiveSession,
   touchSession,
   logoutSession,
+  revokeSession,
   listSessions
 };

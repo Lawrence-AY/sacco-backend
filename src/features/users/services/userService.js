@@ -1,10 +1,12 @@
 const db = require('../../../models');
 const { DatabaseError } = require('../../../shared/utils/errors');
 
+const privateUserFields = ['password', 'otp', 'otpExpiresAt', 'passwordResetToken', 'passwordResetExpires'];
+
 const getAllUsers = async () => {
   try {
     return await db.User.findAll({
-      attributes: { exclude: ['password'] },
+      attributes: { exclude: privateUserFields },
       include: [{
         model: db.Member,
         attributes: ['id', 'memberNumber', 'type', 'nationalId', 'isVerified'],
@@ -19,7 +21,7 @@ const getAllUsers = async () => {
 const getUserById = async (id) => {
   try {
     return await db.User.findByPk(id, {
-      attributes: { exclude: ['password'] },
+      attributes: { exclude: privateUserFields },
       include: [{
         model: db.Member,
         attributes: ['id', 'memberNumber', 'type', 'nationalId', 'isVerified'],
@@ -56,7 +58,7 @@ const updateUser = async (id, data) => {
     });
 
     const refreshedUser = await db.User.findByPk(id, {
-      attributes: { exclude: ['password'] },
+      attributes: { exclude: privateUserFields },
       include: [{
         model: db.Member,
         attributes: ['id', 'memberNumber', 'type', 'nationalId', 'isVerified'],
@@ -64,7 +66,7 @@ const updateUser = async (id, data) => {
     });
 
     const result = refreshedUser.toJSON();
-    delete result.password;
+    privateUserFields.forEach((field) => delete result[field]);
     return result;
   } catch (error) {
     throw new DatabaseError('Failed to update user', error.message);
