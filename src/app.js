@@ -42,7 +42,7 @@ app.use(express.json({
   limit: '10kb',
   verify: (req, res, buffer) => {
     req.rawBody = buffer?.length ? buffer.toString('utf8') : '';
-  }
+  } 
 }));
 app.use(express.urlencoded({ limit: '10kb', extended: true }));
 
