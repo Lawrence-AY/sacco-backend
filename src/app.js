@@ -1,10 +1,13 @@
 const express = require('express');
 const cors = require('cors');
-const dotenv = require('dotenv');
 
-dotenv.config();
+// NOTE: dotenv is loaded in index.js BEFORE this module is imported
+// Do NOT call dotenv.config() here to avoid timing issues
 
 const { errorHandler, notFoundHandler } = require('./shared/middleware/errorMiddleware');
+
+// Import email config utility (for diagnostics only - validates lazily)
+const { getConfigStatus, emailLogger } = require('./shared/config/emailConfig');
 
 const roleRoutes = require('./features/roles/routes/roleRoutes');
 const transactionRoutes = require('./features/transactions/routes/transactionRoutes');
@@ -58,6 +61,34 @@ app.get('/health', (req, res) => {
     message: 'Server is running',
     timestamp: new Date().toISOString(),
     uptime: process.uptime()
+  });
+});
+
+// ============= DIAGNOSTICS ENDPOINT (Dev/Staging) =============
+app.get('/api/diagnostics', (req, res) => {
+  // Only allow in non-production or with authorization
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(403).json({
+      success: false,
+      message: 'Diagnostics endpoint not available in production'
+    });
+  }
+
+  const emailStatus = getConfigStatus();
+
+  res.status(200).json({
+    success: true,
+    environment: {
+      NODE_ENV: process.env.NODE_ENV,
+      PORT: process.env.PORT || 3000,
+      CORS_ORIGIN: process.env.CORS_ORIGIN || 'not set'
+    },
+    email: emailStatus,
+    system: {
+      uptime: process.uptime(),
+      memoryUsage: process.memoryUsage(),
+      timestamp: new Date().toISOString()
+    }
   });
 });
 
