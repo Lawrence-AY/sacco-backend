@@ -35,7 +35,8 @@ const FINANCIAL_FIELDS = [
 const sanitizeBase = (data) => {
   if (!data) return null;
 
-  const sanitized = { ...data };
+  const source = typeof data.toJSON === 'function' ? data.toJSON() : data;
+  const sanitized = { ...source };
 
   // Remove sensitive fields
   SENSITIVE_FIELDS.forEach(field => {

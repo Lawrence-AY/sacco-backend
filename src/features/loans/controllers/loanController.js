@@ -2,6 +2,7 @@ const loanService = require('../services/loanService');
 const asyncHandler = require('../../../shared/utils/asyncHandler');
 const ResponseHandler = require('../../../shared/utils/response');
 const { NotFoundError, ValidationError } = require('../../../shared/utils/errors');
+const { LoanDTO } = require('../../../shared/utils/dtos');
 
 /**
  * Get all loans
@@ -10,7 +11,7 @@ const { NotFoundError, ValidationError } = require('../../../shared/utils/errors
  */
 const getLoans = asyncHandler(async (req, res) => {
   const loans = await loanService.getAllLoans();
-  return ResponseHandler.success(res, loans, 'Loans retrieved successfully', 200);
+  return ResponseHandler.success(res, loans.map((loan) => LoanDTO.basic(loan, req.user)), 'Loans retrieved successfully', 200);
 });
 
 /**
@@ -23,7 +24,7 @@ const getLoanById = asyncHandler(async (req, res) => {
   if (!loan) {
     throw new NotFoundError('Loan not found');
   }
-  return ResponseHandler.success(res, loan, 'Loan retrieved successfully', 200);
+  return ResponseHandler.success(res, LoanDTO.basic(loan, req.user), 'Loan retrieved successfully', 200);
 });
 
 /**
@@ -36,7 +37,7 @@ const createLoan = asyncHandler(async (req, res) => {
     throw new ValidationError('MemberId, amount, and type are required');
   }
   const loan = await loanService.createLoan(req.body);
-  return ResponseHandler.created(res, loan, 'Loan created successfully');
+  return ResponseHandler.created(res, LoanDTO.basic(loan, req.user), 'Loan created successfully');
 });
 
 /**
@@ -46,7 +47,10 @@ const createLoan = asyncHandler(async (req, res) => {
  */
 const updateLoan = asyncHandler(async (req, res) => {
   const loan = await loanService.updateLoan(req.params.id, req.body);
-  return ResponseHandler.success(res, loan, 'Loan updated successfully', 200);
+  if (!loan) {
+    throw new NotFoundError('Loan not found');
+  }
+  return ResponseHandler.success(res, LoanDTO.basic(loan, req.user), 'Loan updated successfully', 200);
 });
 
 /**
@@ -56,7 +60,7 @@ const updateLoan = asyncHandler(async (req, res) => {
  */
 const approveLoan = asyncHandler(async (req, res) => {
   const loan = await loanService.updateLoanStatus(req.params.id, 'APPROVED');
-  return ResponseHandler.success(res, loan, 'Loan approved successfully', 200);
+  return ResponseHandler.success(res, LoanDTO.basic(loan, req.user), 'Loan approved successfully', 200);
 });
 
 /**
@@ -69,7 +73,7 @@ const rejectLoan = asyncHandler(async (req, res) => {
     throw new ValidationError('Rejection reason is required');
   }
   const loan = await loanService.updateLoanStatus(req.params.id, 'REJECTED', req.body.reason);
-  return ResponseHandler.success(res, loan, 'Loan rejected successfully', 200);
+  return ResponseHandler.success(res, LoanDTO.basic(loan, req.user), 'Loan rejected successfully', 200);
 });
 
 /**

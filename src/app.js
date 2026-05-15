@@ -3,12 +3,17 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
+const compression = require('compression');
+const cookieParser = require('cookie-parser');
 
 // NOTE: dotenv is loaded in index.js BEFORE this module is imported
 // Do NOT call dotenv.config() here to avoid timing issues
 
 const logger = require('./shared/utils/logger');
 const { errorHandler, notFoundHandler, timeoutMiddleware } = require('./shared/middleware/errorMiddleware');
+const auditLogger = require('./shared/middleware/auditLogger');
+const security = require('./shared/config/security');
+const { validate, schemas } = require('./shared/middleware/zodValidation');
 
 // Import email config utility (for diagnostics only - validates lazily)
 const { getConfigStatus, emailLogger } = require('./shared/config/emailConfig');
@@ -61,6 +66,8 @@ app.use(helmet({
   xssFilter: true,
   referrerPolicy: { policy: "strict-origin-when-cross-origin" }
 }));
+
+app.use(compression());
 
 // ============= RATE LIMITING =============
 const limiter = rateLimit({
@@ -130,10 +137,10 @@ const corsOptions = {
       'https://ayedos-webapp.vercel.app'
     ].filter(Boolean);
 
-    const allowAllOrigins = allowedOrigins.includes('*');
+    const allowAllOrigins = process.env.NODE_ENV !== 'production' && allowedOrigins.includes('*');
     const allowVercelPreview = /^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(origin);
 
-    if (allowAllOrigins || allowVercelPreview || allowedOrigins.includes(origin)) {
+    if (allowAllOrigins || (!security.isProduction && allowVercelPreview) || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
       logger.warn('CORS blocked request', { origin, endpoint: 'CORS' });
@@ -224,6 +231,8 @@ app.use(express.json({
   }
 }));
 app.use(express.urlencoded({ limit: '10kb', extended: true }));
+app.use(cookieParser());
+app.use(auditLogger);
 
 // ============= HEALTH CHECK ENDPOINTS =============
 
@@ -341,12 +350,12 @@ app.get('/api/diagnostics', (req, res) => {
 
 // ============= AUTH ROUTES =============
 app.use('/api/auth', authRoutes);
-app.post('/api/auth/register', registerUser);
-app.post('/api/auth/verify-otp', verifyOTP);
-app.post('/api/auth/resend-otp', resendOTP);
-app.post('/api/auth/login', loginUser);
-app.post('/api/auth/login/verify-otp', verifyLoginOTP);
-app.post('/api/auth/refresh', refreshToken);
+app.post('/api/auth/register', validate(schemas.register), registerUser);
+app.post('/api/auth/verify-otp', validate(schemas.otp), verifyOTP);
+app.post('/api/auth/resend-otp', validate(schemas.emailOnly), resendOTP);
+app.post('/api/auth/login', validate(schemas.login), loginUser);
+app.post('/api/auth/login/verify-otp', validate(schemas.otp), verifyLoginOTP);
+app.post('/api/auth/refresh', validate(schemas.refresh), refreshToken);
 app.post('/api/auth/logout', protect, logoutUser);
 app.post('/api/auth/set-password', setPassword);
 app.get('/api/auth/sessions', protect, getSessions);

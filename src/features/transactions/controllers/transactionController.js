@@ -2,6 +2,7 @@ const transactionService = require('../services/transactionService');
 const asyncHandler = require('../../../shared/utils/asyncHandler');
 const ResponseHandler = require('../../../shared/utils/response');
 const { NotFoundError, ValidationError } = require('../../../shared/utils/errors');
+const { TransactionDTO } = require('../../../shared/utils/dtos');
 
 /**
  * Get all transactions
@@ -10,7 +11,7 @@ const { NotFoundError, ValidationError } = require('../../../shared/utils/errors
  */
 const getAllTransactions = asyncHandler(async (req, res) => {
   const transactions = await transactionService.getAllTransactions();
-  return ResponseHandler.success(res, transactions, 'Transactions retrieved successfully', 200);
+  return ResponseHandler.success(res, transactions.map((item) => TransactionDTO.basic(item, req.user)), 'Transactions retrieved successfully', 200);
 });
 
 /**
@@ -23,7 +24,7 @@ const getTransactionById = asyncHandler(async (req, res) => {
   if (!transaction) {
     throw new NotFoundError('Transaction not found');
   }
-  return ResponseHandler.success(res, transaction, 'Transaction retrieved successfully', 200);
+  return ResponseHandler.success(res, TransactionDTO.basic(transaction, req.user), 'Transaction retrieved successfully', 200);
 });
 
 /**
@@ -36,7 +37,7 @@ const createTransaction = asyncHandler(async (req, res) => {
     throw new ValidationError('Amount and type are required');
   }
   const transaction = await transactionService.createTransaction(req.body);
-  return ResponseHandler.created(res, transaction, 'Transaction created successfully');
+  return ResponseHandler.created(res, TransactionDTO.basic(transaction, req.user), 'Transaction created successfully');
 });
 
 /**
@@ -49,7 +50,7 @@ const updateTransaction = asyncHandler(async (req, res) => {
   if (!transaction) {
     throw new NotFoundError('Transaction not found');
   }
-  return ResponseHandler.success(res, transaction, 'Transaction updated successfully', 200);
+  return ResponseHandler.success(res, TransactionDTO.basic(transaction, req.user), 'Transaction updated successfully', 200);
 });
 
 /**

@@ -35,6 +35,41 @@ const serializeUser = (user) => {
   return source;
 };
 
+const getCookieOptions = () => ({
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+  path: '/',
+});
+
+const setAuthCookies = (res, tokens, sessionId) => {
+  res.cookie('accessToken', tokens.accessToken, {
+    ...getCookieOptions(),
+    maxAge: 15 * 60 * 1000,
+  });
+  res.cookie('refreshToken', tokens.refreshToken, {
+    ...getCookieOptions(),
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+  if (sessionId) {
+    res.cookie('sessionId', sessionId, {
+      ...getCookieOptions(),
+      httpOnly: false,
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+  }
+};
+
+const clearAuthCookies = (res) => {
+  ['accessToken', 'refreshToken', 'sessionId'].forEach((name) => {
+    res.clearCookie(name, getCookieOptions());
+  });
+};
+
+const exposeTokensForEnvironment = (tokens) => {
+  return process.env.NODE_ENV === 'production' ? undefined : tokens;
+};
+
 const ensureMemberRecords = async (user, source = {}) => {
   let member = await db.Member.findOne({ where: { userId: user.id } });
   if (!member) {
@@ -72,7 +107,7 @@ const extractToken = (req) => {
   ) {
     return req.headers.authorization.substring(7);
   }
-  return null;
+  return req.cookies?.accessToken || null;
 };
 
 /**
@@ -110,12 +145,16 @@ const authorize = (allowedRoles = []) => {
     if (!req.user) {
       throw new UnauthorizedError('User not authenticated');
     }
-    if (!allowedRoles.includes(req.user.role)) {
+    const userRole = String(req.user.role || '').toUpperCase();
+    const normalizedAllowedRoles = allowedRoles.map((role) => String(role).toUpperCase());
+    if (userRole === 'SUPERADMIN' || normalizedAllowedRoles.includes(userRole)) {
+      return next();
+    }
+    {
       throw new ForbiddenError(
         `Access denied. Required roles: ${allowedRoles.join(', ')}`
       );
     }
-    next();
   };
 };
 
@@ -220,9 +259,15 @@ const verifyLoginOTP = asyncHandler(async (req, res) => {
     role: user.role,
     sessionId: loginSession.id
   });
+  setAuthCookies(res, tokens, loginSession.id);
   return ResponseHandler.success(
     res,
-    { user: serializeUser(user), tokens, sessionId: loginSession.id, newDevice: loginSession.isNewDevice },
+    {
+      user: serializeUser(user),
+      tokens: exposeTokensForEnvironment(tokens),
+      sessionId: loginSession.id,
+      newDevice: loginSession.isNewDevice
+    },
     'Login successful'
   );
 });
@@ -234,11 +279,12 @@ const verifyLoginOTP = asyncHandler(async (req, res) => {
  */
 const refreshToken = asyncHandler(async (req, res) => {
   const { refreshToken } = req.body || {};
-  if (!refreshToken) {
+  const token = refreshToken || req.cookies?.refreshToken;
+  if (!token) {
     throw new UnauthorizedError('Refresh token is required');
   }
   try {
-    const decoded = jwtUtils.verifyToken(refreshToken);
+    const decoded = jwtUtils.verifyToken(token);
     if (decoded.type !== 'refresh') {
       throw new UnauthorizedError('Invalid token type');
     }
@@ -256,7 +302,8 @@ const refreshToken = asyncHandler(async (req, res) => {
       role: user.role,
       sessionId: decoded.sessionId
     });
-    return ResponseHandler.success(res, newTokens, 'Token refreshed', 200);
+    setAuthCookies(res, newTokens, decoded.sessionId);
+    return ResponseHandler.success(res, exposeTokensForEnvironment(newTokens) || { refreshed: true }, 'Token refreshed', 200);
   } catch (error) {
     throw new UnauthorizedError('Failed to refresh token');
   }
@@ -431,8 +478,12 @@ const verifyOTP = asyncHandler(async (req, res) => {
   const tokens = jwtUtils.generateTokens(user.id, {
     role: user.role
   });
+  setAuthCookies(res, tokens, null);
 
-  return ResponseHandler.success(res, { user: serializeUser(user), tokens }, 'Email verified successfully');
+  return ResponseHandler.success(res, {
+    user: serializeUser(user),
+    tokens: exposeTokensForEnvironment(tokens)
+  }, 'Email verified successfully');
 });
 
 /**
@@ -476,6 +527,7 @@ const logoutUser = asyncHandler(async (req, res) => {
   if (sessionId && userId) {
     await sessionService.logoutSession(sessionId, userId);
   }
+  clearAuthCookies(res);
   return ResponseHandler.success(res, null, 'Logged out');
 });
 

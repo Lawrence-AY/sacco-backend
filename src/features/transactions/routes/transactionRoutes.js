@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../../../shared/middleware/authMiddleware');
+const { protect, authorize } = require('../../../shared/middleware/authMiddleware');
+const { validate, schemas } = require('../../../shared/middleware/zodValidation');
 
 // Import controllers
 const transactionController = require('../controllers/transactionController');
@@ -9,10 +10,10 @@ const transactionController = require('../controllers/transactionController');
 router.use(protect);
 
 // Routes
-router.get('/', transactionController.getAllTransactions);
-router.get('/:id', transactionController.getTransactionById);
-router.post('/', transactionController.createTransaction);
-router.put('/:id', transactionController.updateTransaction);
-router.delete('/:id', transactionController.deleteTransaction);
+router.get('/', authorize(['ADMIN', 'FINANCE', 'SUPERADMIN']), transactionController.getAllTransactions);
+router.get('/:id', authorize(['ADMIN', 'FINANCE', 'SUPERADMIN']), transactionController.getTransactionById);
+router.post('/', authorize(['ADMIN', 'FINANCE', 'SUPERADMIN']), validate(schemas.transaction), transactionController.createTransaction);
+router.put('/:id', authorize(['ADMIN', 'FINANCE', 'SUPERADMIN']), validate(schemas.transaction), transactionController.updateTransaction);
+router.delete('/:id', authorize(['ADMIN', 'SUPERADMIN']), transactionController.deleteTransaction);
 
 module.exports = router;

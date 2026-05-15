@@ -4,6 +4,7 @@ const deductionService = require('../../deductions/services/deductionService');
 const asyncHandler = require('../../../shared/utils/asyncHandler');
 const ResponseHandler = require('../../../shared/utils/response');
 const { ValidationError, NotFoundError } = require('../../../shared/utils/errors');
+const { LoanDTO } = require('../../../shared/utils/dtos');
 
 const buildTransactionDescription = (transaction) => {
   const pieces = [transaction.type];
@@ -172,7 +173,8 @@ const getLoanById = asyncHandler(async (req, res) => {
 
 const approveLoan = asyncHandler(async (req, res) => {
   const loan = await loanService.updateLoanStatus(req.params.loanId, 'APPROVED');
-  return ResponseHandler.success(res, loan, 'Loan approved successfully', 200);
+  if (!loan) throw new NotFoundError('Loan not found');
+  return ResponseHandler.success(res, LoanDTO.basic(loan, req.user), 'Loan approved successfully', 200);
 });
 
 const rejectLoan = asyncHandler(async (req, res) => {
@@ -180,12 +182,14 @@ const rejectLoan = asyncHandler(async (req, res) => {
     throw new ValidationError('Rejection reason is required');
   }
   const loan = await loanService.updateLoanStatus(req.params.loanId, 'REJECTED');
-  return ResponseHandler.success(res, loan, 'Loan rejected successfully', 200);
+  if (!loan) throw new NotFoundError('Loan not found');
+  return ResponseHandler.success(res, LoanDTO.basic(loan, req.user), 'Loan rejected successfully', 200);
 });
 
 const disburseLoan = asyncHandler(async (req, res) => {
   const loan = await loanService.updateLoanStatus(req.params.loanId, 'ACTIVE');
-  return ResponseHandler.success(res, loan, 'Loan disbursed successfully', 200);
+  if (!loan) throw new NotFoundError('Loan not found');
+  return ResponseHandler.success(res, LoanDTO.basic(loan, req.user), 'Loan disbursed successfully', 200);
 });
 
 const getAllShares = asyncHandler(async (req, res) => {
@@ -277,7 +281,8 @@ const updateDeduction = asyncHandler(async (req, res) => {
     throw new NotFoundError('Deduction not found');
   }
 
-  return ResponseHandler.success(res, deduction, 'Deduction updated successfully', 200);
+  const member = await db.Member.findByPk(deduction.memberId);
+  return ResponseHandler.success(res, formatDeduction(deduction, member), 'Deduction updated successfully', 200);
 });
 
 module.exports = {

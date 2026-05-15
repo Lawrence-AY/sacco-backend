@@ -9,6 +9,7 @@ const { createServer } = require('http');
 
 // Import logger first for startup logging
 const logger = require('./src/shared/utils/logger');
+const { validateEnvironment } = require('./src/shared/config/env');
 
 // Global error handlers - DO NOT EXIT PROCESS in production
 process.on('uncaughtException', (error) => {
@@ -76,6 +77,8 @@ async function startServer() {
       port: process.env.PORT || 3000,
       timestamp: new Date().toISOString()
     });
+
+    validateEnvironment();
 
     // Import app after env is loaded
     const app = require('./src/app');
