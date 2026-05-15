@@ -37,6 +37,11 @@ const { loginUser, verifyLoginOTP, refreshToken, logoutUser, registerUser, verif
 
 const app = express();
 
+const isLocalRequest = (req) => {
+  const ip = req.ip || req.socket?.remoteAddress || '';
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+};
+
 // ============= SECURITY MIDDLEWARE =============
 app.use(helmet({
   contentSecurityPolicy: {
@@ -67,7 +72,7 @@ const limiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => req.ip === '127.0.0.1' // Skip rate limiting for localhost
+  skip: (req) => req.method === 'OPTIONS' || isLocalRequest(req) // Skip preflight and localhost
 });
 
 app.use('/api/', limiter);
@@ -82,9 +87,17 @@ const authLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => req.method === 'OPTIONS' || isLocalRequest(req),
 });
 
-app.use('/api/auth/', authLimiter);
+app.use([
+  '/api/auth/login',
+  '/api/auth/register',
+  '/api/auth/verify-otp',
+  '/api/auth/resend-otp',
+  '/api/auth/forgot-password',
+  '/api/auth/reset-password',
+], authLimiter);
 
 // Stricter rate limiting for sensitive operations
 const sensitiveLimiter = rateLimit({
@@ -117,7 +130,10 @@ const corsOptions = {
       'https://ayedos-webapp.vercel.app'
     ].filter(Boolean);
 
-    if (allowedOrigins.includes(origin)) {
+    const allowAllOrigins = allowedOrigins.includes('*');
+    const allowVercelPreview = /^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(origin);
+
+    if (allowAllOrigins || allowVercelPreview || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
       logger.warn('CORS blocked request', { origin, endpoint: 'CORS' });
@@ -361,8 +377,9 @@ app.use((err, req, res, next) => {
     return next(err);
   }
 
-  // Log the error
-  logger.error('Unhandled error caught by global middleware:', {
+  // Log and pass through to the centralized error handler so custom error
+  // classes keep their intended status codes.
+  logger.error('Error forwarded to centralized handler:', {
     error: err.message,
     stack: err.stack,
     url: req.originalUrl,
@@ -371,16 +388,7 @@ app.use((err, req, res, next) => {
     userAgent: req.get('User-Agent')
   });
 
-  // Send error response
-  res.status(500).json({
-    success: false,
-    message: 'An unexpected error occurred',
-    timestamp: new Date().toISOString(),
-    ...(process.env.NODE_ENV === 'development' && {
-      error: err.message,
-      stack: err.stack
-    })
-  });
+  return next(err);
 });
 
 // ============= 404 & ERROR HANDLERS =============

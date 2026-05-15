@@ -1,6 +1,7 @@
 const bcrypt = require('bcrypt');
 const jwtUtils = require('../utils/jwt');
 const ResponseHandler = require('../utils/response');
+const logger = require('../utils/logger');
 const {
   UnauthorizedError,
   ForbiddenError,
@@ -11,7 +12,7 @@ const asyncHandler = require('../utils/asyncHandler');
 
 // 🔐 LOCAL OTP SYSTEM (configurable digit length)
 const { generateOTP } = require('../utils/generateOTP');  // default 6-digit
-const { sendOTPEmail } = require('../utils/sendOTPEmail');
+const sendOTPEmail = require('../utils/sendOTPEmail');
 const sessionService = require('../../services/sessionService');
 
 // Models
