@@ -128,19 +128,25 @@ const corsOptions = {
     // Allow requests with no origin (mobile apps, etc.)
     if (!origin) return callback(null, true);
 
-    const allowedOrigins = [
+    const configuredOrigins = [
       process.env.CORS_ORIGIN,
       process.env.FRONTEND_URL,
+    ]
+      .filter(Boolean)
+      .flatMap((value) => value.split(',').map((entry) => entry.trim()).filter(Boolean));
+
+    const allowedOrigins = [
+      ...configuredOrigins,
       'http://localhost:3000',
       'http://localhost:5173',
       'https://ayedos-sacco.vercel.app',
       'https://ayedos-webapp.vercel.app'
-    ].filter(Boolean);
+    ];
 
     const allowAllOrigins = process.env.NODE_ENV !== 'production' && allowedOrigins.includes('*');
     const allowVercelPreview = /^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(origin);
 
-    if (allowAllOrigins || (!security.isProduction && allowVercelPreview) || allowedOrigins.includes(origin)) {
+    if (allowAllOrigins || allowVercelPreview || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
       logger.warn('CORS blocked request', { origin, endpoint: 'CORS' });

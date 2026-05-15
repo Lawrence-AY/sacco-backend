@@ -135,10 +135,9 @@ async function startServer() {
       timestamp: new Date().toISOString()
     });
 
-    // Exit with error in development, but log in production
-    if (process.env.NODE_ENV !== 'production') {
-      process.exit(1);
-    }
+    // A process that stays alive without listening causes Railway to return
+    // "Application failed to respond" instead of restarting with clear logs.
+    process.exit(1);
   }
 }
 
