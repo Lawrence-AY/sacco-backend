@@ -165,8 +165,18 @@ const loginUser = asyncHandler(async (req, res) => {
   user.otp = otp;
   user.otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
   await user.save({ fields: ['otp', 'otpExpiresAt'] });
+
   const loginSession = await sessionService.createOtpSession(user, req);
-  await sendOTPEmail(user.email, otp);
+
+  // Send OTP email (non-blocking)
+  sendOTPEmail(user.email, otp).catch((emailError) => {
+    logger.error('OTP email failed during login', {
+      userId: user.id,
+      email: user.email,
+      error: emailError.message
+    });
+    // Continue with login process even if email fails
+  });
 
   return ResponseHandler.success(
     res,

@@ -58,6 +58,16 @@ const sendOTPEmail = async (email, otp) => {
         </div>
       `
     };
+              This code will expire in 10 minutes.
+            </p>
+          </div>
+
+          <div style="text-align: center; padding: 20px 0; font-size: 12px; color: #999;">
+            <p>If you didn't request this code, please ignore this email.</p>
+          </div>
+        </div>
+      `
+    };
 
     // Send email with timeout
     const result = await Promise.race([
@@ -87,5 +97,40 @@ const sendOTPEmail = async (email, otp) => {
     return { success: false, error: error.message };
   }
 };
+              This verification code expires in <strong>10 minutes</strong>.
+            </p>
 
-module.exports = sendOTPEmail;
+            <p style="font-size: 12px; color: #aaa; text-align: center; margin-top: 15px;">
+              If you did not request this email, please ignore it.
+            </p>
+          </div>
+
+          <div style="text-align: center; margin-top: 20px; font-size: 11px; color: #bbb;">
+            <p>© Ayedos SACCO. All rights reserved.</p>
+          </div>
+        </div>
+      `
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+
+    emailLogger.info('OTP email sent successfully', {
+      messageId: info.messageId,
+      to: email,
+      timestamp: new Date().toISOString()
+    });
+
+    return info;
+
+  } catch (error) {
+    emailLogger.error('Failed to send OTP email', {
+      to: email,
+      error: error.message,
+      code: error.code,
+      timestamp: new Date().toISOString()
+    });
+    throw error;
+  }
+};
+
+module.exports = { sendOTPEmail };

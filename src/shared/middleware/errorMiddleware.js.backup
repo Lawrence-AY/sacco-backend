@@ -193,3 +193,92 @@ module.exports = {
   asyncHandler,
   timeoutMiddleware
 };
+
+  if (err.name === 'JsonWebTokenError') {
+    status = 401;
+    message = 'Invalid authentication token';
+  }
+
+  if (err.name === 'TokenExpiredError') {
+    status = 401;
+    message = 'Authentication token has expired';
+  }
+
+  if (err.name === 'UnauthorizedError') {
+    status = 401;
+    message = err.message || 'Unauthorized access';
+  }
+
+  if (err.name === 'ForbiddenError') {
+    status = 403;
+    message = err.message || 'Access forbidden';
+  }
+
+  if (err.name === 'NotFoundError') {
+    status = 404;
+    message = err.message || 'Resource not found';
+  }
+
+  // Send error response
+  res.status(status).json({
+    success: false,
+    message,
+    ...(details && { details }),
+    ...(isDevelopment && {
+      error: {
+        name: err.name,
+        stack: err.stack
+      }
+    }),
+    timestamp: new Date().toISOString()
+  });
+};
+
+/**
+ * 404 Not Found middleware
+ * Should be placed after all routes
+ */
+const notFoundHandler = (req, res, next) => {
+  const error = new AppError(`Route not found: ${req.originalUrl}`, 404);
+  error.name = 'NotFoundError';
+
+  logger.warn('Route not found:', {
+    method: req.method,
+    url: req.originalUrl,
+    ip: req.ip,
+    userAgent: req.get('User-Agent')
+  });
+
+  next(error);
+};
+
+/**
+ * Request timeout middleware
+ */
+const timeoutMiddleware = (req, res, next) => {
+  // Set timeout for requests (30 seconds)
+  req.setTimeout(30000, () => {
+    logger.warn('Request timeout:', {
+      method: req.method,
+      url: req.originalUrl,
+      ip: req.ip
+    });
+
+    if (!res.headersSent) {
+      res.status(408).json({
+        success: false,
+        message: 'Request timeout',
+        timestamp: new Date().toISOString()
+      });
+    }
+  });
+
+  next();
+};
+
+module.exports = {
+  errorHandler,
+  notFoundHandler,
+  asyncHandler,
+  timeoutMiddleware
+};

@@ -1,6 +1,105 @@
-# Ayedos Backend - Enhanced Edition
+# Ayedos Backend - Railway Production Ready
 
-A modern, secure Node.js backend for the Ayedos SACCO management system built with Express and Sequelize. Features enterprise-grade error handling, JWT authentication, and standardized API responses.
+A modern, secure Node.js backend for the Ayedos SACCO management system built with Express and Sequelize. Features enterprise-grade error handling, JWT authentication, and Railway-optimized deployment.
+
+## 🚀 Railway Deployment
+
+### Prerequisites
+- Railway account
+- PostgreSQL database (Railway provides this)
+- SMTP service for email (optional but recommended)
+
+### Environment Variables
+
+Set these in your Railway project environment:
+
+#### Required
+```bash
+DATABASE_URL=postgresql://user:password@host:port/database
+JWT_SECRET=your-super-secure-jwt-secret-here
+JWT_REFRESH_SECRET=your-refresh-token-secret-here
+CORS_ORIGIN=https://your-frontend-domain.com
+```
+
+#### Optional (but recommended for full functionality)
+```bash
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your-email@gmail.com
+SMTP_PASS=your-app-password
+
+# Railway automatically provides PORT
+# NODE_ENV is automatically set to 'production'
+```
+
+### Deployment Steps
+
+1. **Connect Repository**
+   - Push this code to GitHub
+   - Connect your Railway project to the repository
+
+2. **Database Setup**
+   - Railway automatically provisions PostgreSQL
+   - The app will auto-sync the schema on first deploy
+
+3. **Environment Configuration**
+   - Add environment variables in Railway dashboard
+   - Set `NODE_ENV=production` (automatic)
+
+4. **Deploy**
+   - Railway will build and deploy automatically
+   - Monitor logs for any issues
+
+### Health Checks
+
+The app provides several health check endpoints:
+
+- `GET /health` - Basic health check
+- `GET /health/detailed` - Comprehensive health with DB connectivity
+- `GET /health/railway` - Railway-specific health check
+
+### Production Features
+
+- **No Process Crashes**: Global error handlers prevent container termination
+- **Async Startup**: Database connection verified before accepting requests
+- **Railway Binding**: Automatic `0.0.0.0` binding for Railway
+- **Production Logging**: Winston-based structured logging
+- **Graceful Shutdown**: Proper SIGTERM/SIGINT handling
+- **Rate Limiting**: API protection against abuse
+- **Security Headers**: Helmet.js security middleware
+
+### Monitoring
+
+Check these endpoints for production monitoring:
+
+```bash
+# Health status
+curl https://your-app.railway.app/health
+
+# Detailed health with DB check
+curl https://your-app.railway.app/health/detailed
+
+# Railway health check
+curl https://your-app.railway.app/health/railway
+```
+
+### Troubleshooting
+
+**Container keeps restarting?**
+- Check Railway logs for unhandled errors
+- Verify DATABASE_URL is correct
+- Ensure JWT_SECRET is set
+- Check if database is accessible
+
+**Login requests failing?**
+- Email service failures no longer crash the app
+- Check SMTP configuration if emails aren't sending
+- Login process continues even if email fails
+
+**Database connection issues?**
+- Railway may take time to provision database
+- Check `/health/detailed` endpoint for DB status
+- Verify DATABASE_URL format (Railway uses postgres://)
 
 ## 🌟 Key Features
 

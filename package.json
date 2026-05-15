@@ -8,6 +8,7 @@
     "dev": "nodemon index.js",
     "build": "echo 'No build step required'",
     "test": "echo 'No tests specified'",
+    "railway:start": "NODE_ENV=production node index.js",
     "prisma:migrate": "npx prisma migrate dev",
     "prisma:generate": "npx prisma generate",
     "seed": "node prisma/seed.js"
@@ -22,12 +23,15 @@
     "express-rate-limit": "^7.5.1",
     "helmet": "^7.2.0",
     "jsonwebtoken": "^9.0.3",
+    "morgan": "^1.10.0",
     "nodemailer": "^8.0.7",
     "pg": "^8.20.0",
     "pg-hstore": "^2.3.4",
     "postgres": "^3.4.9",
     "resend": "^6.12.2",
-    "sequelize": "^6.37.8"
+    "sequelize": "^6.37.8",
+    "validator": "^13.11.0",
+    "winston": "^3.13.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"

@@ -1,14 +1,22 @@
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const morgan = require('morgan');
+const rateLimit = require('express-rate-limit');
 
 // NOTE: dotenv is loaded in index.js BEFORE this module is imported
 // Do NOT call dotenv.config() here to avoid timing issues
 
-const { errorHandler, notFoundHandler } = require('./shared/middleware/errorMiddleware');
+const logger = require('./shared/utils/logger');
+const { errorHandler, notFoundHandler, timeoutMiddleware } = require('./shared/middleware/errorMiddleware');
 
 // Import email config utility (for diagnostics only - validates lazily)
 const { getConfigStatus, emailLogger } = require('./shared/config/emailConfig');
 
+// Import database for health checks
+const db = require('./models');
+
+// Import routes
 const roleRoutes = require('./features/roles/routes/roleRoutes');
 const transactionRoutes = require('./features/transactions/routes/transactionRoutes');
 const dividendRoutes = require('./features/dividends/routes/dividendRoutes');
@@ -29,39 +37,257 @@ const { loginUser, verifyLoginOTP, refreshToken, logoutUser, registerUser, verif
 
 const app = express();
 
+// ============= SECURITY MIDDLEWARE =============
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:"],
+    },
+  },
+  hsts: {
+    maxAge: 31536000,
+    includeSubDomains: true,
+    preload: true
+  },
+  noSniff: true,
+  xssFilter: true,
+  referrerPolicy: { policy: "strict-origin-when-cross-origin" }
+}));
+
+// ============= RATE LIMITING =============
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  message: {
+    success: false,
+    message: 'Too many requests from this IP, please try again later.'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.ip === '127.0.0.1' // Skip rate limiting for localhost
+});
+
+app.use('/api/', limiter);
+
+// Stricter rate limiting for auth routes
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // limit each IP to 5 auth requests per windowMs
+  message: {
+    success: false,
+    message: 'Too many authentication attempts, please try again later.'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use('/api/auth/', authLimiter);
+
+// Stricter rate limiting for sensitive operations
+const sensitiveLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 10, // limit each IP to 10 sensitive operations per hour
+  message: {
+    success: false,
+    message: 'Too many sensitive operations, please try again later.'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use('/api/loans', sensitiveLimiter);
+app.use('/api/transactions', sensitiveLimiter);
+app.use('/api/finance', sensitiveLimiter);
+
 // ============= CORS =============
-app.use(cors({
-  origin: process.env.CORS_ORIGIN || '*',
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, etc.)
+    if (!origin) return callback(null, true);
+
+    const allowedOrigins = [
+      process.env.CORS_ORIGIN,
+      process.env.FRONTEND_URL,
+      'http://localhost:3000',
+      'http://localhost:5173',
+      'https://ayedos-sacco.vercel.app',
+      'https://ayedos-webapp.vercel.app'
+    ].filter(Boolean);
+
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      logger.warn('CORS blocked request', { origin, endpoint: 'CORS' });
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Device-Id', 'X-Device-Name', 'X-Session-Id']
-}));
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Requested-With',
+    'X-Device-Id',
+    'X-Device-Name',
+    'X-Session-Id',
+    'Accept',
+    'Accept-Encoding',
+    'Accept-Language'
+  ],
+  exposedHeaders: ['X-Total-Count', 'X-Rate-Limit-Remaining'],
+  maxAge: 86400 // 24 hours
+};
+
+app.use(cors(corsOptions));
+
+// Handle preflight requests for all routes
+app.use((req, res, next) => {
+  if (req.method === 'OPTIONS') {
+    res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-Device-Id, X-Device-Name, X-Session-Id, Accept, Accept-Encoding, Accept-Language, X-API-Key');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Max-Age', '86400');
+    return res.sendStatus(200);
+  }
+  next();
+});
+
+// ============= LOGGING MIDDLEWARE =============
+if (process.env.NODE_ENV === 'production') {
+  // Production: Use Morgan with Winston stream
+  app.use(morgan('combined', {
+    stream: logger.stream,
+    skip: (req, res) => res.statusCode < 400 // Only log errors and above
+  }));
+} else {
+  // Development: Log all requests
+  app.use(morgan('dev', {
+    stream: logger.stream
+  }));
+}
+
+// ============= REQUEST LOGGING MIDDLEWARE =============
+app.use((req, res, next) => {
+  const start = Date.now();
+
+  // Log request
+  logger.http(`Request: ${req.method} ${req.originalUrl}`, {
+    ip: req.ip,
+    userAgent: req.get('User-Agent'),
+    timestamp: new Date().toISOString()
+  });
+
+  // Log response
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    const level = res.statusCode >= 400 ? 'warn' : 'info';
+
+    logger[level](`Response: ${req.method} ${req.originalUrl} ${res.statusCode}`, {
+      duration: `${duration}ms`,
+      ip: req.ip,
+      statusCode: res.statusCode,
+      timestamp: new Date().toISOString()
+    });
+  });
+
+  next();
+});
+
+// ============= REQUEST TIMEOUT =============
+app.use(timeoutMiddleware);
 
 // ============= BODY PARSING MIDDLEWARE =============
 app.use(express.json({
   limit: '10kb',
   verify: (req, res, buffer) => {
     req.rawBody = buffer?.length ? buffer.toString('utf8') : '';
-  } 
+  }
 }));
 app.use(express.urlencoded({ limit: '10kb', extended: true }));
 
-// ============= REQUEST LOGGING (DEV) =============
-if (process.env.NODE_ENV === 'development') {
-  app.use((req, res, next) => {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
-    next();
-  });
-}
+// ============= HEALTH CHECK ENDPOINTS =============
 
-// ============= HEALTH CHECK =============
+// Basic health check
 app.get('/health', (req, res) => {
   res.status(200).json({
     success: true,
     message: 'Server is running',
     timestamp: new Date().toISOString(),
-    uptime: process.uptime()
+    uptime: process.uptime(),
+    environment: process.env.NODE_ENV
   });
+});
+
+// Comprehensive health check with DB connectivity
+app.get('/health/detailed', async (req, res) => {
+  try {
+    const startTime = Date.now();
+
+    // Check database connectivity
+    await db.sequelize.authenticate();
+    const dbResponseTime = Date.now() - startTime;
+
+    // Get database stats
+    const [results] = await db.sequelize.query('SELECT version() as version');
+    const dbVersion = results[0]?.version || 'unknown';
+
+    res.status(200).json({
+      success: true,
+      message: 'All systems operational',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      environment: process.env.NODE_ENV,
+      database: {
+        status: 'connected',
+        responseTime: `${dbResponseTime}ms`,
+        version: dbVersion
+      },
+      memory: process.memoryUsage(),
+      system: {
+        platform: process.platform,
+        arch: process.arch,
+        nodeVersion: process.version
+      }
+    });
+  } catch (error) {
+    logger.error('Health check failed:', {
+      error: error.message,
+      stack: error.stack
+    });
+
+    res.status(503).json({
+      success: false,
+      message: 'Service unavailable',
+      timestamp: new Date().toISOString(),
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal error'
+    });
+  }
+});
+
+// Railway-specific health check
+app.get('/health/railway', async (req, res) => {
+  try {
+    // Quick DB check
+    await db.sequelize.authenticate();
+
+    res.status(200).json({
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      uptime: Math.floor(process.uptime())
+    });
+  } catch (error) {
+    logger.error('Railway health check failed:', { error: error.message });
+
+    res.status(503).json({
+      status: 'error',
+      timestamp: new Date().toISOString(),
+      error: 'Database connection failed'
+    });
+  }
 });
 
 // ============= DIAGNOSTICS ENDPOINT (Dev/Staging) =============
@@ -88,6 +314,11 @@ app.get('/api/diagnostics', (req, res) => {
       uptime: process.uptime(),
       memoryUsage: process.memoryUsage(),
       timestamp: new Date().toISOString()
+    },
+    database: {
+      dialect: db.sequelize.getDialect(),
+      database: db.sequelize.config.database,
+      host: db.sequelize.config.host
     }
   });
 });
@@ -121,6 +352,36 @@ app.use('/api/admin', adminRoutes);
 
 // ============= STK STATUS ROUTE =============
 app.get('/api/stk-status', applicationController.checkStkStatus);
+
+// ============= GLOBAL ERROR CATCHING MIDDLEWARE =============
+// This catches any errors that slip through other middleware
+app.use((err, req, res, next) => {
+  // If headers already sent, delegate to default Express error handler
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  // Log the error
+  logger.error('Unhandled error caught by global middleware:', {
+    error: err.message,
+    stack: err.stack,
+    url: req.originalUrl,
+    method: req.method,
+    ip: req.ip,
+    userAgent: req.get('User-Agent')
+  });
+
+  // Send error response
+  res.status(500).json({
+    success: false,
+    message: 'An unexpected error occurred',
+    timestamp: new Date().toISOString(),
+    ...(process.env.NODE_ENV === 'development' && {
+      error: err.message,
+      stack: err.stack
+    })
+  });
+});
 
 // ============= 404 & ERROR HANDLERS =============
 app.use(notFoundHandler);
