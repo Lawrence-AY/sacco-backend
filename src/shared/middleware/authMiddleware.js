@@ -169,15 +169,16 @@ const loginUser = asyncHandler(async (req, res) => {
 
   const loginSession = await sessionService.createOtpSession(user, req);
 
-  // Send OTP email (non-blocking)
-  sendOTPEmail(user.email, otp).catch((emailError) => {
+  try {
+    await sendOTPEmail(user.email, otp);
+  } catch (emailError) {
     logger.error('OTP email failed during login', {
       userId: user.id,
       email: user.email,
       error: emailError.message
     });
-    // Continue with login process even if email fails
-  });
+    throw new Error('Unable to send login verification code. Please try again later.');
+  }
 
   return ResponseHandler.success(
     res,
