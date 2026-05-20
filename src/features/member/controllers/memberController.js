@@ -6,9 +6,51 @@ const asyncHandler = require('../../../shared/utils/asyncHandler');
 const ResponseHandler = require('../../../shared/utils/response');
 const { NotFoundError, ValidationError, ForbiddenError } = require('../../../shared/utils/errors');
 const nodemailer = require('nodemailer');
+const { createClient } = require('@supabase/supabase-js');
+
+const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_KEY
+  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY)
+  : null;
+const DEFAULT_KCB_MPESA_BASE_URL = 'https://kcb-mpesa.simrion.workers.dev';
+const LOCAL_KCB_MPESA_BASE_URL = 'http://127.0.0.1:8787';
+const DEFAULT_KCB_PAYBILL_NUMBER = '522522';
+
+const getKcbMpesaBaseUrl = () => {
+  if (process.env.KCB_MPESA_BASE_URL) {
+    return process.env.KCB_MPESA_BASE_URL;
+  }
+  return process.env.NODE_ENV === 'production'
+    ? DEFAULT_KCB_MPESA_BASE_URL
+    : LOCAL_KCB_MPESA_BASE_URL;
+};
 
 const findMemberByUserId = async (userId) => {
   return db.Member.findOne({ where: { userId } });
+};
+
+const ensureMemberByUser = async (user) => {
+  let member = await findMemberByUserId(user.id);
+  if (!member) {
+    member = await db.Member.create({
+      userId: user.id,
+      memberNumber: `M-${Date.now()}`,
+      nationalId: user.nationalId || null,
+      type: 'NON_EMPLOYEE',
+      isVerified: true,
+    });
+  }
+
+  const savings = await db.SavingsAccount.findOne({ where: { memberId: member.id } });
+  if (!savings) {
+    await db.SavingsAccount.create({ memberId: member.id });
+  }
+
+  const shares = await db.ShareAccount.findOne({ where: { memberId: member.id } });
+  if (!shares) {
+    await db.ShareAccount.create({ memberId: member.id });
+  }
+
+  return member;
 };
 
 const buildTransactionDescription = (transaction) => {
@@ -80,10 +122,7 @@ const getLoans = asyncHandler(async (req, res) => {
 });
 
 const applyForLoan = asyncHandler(async (req, res) => {
-  const member = await findMemberByUserId(req.user.id);
-  if (!member) {
-    throw new NotFoundError('Member profile not found');
-  }
+  const member = await ensureMemberByUser(req.user);
 
   if (!req.body.amount || !req.body.type) {
     throw new ValidationError('Loan amount and type are required');
@@ -128,10 +167,7 @@ const getShares = asyncHandler(async (req, res) => {
 });
 
 const buyShares = asyncHandler(async (req, res) => {
-  const member = await findMemberByUserId(req.user.id);
-  if (!member) {
-    throw new NotFoundError('Member profile not found');
-  }
+  const member = await ensureMemberByUser(req.user);
 
   const { shares, amount } = req.body;
   if (shares === undefined && amount === undefined) {
@@ -171,6 +207,7 @@ const getTransactions = asyncHandler(async (req, res) => {
     status: transaction.status,
     method: transaction.method,
     reference: transaction.reference,
+    mpesaReference: transaction.method === 'MPESA' ? transaction.reference : null,
   }));
 
   return ResponseHandler.success(res, formatted, 'Transactions retrieved successfully', 200);
@@ -247,14 +284,12 @@ const repayLoan = asyncHandler(async (req, res) => {
     status: transaction.status,
     method: transaction.method,
     reference: transaction.reference,
+    mpesaReference: transaction.method === 'MPESA' ? transaction.reference : null,
   }, 'Loan repayment recorded successfully');
 });
 
 const depositSavings = asyncHandler(async (req, res) => {
-  const member = await findMemberByUserId(req.user.id);
-  if (!member) {
-    throw new NotFoundError('Member profile not found');
-  }
+  const member = await ensureMemberByUser(req.user);
 
   const amount = Number(req.body?.amount || 0);
   if (!amount || amount <= 0) {
@@ -279,7 +314,188 @@ const depositSavings = asyncHandler(async (req, res) => {
     status: transaction.status,
     method: transaction.method,
     reference: transaction.reference,
+    mpesaReference: transaction.method === 'MPESA' ? transaction.reference : null,
   }, 'Savings deposit recorded successfully');
+});
+
+const getKcbEndpointForContribution = (type) => {
+  const normalized = String(type || 'monthly').toLowerCase();
+  if (normalized.includes('share')) return '/sharecapital';
+  if (normalized.includes('saving')) return '/savings';
+  return '/monthlycontributions';
+};
+
+const initiateContribution = asyncHandler(async (req, res) => {
+  const member = await ensureMemberByUser(req.user);
+
+  const amount = Number(req.body?.amount || 0);
+  if (!amount || amount <= 0) {
+    throw new ValidationError('Contribution amount is required');
+  }
+
+  const phone = req.body?.phone || req.user.phone;
+  const paymentMode = String(req.body?.paymentMode || 'STK').toUpperCase();
+  const contributionType = req.body?.contributionType || 'monthly';
+  const reference = `CONTRIB-${Date.now()}`;
+  const memberNumber = member.memberNumber || reference;
+
+  if (paymentMode === 'STK' && !phone) {
+    throw new ValidationError('Phone number is required for STK push');
+  }
+
+  const transaction = await db.Transaction.create({
+    memberId: member.id,
+    type: 'DEPOSIT',
+    amount,
+    method: 'MPESA',
+    status: 'PENDING',
+    reference,
+  });
+
+  if (paymentMode === 'PAYBILL') {
+    return ResponseHandler.created(res, {
+      id: transaction.id,
+      type: transaction.type,
+      amount: transaction.amount,
+      status: transaction.status,
+      method: transaction.method,
+      reference: transaction.reference,
+      paybill: {
+        businessNumber: process.env.KCB_PAYBILL_NUMBER || process.env.MPESA_PAYBILL_NUMBER || DEFAULT_KCB_PAYBILL_NUMBER,
+        accountNumber: memberNumber,
+        amount,
+        steps: [
+          'Open M-PESA on your phone or SIM toolkit.',
+          'Select Lipa na M-PESA.',
+          'Select Pay Bill.',
+          'Enter the business number shown here.',
+          'Enter the account number shown here.',
+          'Enter the amount and confirm with your PIN.',
+          'Keep the MPESA confirmation message for your records.',
+        ],
+      },
+    }, 'Contribution recorded. Complete payment using Paybill.');
+  }
+
+  const workerBaseUrl = getKcbMpesaBaseUrl();
+  if (!workerBaseUrl) {
+    await transaction.update({ status: 'FAILED' });
+    throw new ValidationError('STK push is not configured. Set KCB_MPESA_BASE_URL on the backend or use Paybill.');
+  }
+
+  const endpoint = getKcbEndpointForContribution(contributionType);
+  const workerUrl = `${workerBaseUrl.replace(/\/$/, '')}${endpoint}`;
+  console.info('[MEMBER] Sending KCB-MPESA STK request', {
+    workerUrl,
+    phone,
+    amount: Math.round(amount),
+    contributionType,
+  });
+
+  const workerRes = await fetch(workerUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      phone,
+      amount: Math.round(amount),
+      invoiceNumber: memberNumber,
+      member_number: memberNumber,
+      internal_reference: reference,
+      name: req.user.name || `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim(),
+      reference,
+    }),
+  });
+
+  const workerText = await workerRes.text();
+  let workerPayload = null;
+  try {
+    workerPayload = workerText ? JSON.parse(workerText) : null;
+  } catch {
+    workerPayload = { raw: workerText };
+  }
+
+  if (!workerRes.ok) {
+    await transaction.update({ status: 'FAILED' });
+    const workerMessage = workerPayload?.error || workerPayload?.message || workerPayload?.raw || 'KCB-MPESA STK push failed';
+    throw new ValidationError(`KCB-MPESA STK push failed (${workerRes.status}): ${workerMessage}`);
+  }
+
+  const mpesaRequestReference = workerPayload?.merchantRequestId || workerPayload?.checkoutRequestId || null;
+  if (!mpesaRequestReference) {
+    await transaction.update({ status: 'FAILED' });
+    throw new ValidationError(workerPayload?.message || 'KCB-MPESA accepted the request but did not return a request reference. STK push was not confirmed.');
+  }
+
+  await transaction.update({
+    reference: mpesaRequestReference,
+  });
+
+  return ResponseHandler.created(res, {
+    id: transaction.id,
+    type: transaction.type,
+    amount: transaction.amount,
+    status: transaction.status,
+    method: transaction.method,
+    reference: mpesaRequestReference,
+    internalReference: reference,
+    mpesaReference: mpesaRequestReference,
+    kcbMpesa: workerPayload,
+  }, workerPayload?.message || workerPayload?.customerMessage || 'STK push sent. Check your phone and enter your M-PESA PIN.');
+});
+
+const checkContributionStatus = asyncHandler(async (req, res) => {
+  const member = await ensureMemberByUser(req.user);
+  const transaction = await db.Transaction.findOne({
+    where: {
+      id: req.params.transactionId,
+      memberId: member.id,
+    },
+  });
+
+  if (!transaction) {
+    throw new NotFoundError('Transaction not found');
+  }
+
+  if (!supabase || !transaction.reference) {
+    return ResponseHandler.success(res, {
+      id: transaction.id,
+      status: transaction.status,
+      reference: transaction.reference,
+      mpesaReference: transaction.reference,
+    }, 'Contribution status retrieved');
+  }
+
+  const { data, error } = await supabase
+    .from('registrations')
+    .select('status, mpesa_receipt, transaction_reference, merchant_request_id, checkout_request_id')
+    .or(`merchant_request_id.eq.${transaction.reference},checkout_request_id.eq.${transaction.reference},request_id.eq.${transaction.reference}`)
+    .maybeSingle();
+
+  if (error) {
+    console.error('[MEMBER] Failed to fetch contribution status', { message: error.message });
+  }
+
+  const isPaid = data?.status === 'paid';
+  const isFailed = data?.status === 'failed';
+  const receipt = data?.mpesa_receipt || data?.transaction_reference || null;
+
+  if (isPaid && transaction.status !== 'SUCCESS') {
+    await transaction.update({
+      status: 'SUCCESS',
+      reference: receipt || transaction.reference,
+    });
+  } else if (isFailed && transaction.status !== 'FAILED') {
+    await transaction.update({ status: 'FAILED' });
+  }
+
+  return ResponseHandler.success(res, {
+    id: transaction.id,
+    status: isPaid ? 'SUCCESS' : isFailed ? 'FAILED' : transaction.status,
+    reference: receipt || transaction.reference,
+    mpesaReference: receipt || transaction.reference,
+    checkoutRequestId: data?.checkout_request_id || null,
+    merchantRequestId: data?.merchant_request_id || null,
+  }, 'Contribution status retrieved');
 });
 
 const emailReport = asyncHandler(async (req, res) => {
@@ -344,6 +560,8 @@ module.exports = {
   cancelLoan,
   repayLoan,
   depositSavings,
+  initiateContribution,
+  checkContributionStatus,
   getShares,
   buyShares,
   getTransactions,

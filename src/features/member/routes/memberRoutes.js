@@ -12,6 +12,8 @@ router.post('/loans', memberController.applyForLoan);
 router.post('/loans/:loanId/cancel', memberController.cancelLoan);
 router.post('/loans/:loanId/repay', memberController.repayLoan);
 router.post('/savings/deposit', memberController.depositSavings);
+router.post('/contributions', memberController.initiateContribution);
+router.get('/contributions/:transactionId/status', memberController.checkContributionStatus);
 router.get('/shares', memberController.getShares);
 router.post('/shares', memberController.buyShares);
 router.get('/transactions', memberController.getTransactions);
