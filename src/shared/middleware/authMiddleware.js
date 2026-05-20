@@ -6,7 +6,8 @@ const {
   UnauthorizedError,
   ForbiddenError,
   ValidationError,
-  ConflictError
+  ConflictError,
+  RateLimitError
 } = require('../utils/errors');
 const asyncHandler = require('../utils/asyncHandler');
 
@@ -19,6 +20,34 @@ const sessionService = require('../../services/sessionService');
 const User = require('../../models/user.model');
 const MembershipApplication = require('../../models/membershipApplication.model');
 const db = require('../../models');
+
+const OTP_REQUEST_WINDOW_MS = Number(process.env.OTP_RATE_LIMIT_WINDOW_MS || 60 * 1000);
+const OTP_REQUEST_MAX = Number(process.env.OTP_RATE_LIMIT_MAX || 1);
+const otpRequestBuckets = new Map();
+
+const normalizeOtpKey = (purpose, email, req) => {
+  const ip = req.ip || req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
+  return `${purpose}:${String(email || '').trim().toLowerCase()}:${ip}`;
+};
+
+const assertOtpRateLimit = (purpose, email, req) => {
+  const now = Date.now();
+  const key = normalizeOtpKey(purpose, email, req);
+  const bucket = otpRequestBuckets.get(key) || { count: 0, resetAt: now + OTP_REQUEST_WINDOW_MS };
+
+  if (bucket.resetAt <= now) {
+    bucket.count = 0;
+    bucket.resetAt = now + OTP_REQUEST_WINDOW_MS;
+  }
+
+  bucket.count += 1;
+  otpRequestBuckets.set(key, bucket);
+
+  if (bucket.count > OTP_REQUEST_MAX) {
+    const retryAfter = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
+    throw new RateLimitError(`Please wait ${retryAfter} seconds before requesting another OTP`);
+  }
+};
 
 const serializeUser = (user) => {
   if (!user) return null;
@@ -189,6 +218,7 @@ const loginUser = asyncHandler(async (req, res) => {
   if (!email || !password) {
     throw new ValidationError('Email and password are required');
   }
+  assertOtpRateLimit('login', email, req);
   const user = await User.findOne({ where: { email } });
   if (!user) {
     throw new UnauthorizedError('Invalid email or password');
@@ -328,6 +358,7 @@ const registerUser = asyncHandler(async (req, res) => {
   if (!firstName || !lastName || !email || !password) {
     throw new ValidationError('Missing required fields');
   }
+  assertOtpRateLimit('register', email, req);
 
   const existingUser = await User.findOne({ where: { email } });
   if (existingUser) {
@@ -496,6 +527,7 @@ const resendOTP = asyncHandler(async (req, res) => {
   if (!email) {
     throw new ValidationError('Email required');
   }
+  assertOtpRateLimit('resend', email, req);
 
   const user = await User.findOne({ where: { email } });
   if (!user) {

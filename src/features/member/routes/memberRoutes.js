@@ -11,8 +11,10 @@ router.put('/profile', validate(schemas.profileUpdate), memberController.updateP
 router.get('/loans', memberController.getLoans);
 router.post('/loans', validate(schemas.loanRequest), memberController.applyForLoan);
 router.post('/loans/:loanId/cancel', memberController.cancelLoan);
-router.post('/loans/:loanId/repay', validate(schemas.moneyAction), memberController.repayLoan);
-router.post('/savings/deposit', validate(schemas.moneyAction), memberController.depositSavings);
+router.post('/loans/:loanId/repay', memberController.repayLoan);
+router.post('/savings/deposit', memberController.depositSavings);
+router.post('/contributions', memberController.initiateContribution);
+router.get('/contributions/:transactionId/status', memberController.checkContributionStatus);
 router.get('/shares', memberController.getShares);
 router.post('/shares', validate(schemas.sharesPurchase), memberController.buyShares);
 router.get('/transactions', memberController.getTransactions);

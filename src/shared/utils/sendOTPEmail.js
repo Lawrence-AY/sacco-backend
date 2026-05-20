@@ -1,5 +1,35 @@
-const { getTransporter, emailLogger } = require('../config/emailConfig');
-const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
+
+const requiredEnv = [
+  'SMTP_HOST',
+  'SMTP_PORT',
+  'SMTP_USER',
+  'SMTP_PASS'
+];
+
+const missingEnv = requiredEnv.filter((key) => !process.env[key]);
+if (missingEnv.length) {
+  throw new Error(
+    `Missing SMTP configuration: ${missingEnv.join(', ')}. ` +
+      'Please set these values in your .env file before sending email.'
+  );
+}
+
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST,
+  port: Number(process.env.SMTP_PORT),
+  secure: process.env.SMTP_PORT === '465',
+  pool: true,
+  maxConnections: Number(process.env.SMTP_MAX_CONNECTIONS || 3),
+  maxMessages: Number(process.env.SMTP_MAX_MESSAGES || 100),
+  connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS || 8000),
+  greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS || 5000),
+  socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 10000),
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+  },
+});
 
 const buildOtpEmailTemplate = (otp) => `
   <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto;">
