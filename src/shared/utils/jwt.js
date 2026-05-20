@@ -1,10 +1,9 @@
 const jwt = require('jsonwebtoken');
 const security = require('../config/security');
 
-const JWT_SECRET = security.jwt.secret;
-const JWT_REFRESH_SECRET = security.jwt.refreshSecret;
-const JWT_EXPIRE = security.jwt.expiresIn;
-const REFRESH_TOKEN_EXPIRE = security.jwt.refreshExpiresIn;
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+const JWT_EXPIRE = process.env.JWT_EXPIRE || '30m';
+const REFRESH_TOKEN_EXPIRE = process.env.REFRESH_TOKEN_EXPIRE || '30m';
 
 /**
  * Generate access token
