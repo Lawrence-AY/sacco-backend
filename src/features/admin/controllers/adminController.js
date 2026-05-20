@@ -4,11 +4,25 @@ const userService = require('../../users/services/userService');
 const applicationService = require('../../applications/services/applicationService');
 const asyncHandler = require('../../../shared/utils/asyncHandler');
 const ResponseHandler = require('../../../shared/utils/response');
-const { ValidationError, NotFoundError } = require('../../../shared/utils/errors');
+const { ValidationError, NotFoundError, ForbiddenError } = require('../../../shared/utils/errors');
+const { UserDTO } = require('../../../shared/utils/dtos');
+
+const formatMember = (member) => {
+  if (!member) return null;
+  const source = typeof member.toJSON === 'function' ? member.toJSON() : member;
+  return {
+    id: source.id,
+    userId: source.userId,
+    memberNumber: source.memberNumber,
+    type: source.type,
+    isVerified: source.isVerified,
+    createdAt: source.createdAt,
+  };
+};
 
 const getAllUsers = asyncHandler(async (req, res) => {
   const users = await userService.getAllUsers();
-  return ResponseHandler.success(res, users, 'Users retrieved successfully', 200);
+  return ResponseHandler.success(res, users.map(UserDTO.admin), 'Users retrieved successfully', 200);
 });
 
 const getUserById = asyncHandler(async (req, res) => {
@@ -16,7 +30,7 @@ const getUserById = asyncHandler(async (req, res) => {
   if (!user) {
     throw new NotFoundError('User not found');
   }
-  return ResponseHandler.success(res, user, 'User retrieved successfully', 200);
+  return ResponseHandler.success(res, UserDTO.admin(user), 'User retrieved successfully', 200);
 });
 
 const updateUserRole = asyncHandler(async (req, res) => {
@@ -25,11 +39,15 @@ const updateUserRole = asyncHandler(async (req, res) => {
     throw new ValidationError('Role is required');
   }
 
+  if (role === 'SUPERADMIN' && req.user.role !== 'SUPERADMIN') {
+    throw new ForbiddenError('Only superadmins can grant the superadmin role');
+  }
+
   const updatedUser = await userService.updateUser(req.params.userId, { role });
   if (!updatedUser) {
     throw new NotFoundError('User not found');
   }
-  return ResponseHandler.success(res, updatedUser, 'User role updated successfully', 200);
+  return ResponseHandler.success(res, UserDTO.admin(updatedUser), 'User role updated successfully', 200);
 });
 
 const updateUserStatus = asyncHandler(async (req, res) => {
@@ -42,7 +60,7 @@ const updateUserStatus = asyncHandler(async (req, res) => {
   if (!updatedUser) {
     throw new NotFoundError('User not found');
   }
-  return ResponseHandler.success(res, updatedUser, 'User status updated successfully', 200);
+  return ResponseHandler.success(res, UserDTO.admin(updatedUser), 'User status updated successfully', 200);
 });
 
 const getAllApplications = asyncHandler(async (req, res) => {
@@ -76,7 +94,10 @@ const reviewApplication = asyncHandler(async (req, res) => {
 
   if (status === 'APPROVED') {
     const result = await applicationService.approveApplication(req.params.applicationId, req.user.id);
-    return ResponseHandler.success(res, result, 'Application approved successfully', 200);
+    return ResponseHandler.success(res, {
+      user: UserDTO.admin(result.user),
+      member: formatMember(result.member),
+    }, 'Application approved successfully', 200);
   }
 
   const result = await applicationService.rejectApplication(req.params.applicationId, notes || 'No reason provided');

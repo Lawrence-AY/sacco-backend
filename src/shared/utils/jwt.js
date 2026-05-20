@@ -1,8 +1,10 @@
 const jwt = require('jsonwebtoken');
+const security = require('../config/security');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
-const JWT_EXPIRE = process.env.JWT_EXPIRE || '10m';
-const REFRESH_TOKEN_EXPIRE = process.env.REFRESH_TOKEN_EXPIRE || '10m';
+const JWT_SECRET = security.jwt.secret;
+const JWT_REFRESH_SECRET = security.jwt.refreshSecret;
+const JWT_EXPIRE = security.jwt.expiresIn;
+const REFRESH_TOKEN_EXPIRE = security.jwt.refreshExpiresIn;
 
 /**
  * Generate access token
@@ -19,7 +21,11 @@ const generateAccessToken = (userId, additionalData = {}) => {
         ...additionalData
       },
       JWT_SECRET,
-      { expiresIn: JWT_EXPIRE }
+      {
+        expiresIn: JWT_EXPIRE,
+        issuer: security.jwt.issuer,
+        audience: security.jwt.audience,
+      }
     );
   } catch (error) {
     throw new Error(`Failed to generate access token: ${error.message}`);
@@ -39,8 +45,12 @@ const generateRefreshToken = (userId, additionalData = {}) => {
         type: 'refresh',
         ...additionalData
       },
-      JWT_SECRET,
-      { expiresIn: REFRESH_TOKEN_EXPIRE }
+      JWT_REFRESH_SECRET,
+      {
+        expiresIn: REFRESH_TOKEN_EXPIRE,
+        issuer: security.jwt.issuer,
+        audience: security.jwt.audience,
+      }
     );
   } catch (error) {
     throw new Error(`Failed to generate refresh token: ${error.message}`);
@@ -54,7 +64,12 @@ const generateRefreshToken = (userId, additionalData = {}) => {
  */
 const verifyToken = (token) => {
   try {
-    return jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.decode(token);
+    const secret = decoded?.type === 'refresh' ? JWT_REFRESH_SECRET : JWT_SECRET;
+    return jwt.verify(token, secret, {
+      issuer: security.jwt.issuer,
+      audience: security.jwt.audience,
+    });
   } catch (error) {
     if (error.name === 'TokenExpiredError') {
       throw new Error('Token has expired');

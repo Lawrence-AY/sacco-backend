@@ -1,22 +1,145 @@
-const app = require('./src/app');
-const db = require('./src/models');
+/**
+ * CRITICAL: Load environment variables FIRST
+ * This must happen before any other modules are imported
+ */
+require('dotenv').config();
 
-const PORT = process.env.PORT || 3000;
-//const DB_URL = process.env.DATABASE_URL;
+const express = require('express');
+const { createServer } = require('http');
+
+// Import logger first for startup logging
+const logger = require('./src/shared/utils/logger');
+const { validateEnvironment } = require('./src/shared/config/env');
+
+// Global error handlers - DO NOT EXIT PROCESS in production
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught Exception:', {
+    error: error.message,
+    stack: error.stack,
+    timestamp: new Date().toISOString()
+  });
+  // In production, don't exit - let the process continue
+  // Railway will restart the container if needed
+  if (process.env.NODE_ENV !== 'production') {
+    process.exit(1);
+  }
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Rejection:', {
+    reason: reason?.message || reason,
+    promise: promise?.toString(),
+    stack: reason?.stack,
+    timestamp: new Date().toISOString()
+  });
+  // In production, don't exit - let the process continue
+  if (process.env.NODE_ENV !== 'production') {
+    process.exit(1);
+  }
+});
+
+// Handle graceful shutdown
+process.on('SIGTERM', () => {
+  logger.info('SIGTERM received - initiating graceful shutdown');
+  shutdown();
+});
+
+process.on('SIGINT', () => {
+  logger.info('SIGINT received - initiating graceful shutdown');
+  shutdown();
+});
+
+let server;
+
+function shutdown() {
+  if (server) {
+    logger.info('Closing HTTP server...');
+    server.close(() => {
+      logger.info('HTTP server closed');
+      process.exit(0);
+    });
+
+    // Force close after 10 seconds
+    setTimeout(() => {
+      logger.error('Could not close connections in time, forcefully shutting down');
+      process.exit(1);
+    }, 10000);
+  } else {
+    process.exit(0);
+  }
+}
+
+// Async startup function
+async function startServer() {
+  try {
+    logger.info('Starting Ayedos Backend Server...', {
+      node_env: process.env.NODE_ENV,
+      port: process.env.PORT || 3000,
+      timestamp: new Date().toISOString()
+    });
+
+    validateEnvironment();
+
+    // Import app after env is loaded
+    const app = require('./src/app');
+    const db = require('./src/models');
+
+    // Test database connection
+    logger.info('Testing database connection...');
+    await db.sequelize.authenticate();
+    logger.info('Database connection successful');
+
+    // Sync database (alter in development, validate in production)
+    const syncOptions = process.env.NODE_ENV === 'production'
+      ? { alter: false, force: false }
+      : { alter: true, force: false };
+
+    logger.info('Syncing database schema...', { options: syncOptions });
+    await db.sequelize.sync(syncOptions);
+    logger.info('Database schema sync completed');
+
+    // Railway requires binding to 0.0.0.0
+    const PORT = process.env.PORT || 3000;
+    const HOST = process.env.NODE_ENV === 'production' ? '0.0.0.0' : 'localhost';
+
+    // Create HTTP server
+    server = createServer(app);
+
+    // Start listening
+    await new Promise((resolve, reject) => {
+      server.listen(PORT, HOST, (err) => {
+        if (err) {
+          reject(err);
+        } else {
+          logger.info(`Server listening on ${HOST}:${PORT}`, {
+            host: HOST,
+            port: PORT,
+            environment: process.env.NODE_ENV
+          });
+          resolve();
+        }
+      });
+    });
+
+    // Log successful startup
+    logger.info('Server startup completed successfully', {
+      uptime: process.uptime(),
+      memory: process.memoryUsage(),
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    logger.error('Failed to start server:', {
+      error: error.message,
+      stack: error.stack,
+      timestamp: new Date().toISOString()
+    });
+
+    // A process that stays alive without listening causes Railway to return
+    // "Application failed to respond" instead of restarting with clear logs.
+    process.exit(1);
+  }
+}
 
 // Start the server
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
-
-// Sync database asynchronously (non-blocking)
-db.sequelize.authenticate().then(() => {
-  console.log('Database connection established successfully');
-  return db.sequelize.sync({ alter: process.env.NODE_ENV === 'development' });
-}).then(() => {
-  console.log('Database synced successfully');
-}).catch(err => {
-  console.error('Database connection/sync failed:', err.message);
-  console.error('Full error:', err);
-  console.warn('Server running without database connection');
-});
+startServer();

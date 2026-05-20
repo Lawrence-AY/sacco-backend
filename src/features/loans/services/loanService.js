@@ -40,7 +40,9 @@ const createLoan = async (data) => {
 };
 
 const updateLoan = async (id, data) => {
-  return await db.Loan.update({
+  const loan = await db.Loan.findByPk(id);
+  if (!loan) return null;
+  await loan.update({
     amount: data.amount,
     interestRate: data.interestRate,
     duration: data.duration,
@@ -49,7 +51,8 @@ const updateLoan = async (id, data) => {
     multiplier: data.multiplier,
     approvalStage: data.approvalStage,
     approvedById: data.approvedById,
-  }, { where: { id } });
+  });
+  return loan;
 };
 
 const deleteLoan = async (id) => {
@@ -57,7 +60,10 @@ const deleteLoan = async (id) => {
 };
 
 const updateLoanStatus = async (id, status) => {
-  return await db.Loan.update({ status }, { where: { id } });
+  const loan = await db.Loan.findByPk(id);
+  if (!loan) return null;
+  await loan.update({ status });
+  return loan;
 };
 
 module.exports = {

@@ -5,6 +5,7 @@ const shareService = require('../../shares/services/shareService');
 const asyncHandler = require('../../../shared/utils/asyncHandler');
 const ResponseHandler = require('../../../shared/utils/response');
 const { NotFoundError, ValidationError, ForbiddenError } = require('../../../shared/utils/errors');
+const { UserDTO, LoanDTO, TransactionDTO } = require('../../../shared/utils/dtos');
 const nodemailer = require('nodemailer');
 const { createClient } = require('@supabase/supabase-js');
 
@@ -83,15 +84,20 @@ const getProfile = asyncHandler(async (req, res) => {
   if (!user) {
     throw new NotFoundError('User not found');
   }
-  return ResponseHandler.success(res, user, 'Profile retrieved successfully');
+  return ResponseHandler.success(res, UserDTO.private(user), 'Profile retrieved successfully');
 });
 
 const updateProfile = asyncHandler(async (req, res) => {
-  const updated = await userService.updateUser(req.user.id, req.body);
+  const allowed = ['firstName', 'lastName', 'name', 'email', 'phone', 'nationalId', 'kraPin', 'occupation', 'address', 'consentGiven'];
+  const safeBody = allowed.reduce((acc, field) => {
+    if (req.body[field] !== undefined) acc[field] = req.body[field];
+    return acc;
+  }, {});
+  const updated = await userService.updateUser(req.user.id, safeBody);
   if (!updated) {
     throw new NotFoundError('User not found');
   }
-  return ResponseHandler.success(res, updated, 'Profile updated successfully', 200);
+  return ResponseHandler.success(res, UserDTO.private(updated), 'Profile updated successfully', 200);
 });
 
 const getLoans = asyncHandler(async (req, res) => {
@@ -134,7 +140,7 @@ const applyForLoan = asyncHandler(async (req, res) => {
     status: 'PENDING',
   });
 
-  return ResponseHandler.created(res, loan, 'Loan application submitted successfully');
+  return ResponseHandler.created(res, LoanDTO.basic(loan, req.user), 'Loan application submitted successfully');
 });
 
 const cancelLoan = asyncHandler(async (req, res) => {
@@ -275,7 +281,7 @@ const repayLoan = asyncHandler(async (req, res) => {
     reference: req.body.reference || `REPAY-${Date.now()}`
   });
 
-  return ResponseHandler.created(res, {
+  return ResponseHandler.created(res, TransactionDTO.basic({
     id: transaction.id,
     type: transaction.type,
     amount: transaction.amount,
@@ -305,7 +311,7 @@ const depositSavings = asyncHandler(async (req, res) => {
     reference: req.body.reference || `DEP-${Date.now()}`
   });
 
-  return ResponseHandler.created(res, {
+  return ResponseHandler.created(res, TransactionDTO.basic({
     id: transaction.id,
     type: transaction.type,
     amount: transaction.amount,

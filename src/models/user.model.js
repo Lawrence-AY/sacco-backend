@@ -24,7 +24,7 @@ const User = sequelize.define('User', {
   idDocumentUrl: DataTypes.STRING,
   passportPhotoUrl: DataTypes.STRING,
   role: {
-    type: DataTypes.ENUM('PENDING', 'ADMIN', 'FINANCE', 'MEMBER'),
+    type: DataTypes.ENUM('PENDING', 'MEMBER', 'FINANCE', 'ADMIN', 'SUPERADMIN'),
     defaultValue: 'PENDING'
   },
   isVerified: {
