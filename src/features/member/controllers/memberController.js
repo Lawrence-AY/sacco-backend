@@ -13,7 +13,7 @@ const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_KEY
   ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY)
   : null;
 const DEFAULT_KCB_MPESA_BASE_URL = 'https://kcb-mpesa.simrion.workers.dev';
-const LOCAL_KCB_MPESA_BASE_URL = 'http://127.0.0.1:8787';
+const LOCAL_KCB_MPESA_BASE_URL = 'https://kcb-mpesa.simrion.workers.dev';
 const DEFAULT_KCB_PAYBILL_NUMBER = '522522';
 
 const getKcbMpesaBaseUrl = () => {
