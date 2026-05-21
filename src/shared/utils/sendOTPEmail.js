@@ -111,4 +111,4 @@ const sendOTPEmail = async (email, otp) => {
 };
 
 module.exports = sendOTPEmail;
-module.exports.buildOtpEmailTemplate = buildOtpEmailTemplate;
+//module.exports.buildOtpEmailTemplate = buildOtpEmailTemplate;
