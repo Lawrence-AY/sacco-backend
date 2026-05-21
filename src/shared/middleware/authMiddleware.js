@@ -273,11 +273,11 @@ const verifyLoginOTP = asyncHandler(async (req, res) => {
   if (!user) {
     throw new UnauthorizedError('User not found');
   }
-  if (String(user.otp) !== String(otp)) {
-    throw new UnauthorizedError('Invalid OTP');
+  if (!user.otp || String(user.otp) !== String(otp)) {
+    throw new UnauthorizedError('Invalid OTP. Please check the code and try again.');
   }
-  if (new Date(user.otpExpiresAt) < new Date()) {
-    throw new UnauthorizedError('OTP expired');
+  if (!user.otpExpiresAt || new Date(user.otpExpiresAt) < new Date()) {
+    throw new UnauthorizedError('OTP expired. Please request a new code.');
   }
 
   user.otp = null;
@@ -492,11 +492,11 @@ const verifyOTP = asyncHandler(async (req, res) => {
   if (!user) {
     throw new UnauthorizedError('User not found');
   }
- if (String(user.otp) !== String(otp)) {
-    throw new UnauthorizedError('Invalid OTP');
+  if (!user.otp || String(user.otp) !== String(otp)) {
+    throw new UnauthorizedError('Invalid OTP. Please check the code and try again.');
   }
-  if (new Date(user.otpExpiresAt) < new Date()) {
-    throw new UnauthorizedError('OTP expired');
+  if (!user.otpExpiresAt || new Date(user.otpExpiresAt) < new Date()) {
+    throw new UnauthorizedError('OTP expired. Please request a new code.');
   }
 
   user.isVerified = true;

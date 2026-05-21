@@ -41,6 +41,8 @@ const applicationController = require('./features/applications/controllers/appli
 const { loginUser, verifyLoginOTP, refreshToken, logoutUser, registerUser, verifyOTP, resendOTP, setPassword, protect, getSessions, revokeSession } = require('./shared/middleware/authMiddleware');
 
 const app = express();
+app.locals.apiReady = false;
+app.locals.apiStartupError = null;
 
 const isLocalRequest = (req) => {
   const ip = req.ip || req.socket?.remoteAddress || '';
@@ -185,6 +187,23 @@ app.use((req, res, next) => {
   next();
 });
 
+// Keep the HTTP server reachable while database startup work is still running.
+// This prevents frontend dev proxy calls from failing with ECONNREFUSED/502.
+app.use('/api', (req, res, next) => {
+  if (app.locals.apiReady) return next();
+
+  return res.status(503).json({
+    success: false,
+    message: app.locals.apiStartupError
+      ? 'API startup failed. Check the backend logs for details.'
+      : 'API is starting. Please try again in a moment.',
+    timestamp: new Date().toISOString(),
+    ...(process.env.NODE_ENV === 'development' && app.locals.apiStartupError
+      ? { error: app.locals.apiStartupError }
+      : {}),
+  });
+});
+
 // ============= LOGGING MIDDLEWARE =============
 if (process.env.NODE_ENV === 'production') {
   // Production: Use Morgan with Winston stream
@@ -249,7 +268,28 @@ app.get('/health', (req, res) => {
     message: 'Server is running',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    environment: process.env.NODE_ENV
+    environment: process.env.NODE_ENV,
+    api: {
+      ready: Boolean(app.locals.apiReady),
+      status: app.locals.apiStartupError ? 'error' : app.locals.apiReady ? 'ready' : 'starting',
+    },
+  });
+});
+
+app.get('/ready', (req, res) => {
+  const ready = Boolean(app.locals.apiReady);
+
+  res.status(ready ? 200 : 503).json({
+    success: ready,
+    message: app.locals.apiStartupError
+      ? 'API startup failed'
+      : ready
+        ? 'API is ready'
+        : 'API is starting',
+    timestamp: new Date().toISOString(),
+    ...(process.env.NODE_ENV === 'development' && app.locals.apiStartupError
+      ? { error: app.locals.apiStartupError }
+      : {}),
   });
 });
 

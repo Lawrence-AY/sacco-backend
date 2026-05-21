@@ -70,6 +70,68 @@ function shutdown() {
   }
 }
 
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function getStartupErrorMessage(error) {
+  return error?.message || error?.name || 'Database startup failed';
+}
+
+async function initializeDatabase(app, db) {
+  const retryDelayMs = Number.parseInt(process.env.DB_STARTUP_RETRY_MS, 10) || 10000;
+
+  while (true) {
+    try {
+      // Test database connection
+      logger.info('Testing database connection...');
+      await db.sequelize.authenticate();
+      logger.info('Database connection successful');
+
+      if (process.env.DB_SYNC_ON_START !== 'false') {
+        // Sync database (alter in development, validate in production).
+        const syncOptions = process.env.NODE_ENV === 'production'
+          ? { alter: false, force: false }
+          : { alter: true, force: false };
+
+        logger.info('Syncing database schema...', { options: syncOptions });
+        await db.sequelize.sync(syncOptions);
+        await runSchemaMigrations(db.sequelize);
+        logger.info('Database schema sync completed');
+      } else {
+        logger.info('Skipping database schema sync because DB_SYNC_ON_START=false');
+      }
+
+      app.locals.apiReady = true;
+      app.locals.apiStartupError = null;
+
+      logger.info('API marked ready', {
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+        timestamp: new Date().toISOString()
+      });
+      return;
+    } catch (error) {
+      app.locals.apiReady = false;
+      app.locals.apiStartupError = getStartupErrorMessage(error);
+
+      logger.error('API startup failed:', {
+        error: app.locals.apiStartupError,
+        stack: error.stack,
+        timestamp: new Date().toISOString()
+      });
+
+      if (process.env.NODE_ENV === 'production') {
+        shutdown();
+        return;
+      }
+
+      logger.warn('Retrying API startup after database connection failure', {
+        retryDelayMs,
+      });
+      await delay(retryDelayMs);
+    }
+  }
+}
+
 // Async startup function
 async function startServer() {
   try {
@@ -85,24 +147,9 @@ async function startServer() {
     const app = require('./src/app');
     const db = require('./src/models');
 
-    // Test database connection
-    logger.info('Testing database connection...');
-    await db.sequelize.authenticate();
-    logger.info('Database connection successful');
-
-    // Sync database (alter in development, validate in production)
-    const syncOptions = process.env.NODE_ENV === 'production'
-      ? { alter: false, force: false }
-      : { alter: true, force: false };
-
-    logger.info('Syncing database schema...', { options: syncOptions });
-    await db.sequelize.sync(syncOptions);
-    await runSchemaMigrations(db.sequelize);
-    logger.info('Database schema sync completed');
-
     // Railway requires binding to 0.0.0.0
     const PORT = process.env.PORT || 3000;
-    const HOST = process.env.NODE_ENV === 'production' ? '0.0.0.0' : 'localhost';
+    const HOST = process.env.HOST || '0.0.0.0';
 
     // Create HTTP server
     server = createServer(app);
@@ -124,11 +171,13 @@ async function startServer() {
     });
 
     // Log successful startup
-    logger.info('Server startup completed successfully', {
+    logger.info('HTTP server startup completed successfully', {
       uptime: process.uptime(),
       memory: process.memoryUsage(),
       timestamp: new Date().toISOString()
     });
+
+    initializeDatabase(app, db);
 
   } catch (error) {
     logger.error('Failed to start server:', {

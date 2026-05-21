@@ -17,6 +17,7 @@ const dbConfig = {
   password: process.env.DB_PASSWORD,
   dialect: process.env.DB_DIALECT || 'postgres',
   logging: process.env.DB_LOGGING === 'true' ? (sql) => logger.debug('DB Query:', sql) : false,
+  connectionTimeout: parseInt(process.env.DB_CONNECT_TIMEOUT) || 30000,
   pool: {
     max: parseInt(process.env.DB_POOL_MAX) || 5,
     min: parseInt(process.env.DB_POOL_MIN) || 0,
@@ -25,7 +26,7 @@ const dbConfig = {
   },
   retry: {
     max: 3,
-    timeout: 5000
+    timeout: parseInt(process.env.DB_RETRY_TIMEOUT) || 30000
   }
 };
 
@@ -37,6 +38,7 @@ if (dbUrl) {
   sequelize = new Sequelize(dbUrl, {
     dialect: 'postgres',
     dialectOptions: {
+      connectionTimeoutMillis: dbConfig.connectionTimeout,
       ssl: {
         require: true,
         rejectUnauthorized: false
@@ -60,11 +62,14 @@ if (dbUrl) {
       pool: dbConfig.pool,
       retry: dbConfig.retry,
       dialectOptions: process.env.NODE_ENV === 'production' ? {
+        connectionTimeoutMillis: dbConfig.connectionTimeout,
         ssl: {
           require: true,
           rejectUnauthorized: false
         }
-      } : {}
+      } : {
+        connectionTimeoutMillis: dbConfig.connectionTimeout
+      }
     }
   );
 }
