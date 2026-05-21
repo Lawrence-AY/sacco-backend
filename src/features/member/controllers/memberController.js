@@ -291,7 +291,7 @@ const repayLoan = asyncHandler(async (req, res) => {
     method: transaction.method,
     reference: transaction.reference,
     mpesaReference: transaction.method === 'MPESA' ? transaction.reference : null,
-  }, 'Loan repayment recorded successfully');
+  }, 'Loan repayment recorded successfully'));  
 });
 
 const depositSavings = asyncHandler(async (req, res) => {
@@ -321,7 +321,7 @@ const depositSavings = asyncHandler(async (req, res) => {
     method: transaction.method,
     reference: transaction.reference,
     mpesaReference: transaction.method === 'MPESA' ? transaction.reference : null,
-  }, 'Savings deposit recorded successfully');
+  }, 'Savings deposit recorded successfully'));
 });
 
 const getKcbEndpointForContribution = (type) => {
