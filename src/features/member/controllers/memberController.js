@@ -88,9 +88,36 @@ const getProfile = asyncHandler(async (req, res) => {
 });
 
 const updateProfile = asyncHandler(async (req, res) => {
-  const allowed = ['firstName', 'lastName', 'name', 'email', 'phone', 'nationalId', 'kraPin', 'occupation', 'address', 'consentGiven'];
+  const body = { ...req.body };
+  if (body.nextOfKin) {
+    body.nextOfKinName = body.nextOfKin.name ?? body.nextOfKinName;
+    body.nextOfKinRelationship = body.nextOfKin.relationship ?? body.nextOfKinRelationship;
+    body.nextOfKinPhone = body.nextOfKin.phone ?? body.nextOfKinPhone;
+    delete body.nextOfKin;
+  }
+  const allowed = [
+    'firstName',
+    'lastName',
+    'name',
+    'email',
+    'phone',
+    'nationalId',
+    'kraPin',
+    'occupation',
+    'address',
+    'dateOfBirth',
+    'gender',
+    'employer',
+    'monthlyIncome',
+    'payrollNumber',
+    'nextOfKinName',
+    'nextOfKinRelationship',
+    'nextOfKinPhone',
+    'passportPhotoUrl',
+    'consentGiven',
+  ];
   const safeBody = allowed.reduce((acc, field) => {
-    if (req.body[field] !== undefined) acc[field] = req.body[field];
+    if (body[field] !== undefined) acc[field] = body[field];
     return acc;
   }, {});
   const updated = await userService.updateUser(req.user.id, safeBody);

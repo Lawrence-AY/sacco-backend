@@ -13,6 +13,8 @@ const validate = (schema, source = 'body') => (req, res, next) => {
 };
 
 const strictObject = (shape) => z.object(shape).strict();
+const optionalEmptyableString = (max) => z.string().trim().max(max).optional().or(z.literal(''));
+const dataImageUrl = z.string().trim().regex(/^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/=]+$/i);
 
 const schemas = {
   login: strictObject({
@@ -49,6 +51,20 @@ const schemas = {
     kraPin: z.string().trim().max(20).optional(),
     occupation: z.string().trim().max(100).optional(),
     address: z.string().trim().max(255).optional(),
+    dateOfBirth: optionalEmptyableString(20),
+    gender: optionalEmptyableString(40),
+    employer: optionalEmptyableString(120),
+    monthlyIncome: z.coerce.number().nonnegative().max(100000000).optional().or(z.literal('')),
+    payrollNumber: optionalEmptyableString(60),
+    nextOfKinName: optionalEmptyableString(120),
+    nextOfKinRelationship: optionalEmptyableString(80),
+    nextOfKinPhone: optionalEmptyableString(30),
+    nextOfKin: strictObject({
+      name: optionalEmptyableString(120),
+      relationship: optionalEmptyableString(80),
+      phone: optionalEmptyableString(30),
+    }).optional(),
+    passportPhotoUrl: z.string().trim().url().max(2048).optional().or(dataImageUrl.max(2200000)).or(z.literal('')),
     consentGiven: z.boolean().optional(),
   }),
   roleUpdate: strictObject({

@@ -96,7 +96,7 @@ const clearAuthCookies = (res) => {
 };
 
 const exposeTokensForEnvironment = (tokens) => {
-  return process.env.NODE_ENV === 'production' ? undefined : tokens;
+  return tokens;
 };
 
 const ensureMemberRecords = async (user, source = {}) => {

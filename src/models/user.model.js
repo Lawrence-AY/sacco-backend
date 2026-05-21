@@ -21,8 +21,16 @@ const User = sequelize.define('User', {
   kraPin: DataTypes.STRING,
   occupation: DataTypes.STRING,
   address: DataTypes.TEXT,
-  idDocumentUrl: DataTypes.STRING,
-  passportPhotoUrl: DataTypes.STRING,
+  dateOfBirth: DataTypes.DATEONLY,
+  gender: DataTypes.STRING,
+  employer: DataTypes.STRING,
+  monthlyIncome: DataTypes.DECIMAL(14, 2),
+  payrollNumber: DataTypes.STRING,
+  nextOfKinName: DataTypes.STRING,
+  nextOfKinRelationship: DataTypes.STRING,
+  nextOfKinPhone: DataTypes.STRING,
+  idDocumentUrl: DataTypes.TEXT,
+  passportPhotoUrl: DataTypes.TEXT,
   role: {
     type: DataTypes.ENUM('PENDING', 'MEMBER', 'FINANCE', 'ADMIN', 'SUPERADMIN'),
     defaultValue: 'PENDING'

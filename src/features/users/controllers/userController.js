@@ -52,6 +52,15 @@ const updateUser = asyncHandler(async (req, res) => {
     'kraPin',
     'occupation',
     'address',
+    'dateOfBirth',
+    'gender',
+    'employer',
+    'monthlyIncome',
+    'payrollNumber',
+    'nextOfKinName',
+    'nextOfKinRelationship',
+    'nextOfKinPhone',
+    'passportPhotoUrl',
     'consentGiven',
   ];
   const adminUpdateFields = [...selfUpdateFields, 'role', 'isVerified'];

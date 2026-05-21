@@ -10,6 +10,7 @@ const { createServer } = require('http');
 // Import logger first for startup logging
 const logger = require('./src/shared/utils/logger');
 const { validateEnvironment } = require('./src/shared/config/env');
+const { runSchemaMigrations } = require('./src/shared/config/schemaMigrations');
 
 // Global error handlers - DO NOT EXIT PROCESS in production
 process.on('uncaughtException', (error) => {
@@ -96,6 +97,7 @@ async function startServer() {
 
     logger.info('Syncing database schema...', { options: syncOptions });
     await db.sequelize.sync(syncOptions);
+    await runSchemaMigrations(db.sequelize);
     logger.info('Database schema sync completed');
 
     // Railway requires binding to 0.0.0.0
