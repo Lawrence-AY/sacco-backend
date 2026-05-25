@@ -7,6 +7,7 @@ const router = express.Router();
 router.use(protect, authorize(['MEMBER', 'ADMIN']));
 
 router.get('/profile', memberController.getProfile);
+router.post('/profile/photo', validate(schemas.profilePhotoUpload), memberController.uploadProfilePhoto);
 router.put('/profile', validate(schemas.profileUpdate), memberController.updateProfile);
 router.get('/loans', memberController.getLoans);
 router.post('/loans', validate(schemas.loanRequest), memberController.applyForLoan);

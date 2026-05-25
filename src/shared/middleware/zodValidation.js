@@ -15,6 +15,7 @@ const validate = (schema, source = 'body') => (req, res, next) => {
 const strictObject = (shape) => z.object(shape).strict();
 const optionalEmptyableString = (max) => z.string().trim().max(max).optional().or(z.literal(''));
 const dataImageUrl = z.string().trim().regex(/^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/=]+$/i);
+const profilePhotoDataUrl = dataImageUrl.max(2200000);
 
 const schemas = {
   login: strictObject({
@@ -66,6 +67,9 @@ const schemas = {
     }).optional(),
     passportPhotoUrl: z.string().trim().url().max(2048).optional().or(dataImageUrl.max(2200000)).or(z.literal('')),
     consentGiven: z.boolean().optional(),
+  }),
+  profilePhotoUpload: strictObject({
+    photo: profilePhotoDataUrl,
   }),
   roleUpdate: strictObject({
     role: z.enum(['MEMBER', 'FINANCE', 'ADMIN', 'SUPERADMIN', 'member', 'finance', 'admin', 'superadmin'])

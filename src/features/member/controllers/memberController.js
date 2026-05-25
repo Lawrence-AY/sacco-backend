@@ -12,6 +12,16 @@ const { createClient } = require('@supabase/supabase-js');
 const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_KEY
   ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY)
   : null;
+const supabaseStorage = process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY)
+  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY)
+  : null;
+const PROFILE_PHOTO_BUCKET = process.env.SUPABASE_PROFILE_PHOTO_BUCKET || 'profile-photos';
+const PROFILE_PHOTO_MAX_BYTES = 1.5 * 1024 * 1024;
+const PROFILE_PHOTO_TYPES = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+};
 const DEFAULT_KCB_MPESA_BASE_URL = 'https://kcb-mpesa.simrion.workers.dev';
 const LOCAL_KCB_MPESA_BASE_URL = 'https://kcb-mpesa.simrion.workers.dev';
 const DEFAULT_KCB_PAYBILL_NUMBER = '522522';
@@ -85,6 +95,57 @@ const getProfile = asyncHandler(async (req, res) => {
     throw new NotFoundError('User not found');
   }
   return ResponseHandler.success(res, UserDTO.private(user), 'Profile retrieved successfully');
+});
+
+const parseProfilePhotoDataUrl = (dataUrl) => {
+  const match = /^data:(image\/(?:png|jpe?g|webp));base64,([A-Za-z0-9+/=]+)$/i.exec(String(dataUrl || '').trim());
+  if (!match) {
+    throw new ValidationError('Profile photo must be a PNG, JPG, JPEG, or WEBP image.');
+  }
+
+  const mimeType = match[1].toLowerCase() === 'image/jpg' ? 'image/jpeg' : match[1].toLowerCase();
+  const extension = PROFILE_PHOTO_TYPES[mimeType];
+  if (!extension) {
+    throw new ValidationError('Profile photo must be a PNG, JPG, JPEG, or WEBP image.');
+  }
+
+  const buffer = Buffer.from(match[2], 'base64');
+  if (!buffer.length || buffer.length > PROFILE_PHOTO_MAX_BYTES) {
+    throw new ValidationError('Profile photo must be 1.5 MB or smaller.');
+  }
+
+  return { buffer, mimeType, extension };
+};
+
+const uploadProfilePhoto = asyncHandler(async (req, res) => {
+  if (!supabaseStorage) {
+    throw new ValidationError('Profile photo storage is not configured.');
+  }
+
+  const { buffer, mimeType, extension } = parseProfilePhotoDataUrl(req.body?.photo);
+  const objectPath = `members/${req.user.id}/passport-photo-${Date.now()}.${extension}`;
+
+  const { error: uploadError } = await supabaseStorage.storage
+    .from(PROFILE_PHOTO_BUCKET)
+    .upload(objectPath, buffer, {
+      contentType: mimeType,
+      cacheControl: '3600',
+      upsert: true,
+    });
+
+  if (uploadError) {
+    throw new ValidationError(`Profile photo upload failed: ${uploadError.message}`);
+  }
+
+  const { data } = supabaseStorage.storage
+    .from(PROFILE_PHOTO_BUCKET)
+    .getPublicUrl(objectPath);
+
+  const updated = await userService.updateUser(req.user.id, {
+    passportPhotoUrl: data.publicUrl,
+  });
+
+  return ResponseHandler.success(res, UserDTO.private(updated), 'Profile photo updated successfully', 200);
 });
 
 const updateProfile = asyncHandler(async (req, res) => {
@@ -587,6 +648,7 @@ const emailReport = asyncHandler(async (req, res) => {
 
 module.exports = {
   getProfile,
+  uploadProfilePhoto,
   updateProfile,
   getLoans,
   applyForLoan,

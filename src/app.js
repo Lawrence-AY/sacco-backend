@@ -250,12 +250,12 @@ app.use(timeoutMiddleware);
 
 // ============= BODY PARSING MIDDLEWARE =============
 app.use(express.json({
-  limit: '10kb',
+  limit: security.inputLimits.json,
   verify: (req, res, buffer) => {
     req.rawBody = buffer?.length ? buffer.toString('utf8') : '';
   }
 }));
-app.use(express.urlencoded({ limit: '10kb', extended: true }));
+app.use(express.urlencoded({ limit: security.inputLimits.urlencoded, extended: true }));
 app.use(cookieParser());
 app.use(auditLogger);
 
