@@ -50,7 +50,7 @@ const updateUser = async (id, data) => {
       kraPin: data.kraPin ?? user.kraPin,
       occupation: data.occupation ?? user.occupation,
       address: data.address ?? user.address,
-      dateOfBirth: data.dateOfBirth ?? user.dateOfBirth,
+      dateOfBirth: data.dateOfBirth === '' ? null : (data.dateOfBirth ?? user.dateOfBirth),
       gender: data.gender ?? user.gender,
       employer: data.employer ?? user.employer,
       monthlyIncome: data.monthlyIncome === '' ? null : (data.monthlyIncome ?? user.monthlyIncome),

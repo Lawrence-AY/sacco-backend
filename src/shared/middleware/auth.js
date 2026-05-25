@@ -148,17 +148,19 @@ const verifyOTP = (otp, hash) => {
 /**
  * Create login session
  */
-const createLoginSession = async (userId, userAgent, ipAddress) => {
+const createLoginSession = async (userId, deviceId, userAgent, ipAddress) => {
   const sessionId = crypto.randomUUID();
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
 
   await LoginSession.create({
     id: sessionId,
     userId,
+    deviceId: deviceId || 'unknown',
     userAgent: userAgent || 'Unknown',
     ipAddress: ipAddress || 'Unknown',
-    expiresAt,
-    isActive: true
+    status: 'ACTIVE',
+    event: 'Login successful',
+    loginAt: new Date(),
+    lastActiveAt: new Date()
   });
 
   return sessionId;
@@ -169,7 +171,12 @@ const createLoginSession = async (userId, userAgent, ipAddress) => {
  */
 const invalidateLoginSession = async (sessionId) => {
   await LoginSession.update(
-    { isActive: false },
+    {
+      status: 'LOGGED_OUT',
+      logoutAt: new Date(),
+      lastActiveAt: new Date(),
+      event: 'Revoked by logout'
+    },
     { where: { id: sessionId } }
   );
 };
@@ -205,13 +212,12 @@ const authenticate = async (req, res, next) => {
     const session = await LoginSession.findOne({
       where: {
         userId: user.id,
-        isActive: true,
-        expiresAt: { [require('sequelize').Op.gt]: new Date() }
+        status: 'ACTIVE'
       }
     });
 
     if (!session) {
-      return unauthorized(res, 'Session expired');
+      return unauthorized(res, 'Session expired or revoked');
     }
 
     // Attach user and session to request
@@ -256,8 +262,7 @@ const optionalAuthenticate = async (req, res, next) => {
         const session = await LoginSession.findOne({
           where: {
             userId: user?.id,
-            isActive: true,
-            expiresAt: { [require('sequelize').Op.gt]: new Date() }
+            status: 'ACTIVE'
           }
         });
 
