@@ -225,13 +225,9 @@ app.use(['/api', '/search'], (req, res, next) => {
 
   return res.status(503).json({
     success: false,
-    message: app.locals.apiStartupError
-      ? 'API startup failed. Check the backend logs for details.'
-      : 'API is starting. Please try again in a moment.',
+    message: 'Service is temporarily unavailable. Please try again later.',
+    errorCode: 'ERR_SERVICE_UNAVAILABLE',
     timestamp: new Date().toISOString(),
-    ...(process.env.NODE_ENV === 'development' && app.locals.apiStartupError
-      ? { error: app.locals.apiStartupError }
-      : {}),
   });
 });
 
@@ -306,13 +302,12 @@ app.use(auditLogger);
 app.get('/health', (req, res) => {
   res.status(200).json({
     success: true,
-    message: 'Server is running',
+    message: 'Service status retrieved',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    environment: process.env.NODE_ENV,
     api: {
       ready: Boolean(app.locals.apiReady),
-      status: app.locals.apiStartupError ? 'error' : app.locals.apiReady ? 'ready' : 'starting',
+      status: app.locals.apiReady ? 'ready' : 'unavailable',
     },
   });
 });
@@ -322,15 +317,9 @@ app.get('/ready', (req, res) => {
 
   res.status(ready ? 200 : 503).json({
     success: ready,
-    message: app.locals.apiStartupError
-      ? 'API startup failed'
-      : ready
-        ? 'API is ready'
-        : 'API is starting',
+    message: ready ? 'Service is ready' : 'Service is temporarily unavailable',
+    errorCode: ready ? undefined : 'ERR_SERVICE_UNAVAILABLE',
     timestamp: new Date().toISOString(),
-    ...(process.env.NODE_ENV === 'development' && app.locals.apiStartupError
-      ? { error: app.locals.apiStartupError }
-      : {}),
   });
 });
 
@@ -373,9 +362,9 @@ app.get('/health/detailed', async (req, res) => {
 
     res.status(503).json({
       success: false,
-      message: 'Service unavailable',
+      message: 'Service is temporarily unavailable',
+      errorCode: 'ERR_SERVICE_UNAVAILABLE',
       timestamp: new Date().toISOString(),
-      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal error'
     });
   }
 });
@@ -397,7 +386,8 @@ app.get('/health/railway', async (req, res) => {
     res.status(503).json({
       status: 'error',
       timestamp: new Date().toISOString(),
-      error: 'Database connection failed'
+      message: 'Service is temporarily unavailable',
+      errorCode: 'ERR_SERVICE_UNAVAILABLE'
     });
   }
 });
