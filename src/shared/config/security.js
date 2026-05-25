@@ -131,10 +131,10 @@ const sessionConfig = {
 
 // Input Validation Limits
 const inputLimits = {
-  json: '10kb',
+  json: '3mb',
   urlencoded: '10kb',
   text: '1mb',
-  file: '5mb',
+  file: '1.5mb',
   maxArraySize: 100,
   maxObjectDepth: 5,
   maxStringLength: 10000
@@ -189,15 +189,14 @@ const otpConfig = {
 // File Upload Security
 const fileUploadConfig = {
   allowedTypes: [
-    'image/jpeg', 'image/png', 'image/gif', 'image/webp',
-    'application/pdf', 'text/plain'
+    'image/jpeg', 'image/png', 'image/webp'
   ],
-  maxFileSize: 5 * 1024 * 1024, // 5MB
-  maxFiles: 5,
+  maxFileSize: 1.5 * 1024 * 1024, // 1.5MB
+  maxFiles: 1,
   uploadDir: 'uploads/',
   quarantineDir: 'uploads/quarantine/',
   virusScan: isProduction, // Enable virus scanning in production
-  allowedExtensions: ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf', '.txt']
+  allowedExtensions: ['.jpg', '.jpeg', '.png', '.webp']
 };
 
 // Database Security
