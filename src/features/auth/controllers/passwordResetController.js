@@ -3,6 +3,7 @@ const { Op } = require('sequelize');
 const User = require('../../../models/user.model');
 const ResponseHandler = require('../../../shared/utils/response');
 const { UnauthorizedError, ValidationError } = require('../../../shared/utils/errors');
+const logger = require('../../../shared/utils/logger');
 const {
   RESET_TOKEN_TTL_MINUTES,
   createLogFingerprint,
@@ -24,7 +25,8 @@ const forgotPassword = async (req, res, next) => {
       throw new ValidationError('Email is required');
     }
 
-    console.info('[AUTH] Forgot password requested', {
+    logger.info('Forgot password requested', {
+      module: 'auth',
       emailFingerprint: createLogFingerprint(email)
     });
 
@@ -47,13 +49,16 @@ const forgotPassword = async (req, res, next) => {
           expiresInMinutes: RESET_TOKEN_TTL_MINUTES
         });
 
-        console.info('[AUTH] Password reset email sent', {
+        logger.info('Password reset email sent', {
+          module: 'auth',
           userId: user.id
         });
       } catch (emailError) {
-        console.error('[AUTH] Password reset email failed', {
+        logger.error('Password reset email failed', {
+          module: 'auth',
           userId: user.id,
-          message: emailError.message
+          error: emailError.message,
+          stack: emailError.stack,
         });
 
         user.passwordResetToken = null;
@@ -64,9 +69,11 @@ const forgotPassword = async (req, res, next) => {
 
     return ResponseHandler.success(res, null, FORGOT_PASSWORD_SUCCESS_MESSAGE, 200);
   } catch (error) {
-    console.error('[AUTH] Forgot password failed', {
+    logger.error('Forgot password failed', {
+      module: 'auth',
       name: error.name,
-      message: error.message
+      error: error.message,
+      stack: error.stack,
     });
     return next(error);
   }
@@ -101,7 +108,8 @@ const resetPassword = async (req, res, next) => {
     });
 
     if (!user) {
-      console.warn('[AUTH] Invalid or expired password reset token used', {
+      logger.warn('Invalid or expired password reset token used', {
+        module: 'auth',
         tokenFingerprint: createLogFingerprint(token)
       });
       throw new UnauthorizedError('Password reset token is invalid or has expired');
@@ -112,15 +120,18 @@ const resetPassword = async (req, res, next) => {
     user.passwordResetExpires = null;
     await user.save({ fields: ['password', 'passwordResetToken', 'passwordResetExpires'] });
 
-    console.info('[AUTH] Password reset completed', {
+    logger.info('Password reset completed', {
+      module: 'auth',
       userId: user.id
     });
 
     return ResponseHandler.success(res, null, 'Password reset successful', 200);
   } catch (error) {
-    console.error('[AUTH] Reset password failed', {
+    logger.error('Reset password failed', {
+      module: 'auth',
       name: error.name,
-      message: error.message
+      error: error.message,
+      stack: error.stack,
     });
     return next(error);
   }
@@ -157,9 +168,11 @@ const changePassword = async (req, res, next) => {
 
     return ResponseHandler.success(res, null, 'Password changed successfully', 200);
   } catch (error) {
-    console.error('[AUTH] Change password failed', {
+    logger.error('Change password failed', {
+      module: 'auth',
       name: error.name,
-      message: error.message
+      error: error.message,
+      stack: error.stack,
     });
     return next(error);
   }

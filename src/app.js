@@ -5,6 +5,7 @@ const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
+const crypto = require('crypto');
 
 // NOTE: dotenv is loaded in index.js BEFORE this module is imported
 // Do NOT call dotenv.config() here to avoid timing issues
@@ -16,7 +17,7 @@ const security = require('./shared/config/security');
 const { validate, schemas } = require('./shared/middleware/zodValidation');
 
 // Import email config utility (for diagnostics only - validates lazily)
-const { getConfigStatus, emailLogger } = require('./shared/config/emailConfig');
+const { getConfigStatus } = require('./shared/config/emailConfig');
 
 // Import database for health checks
 const db = require('./models');
@@ -45,6 +46,10 @@ const app = express();
 app.locals.apiReady = false;
 app.locals.apiStartupError = null;
 
+// Railway terminates TLS and forwards the original client IP in proxy headers.
+// This must be set before express-rate-limit reads req.ip.
+app.set('trust proxy', 1);
+
 const sanitizeString = (value) => value
   .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
   .replace(/javascript:/gi, '')
@@ -63,6 +68,13 @@ const isLocalRequest = (req) => {
   const ip = req.ip || req.socket?.remoteAddress || '';
   return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
 };
+
+app.use((req, res, next) => {
+  const requestId = req.get('X-Request-ID') || crypto.randomUUID();
+  req.id = requestId;
+  res.setHeader('X-Request-ID', requestId);
+  next();
+});
 
 // ============= SECURITY MIDDLEWARE =============
 app.use(helmet({
@@ -92,6 +104,7 @@ const limiter = rateLimit({
   max: 100, // limit each IP to 100 requests per windowMs
   message: {
     success: false,
+    code: 'ERR_RATE_LIMIT',
     message: 'Too many requests from this IP, please try again later.'
   },
   standardHeaders: true,
@@ -107,6 +120,7 @@ const authLimiter = rateLimit({
   max: 5, // limit each IP to 5 auth requests per windowMs
   message: {
     success: false,
+    code: 'ERR_RATE_LIMIT',
     message: 'Too many authentication attempts, please try again later.'
   },
   standardHeaders: true,
@@ -129,6 +143,7 @@ const sensitiveLimiter = rateLimit({
   max: 10, // limit each IP to 10 sensitive operations per hour
   message: {
     success: false,
+    code: 'ERR_RATE_LIMIT',
     message: 'Too many sensitive operations, please try again later.'
   },
   standardHeaders: true,
@@ -144,6 +159,7 @@ const searchLimiter = rateLimit({
   max: 30,
   message: {
     success: false,
+    code: 'ERR_RATE_LIMIT',
     message: 'Too many search requests, please try again later.',
     errorCode: 'ERR_RATE_LIMIT',
     timestamp: new Date().toISOString(),
@@ -226,7 +242,9 @@ app.use(['/api', '/search'], (req, res, next) => {
   return res.status(503).json({
     success: false,
     message: 'Service is temporarily unavailable. Please try again later.',
+    code: 'ERR_SERVICE_UNAVAILABLE',
     errorCode: 'ERR_SERVICE_UNAVAILABLE',
+    requestId: req.id || 'unknown',
     timestamp: new Date().toISOString(),
   });
 });
@@ -251,6 +269,7 @@ app.use((req, res, next) => {
 
   // Log request
   logger.http(`Request: ${req.method} ${req.originalUrl}`, {
+    requestId: req.id,
     ip: req.ip,
     userAgent: req.get('User-Agent'),
     timestamp: new Date().toISOString()
@@ -262,6 +281,7 @@ app.use((req, res, next) => {
     const level = res.statusCode >= 400 ? 'warn' : 'info';
 
     logger[level](`Response: ${req.method} ${req.originalUrl} ${res.statusCode}`, {
+      requestId: req.id,
       duration: `${duration}ms`,
       ip: req.ip,
       statusCode: res.statusCode,
@@ -318,6 +338,7 @@ app.get('/ready', (req, res) => {
   res.status(ready ? 200 : 503).json({
     success: ready,
     message: ready ? 'Service is ready' : 'Service is temporarily unavailable',
+    code: ready ? undefined : 'ERR_SERVICE_UNAVAILABLE',
     errorCode: ready ? undefined : 'ERR_SERVICE_UNAVAILABLE',
     timestamp: new Date().toISOString(),
   });
@@ -363,6 +384,7 @@ app.get('/health/detailed', async (req, res) => {
     res.status(503).json({
       success: false,
       message: 'Service is temporarily unavailable',
+      code: 'ERR_SERVICE_UNAVAILABLE',
       errorCode: 'ERR_SERVICE_UNAVAILABLE',
       timestamp: new Date().toISOString(),
     });
@@ -387,6 +409,7 @@ app.get('/health/railway', async (req, res) => {
       status: 'error',
       timestamp: new Date().toISOString(),
       message: 'Service is temporarily unavailable',
+      code: 'ERR_SERVICE_UNAVAILABLE',
       errorCode: 'ERR_SERVICE_UNAVAILABLE'
     });
   }

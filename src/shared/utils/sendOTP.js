@@ -1,4 +1,5 @@
 const { createClient } = require('@supabase/supabase-js');
+const logger = require('./logger');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -18,18 +19,18 @@ const sendOTP = async (email) => {
       }
     });
 
-    console.debug('[AUTH] Supabase OTP response received');
+    logger.debug('Supabase OTP response received', { module: 'auth' });
 
     if (error) {
-      console.error('[AUTH] Supabase OTP error', { message: error.message });
+      logger.error('Supabase OTP error', { module: 'auth', error: error.message });
       throw new Error(error.message);
     }
 
-    console.info('[AUTH] OTP email sent');
+    logger.info('Supabase OTP email sent', { module: 'auth' });
 
     return data;
   } catch (err) {
-    console.error('[AUTH] Failed to send OTP', { message: err.message });
+    logger.error('Failed to send Supabase OTP', { module: 'auth', error: err.message, stack: err.stack });
     throw err;
   }
 };

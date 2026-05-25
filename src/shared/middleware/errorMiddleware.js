@@ -115,10 +115,11 @@ const errorHandler = (err, req, res, next) => {
       name: err.name,
       message: err.message,
       statusCode,
-      errorCode: normalized.errorCode,
+      code: normalized.errorCode,
       stack: err.stack
     },
     request: {
+      requestId: req.id || null,
       method: req.method,
       url: req.originalUrl,
       ip: req.ip,
@@ -134,8 +135,10 @@ const errorHandler = (err, req, res, next) => {
   // Send error response
   const errorResponse = {
     success: false,
+    code: normalized.errorCode,
     message: normalized.message,
     errorCode: normalized.errorCode,
+    requestId: req.id || 'unknown',
     timestamp: new Date().toISOString(),
     ...(normalized.details && { details: normalized.details }),
     ...(isDevelopment && {
@@ -152,9 +155,10 @@ const errorHandler = (err, req, res, next) => {
 
   // Log the response
   logger.warn('Error Response Sent:', {
+    requestId: req.id || null,
     statusCode,
     message: normalized.message,
-    errorCode: normalized.errorCode,
+    code: normalized.errorCode,
     url: req.originalUrl,
     method: req.method,
     responseSize: JSON.stringify(errorResponse).length
@@ -171,6 +175,7 @@ const notFoundHandler = (req, res, next) => {
   logger.warn('Route not found:', {
     method: req.method,
     url: req.originalUrl,
+    requestId: req.id || null,
     ip: req.ip,
     userAgent: req.get('User-Agent')
   });
@@ -193,8 +198,10 @@ const timeoutMiddleware = (req, res, next) => {
     if (!res.headersSent) {
       res.status(408).json({
         success: false,
+        code: 'ERR_REQUEST_TIMEOUT',
         message: 'Request timeout',
         errorCode: 'ERR_REQUEST_TIMEOUT',
+        requestId: req.id || 'unknown',
         timestamp: new Date().toISOString()
       });
     }

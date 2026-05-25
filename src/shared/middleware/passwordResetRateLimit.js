@@ -1,5 +1,6 @@
 const ResponseHandler = require('../utils/response');
 const { createLogFingerprint, normalizeEmail } = require('../utils/passwordReset');
+const logger = require('../utils/logger');
 
 const WINDOW_MS = 60 * 60 * 1000;
 const MAX_REQUESTS = 3;
@@ -13,7 +14,8 @@ const forgotPasswordRateLimiter = (req, res, next) => {
   const attempts = (requestStore.get(key) || []).filter((timestamp) => timestamp > windowStart);
 
   if (attempts.length >= MAX_REQUESTS) {
-    console.warn('[AUTH] Forgot password rate limit exceeded', {
+    logger.warn('Forgot password rate limit exceeded', {
+      module: 'auth',
       emailFingerprint: createLogFingerprint(email)
     });
 

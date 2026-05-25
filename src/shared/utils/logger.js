@@ -33,6 +33,42 @@ winston.addColors(colors);
 // Define format based on environment
 const isProduction = process.env.NODE_ENV === 'production';
 
+const SENSITIVE_KEYS = [
+  'password',
+  'newPassword',
+  'currentPassword',
+  'otp',
+  'token',
+  'accessToken',
+  'refreshToken',
+  'secret',
+  'key',
+  'authorization',
+  'cookie',
+];
+
+const redact = (value) => {
+  if (!value || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(redact);
+
+  return Object.entries(value).reduce((safe, [key, item]) => {
+    const lower = key.toLowerCase();
+    safe[key] = SENSITIVE_KEYS.some((sensitive) => lower.includes(sensitive))
+      ? '[REDACTED]'
+      : redact(item);
+    return safe;
+  }, {});
+};
+
+const normalizeLogInput = (message, meta = {}) => {
+  if (message && typeof message === 'object') {
+    const { message: logMessage = 'Log event', ...rest } = message;
+    return { message: logMessage, meta: redact({ ...rest, ...meta }) };
+  }
+
+  return { message, meta: redact(meta) };
+};
+
 const format = winston.format.combine(
   winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss:ms' }),
   winston.format.errors({ stack: true }),
@@ -91,11 +127,26 @@ logger.on('error', (error) => {
 
 // Export logger methods for easy use
 module.exports = {
-  error: (message, meta = {}) => logger.error(message, meta),
-  warn: (message, meta = {}) => logger.warn(message, meta),
-  info: (message, meta = {}) => logger.info(message, meta),
-  http: (message, meta = {}) => logger.http(message, meta),
-  debug: (message, meta = {}) => logger.debug(message, meta),
+  error: (message, meta = {}) => {
+    const normalized = normalizeLogInput(message, meta);
+    return logger.error(normalized.message, normalized.meta);
+  },
+  warn: (message, meta = {}) => {
+    const normalized = normalizeLogInput(message, meta);
+    return logger.warn(normalized.message, normalized.meta);
+  },
+  info: (message, meta = {}) => {
+    const normalized = normalizeLogInput(message, meta);
+    return logger.info(normalized.message, normalized.meta);
+  },
+  http: (message, meta = {}) => {
+    const normalized = normalizeLogInput(message, meta);
+    return logger.http(normalized.message, normalized.meta);
+  },
+  debug: (message, meta = {}) => {
+    const normalized = normalizeLogInput(message, meta);
+    return logger.debug(normalized.message, normalized.meta);
+  },
 
   // Stream for Morgan HTTP logging
   stream: {

@@ -42,6 +42,17 @@ const schemas = {
   refresh: strictObject({
     refreshToken: z.string().min(1).optional(),
   }),
+  forgotPassword: strictObject({
+    email: z.string().trim().email().toLowerCase(),
+  }),
+  resetPassword: strictObject({
+    token: z.string().trim().min(32).max(256),
+    newPassword: z.string().min(8).max(128),
+  }),
+  changePassword: strictObject({
+    currentPassword: z.string().min(1).max(128),
+    newPassword: z.string().min(8).max(128),
+  }),
   profileUpdate: strictObject({
     firstName: z.string().trim().min(1).max(50).optional(),
     lastName: z.string().trim().min(1).max(50).optional(),

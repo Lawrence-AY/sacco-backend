@@ -1,16 +1,11 @@
 const nodemailer = require('nodemailer');
+const logger = require('../utils/logger');
 
 // Logger utility
 const emailLogger = {
-  info: (message, data = {}) => {
-    console.log(`[EMAIL:INFO] ${message}`, data);
-  },
-  warn: (message, data = {}) => {
-    console.warn(`[EMAIL:WARN] ${message}`, data);
-  },
-  error: (message, data = {}) => {
-    console.error(`[EMAIL:ERROR] ${message}`, data);
-  }
+  info: (message, data = {}) => logger.info(message, { module: 'email', ...data }),
+  warn: (message, data = {}) => logger.warn(message, { module: 'email', ...data }),
+  error: (message, data = {}) => logger.error(message, { module: 'email', ...data }),
 };
 
 // Email config state

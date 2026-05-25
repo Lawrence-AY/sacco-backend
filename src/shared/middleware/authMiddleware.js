@@ -7,7 +7,8 @@ const {
   ForbiddenError,
   ValidationError,
   ConflictError,
-  RateLimitError
+  RateLimitError,
+  AppError
 } = require('../utils/errors');
 const asyncHandler = require('../utils/asyncHandler');
 
@@ -98,6 +99,8 @@ const clearAuthCookies = (res) => {
 const exposeTokensForEnvironment = (tokens) => {
   return tokens;
 };
+
+const createAuthTemporaryError = () => new AppError('Something went wrong.', 503, 'ERR_AUTH_TEMPORARY');
 
 const ensureMemberRecords = async (user, source = {}) => {
   let member = await db.Member.findOne({ where: { userId: user.id } });
@@ -241,12 +244,18 @@ const loginUser = asyncHandler(async (req, res) => {
   try {
     await sendOTPEmail(user.email, otp);
   } catch (emailError) {
-    logger.error('OTP email failed during login', {
+    logger.error({
+      message: 'OTP send failed',
+      module: 'auth',
       userId: user.id,
       email: user.email,
-      error: emailError.message
+      error: emailError.message,
+      stack: emailError.stack,
     });
-    throw new Error('Unable to send login verification code. Please try again later.');
+    user.otp = null;
+    user.otpExpiresAt = null;
+    await user.save({ fields: ['otp', 'otpExpiresAt'] });
+    throw createAuthTemporaryError();
   }
 
   return ResponseHandler.success(
@@ -391,8 +400,22 @@ const registerUser = asyncHandler(async (req, res) => {
     otpExpiresAt: new Date(Date.now() + 10 * 60 * 1000) // 10 min
   });
 
-  // Send email with OTP
-  await sendOTPEmail(email, otp);
+  try {
+    await sendOTPEmail(email, otp);
+  } catch (emailError) {
+    logger.error({
+      message: 'OTP send failed during registration',
+      module: 'auth',
+      userId: user.id,
+      email: user.email,
+      error: emailError.message,
+      stack: emailError.stack,
+    });
+    user.otp = null;
+    user.otpExpiresAt = null;
+    await user.save({ fields: ['otp', 'otpExpiresAt'] });
+    throw createAuthTemporaryError();
+  }
 
   return ResponseHandler.created(
     res,
@@ -543,7 +566,22 @@ const resendOTP = asyncHandler(async (req, res) => {
   user.otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
   await user.save();
 
-  await sendOTPEmail(email, otp);
+  try {
+    await sendOTPEmail(email, otp);
+  } catch (emailError) {
+    logger.error({
+      message: 'OTP resend failed',
+      module: 'auth',
+      userId: user.id,
+      email: user.email,
+      error: emailError.message,
+      stack: emailError.stack,
+    });
+    user.otp = null;
+    user.otpExpiresAt = null;
+    await user.save({ fields: ['otp', 'otpExpiresAt'] });
+    throw createAuthTemporaryError();
+  }
 
   return ResponseHandler.success(res, { message: 'OTP resent successfully' }, 'OTP resent');
 });
