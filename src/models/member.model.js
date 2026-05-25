@@ -25,7 +25,12 @@ const Member = sequelize.define('Member', {
     defaultValue: false
   }
 }, {
-  timestamps: true
+  timestamps: true,
+  indexes: [
+    { fields: ['memberNumber'] },
+    { fields: ['nationalId'] },
+    { fields: ['userId'] },
+  ],
 });
 
 module.exports = Member;

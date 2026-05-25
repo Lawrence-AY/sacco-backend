@@ -43,7 +43,12 @@ const Loan = sequelize.define('Loan', {
   },
   approvedById: DataTypes.UUID
 }, {
-  timestamps: true
+  timestamps: true,
+  indexes: [
+    { fields: ['memberId'] },
+    { fields: ['status'] },
+    { fields: ['type'] },
+  ],
 });
 
 module.exports = Loan;

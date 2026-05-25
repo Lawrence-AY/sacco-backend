@@ -8,137 +8,153 @@ const asyncHandler = (fn) => (req, res, next) => {
   Promise.resolve(fn(req, res, next)).catch(next);
 };
 
+const redact = (value) => {
+  if (!value || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(redact);
+
+  return Object.entries(value).reduce((safe, [key, item]) => {
+    const lower = key.toLowerCase();
+    safe[key] = ['password', 'token', 'secret', 'authorization', 'otp', 'key'].some((sensitive) => lower.includes(sensitive))
+      ? '[REDACTED]'
+      : redact(item);
+    return safe;
+  }, {});
+};
+
+const normalizeSequelizeError = (err) => {
+  if (err.name === 'SequelizeValidationError') {
+    return {
+      statusCode: 400,
+      errorCode: 'ERR_DATABASE_VALIDATION',
+      message: 'Validation failed',
+      details: err.errors?.map((e) => ({ field: e.path, message: e.message })) || null,
+    };
+  }
+
+  if (err.name === 'SequelizeUniqueConstraintError') {
+    return {
+      statusCode: 409,
+      errorCode: 'ERR_DUPLICATE_RESOURCE',
+      message: 'Resource already exists',
+      details: err.errors?.map((e) => ({ field: e.path, message: `This ${e.path} is already in use` })) || null,
+    };
+  }
+
+  if (err.name === 'SequelizeForeignKeyConstraintError') {
+    return {
+      statusCode: 400,
+      errorCode: 'ERR_INVALID_REFERENCE',
+      message: 'Invalid referenced resource',
+    };
+  }
+
+  if ([
+    'SequelizeConnectionError',
+    'SequelizeConnectionRefusedError',
+    'SequelizeHostNotFoundError',
+    'SequelizeHostNotReachableError',
+    'SequelizeConnectionTimedOutError',
+    'SequelizeDatabaseError',
+  ].includes(err.name)) {
+    return {
+      statusCode: err.name === 'SequelizeDatabaseError' ? 500 : 503,
+      errorCode: err.name === 'SequelizeDatabaseError' ? 'ERR_DATABASE' : 'ERR_DATABASE_UNAVAILABLE',
+      message: err.name === 'SequelizeDatabaseError'
+        ? 'Something went wrong.'
+        : 'Service temporarily unavailable',
+    };
+  }
+
+  return null;
+};
+
+const normalizeError = (err) => {
+  const dbError = normalizeSequelizeError(err);
+  if (dbError) return dbError;
+
+  if (err.name === 'JsonWebTokenError') {
+    return { statusCode: 401, errorCode: 'ERR_INVALID_TOKEN', message: 'Invalid authentication token' };
+  }
+
+  if (err.name === 'TokenExpiredError') {
+    return { statusCode: 401, errorCode: 'ERR_TOKEN_EXPIRED', message: 'Authentication token has expired' };
+  }
+
+  if (err.status === 429 || err.statusCode === 429) {
+    return { statusCode: 429, errorCode: 'ERR_RATE_LIMIT', message: 'Too many requests, please try again later' };
+  }
+
+  if (err instanceof AppError || err.isOperational) {
+    return {
+      statusCode: err.statusCode || err.status || 500,
+      errorCode: err.errorCode || 'ERR_APPLICATION',
+      message: err.message || 'Something went wrong.',
+      details: err.details || null,
+    };
+  }
+
+  return {
+    statusCode: err.statusCode || err.status || 500,
+    errorCode: 'ERR_INTERNAL_SERVER',
+    message: 'Something went wrong.',
+  };
+};
+
 /**
  * Central error handling middleware
  * Must be the last middleware in the Express app
  */
 const errorHandler = (err, req, res, next) => {
   const isDevelopment = process.env.NODE_ENV === 'development';
+  const normalized = normalizeError(err);
+  const statusCode = normalized.statusCode >= 400 && normalized.statusCode < 600 ? normalized.statusCode : 500;
 
   // Log error with full context
   logger.error('Request Error:', {
     error: {
       name: err.name,
       message: err.message,
-      status: err.status || 500,
+      statusCode,
+      errorCode: normalized.errorCode,
       stack: err.stack
     },
     request: {
       method: req.method,
       url: req.originalUrl,
       ip: req.ip,
+      userId: req.user?.id || null,
       userAgent: req.get('User-Agent'),
-      body: isDevelopment ? req.body : '[REDACTED]',
-      params: req.params,
-      query: req.query
+      body: redact(req.body),
+      params: redact(req.params),
+      query: redact(req.query)
     },
     timestamp: new Date().toISOString()
   });
 
-  // Default error response
-  let status = err.status || 500;
-  let message = err.message || 'Internal Server Error';
-  let details = err.details || null;
-
-  // Handle specific error types
-  if (err.name === 'SequelizeValidationError') {
-    status = 400;
-    message = 'Validation error';
-    details = err.errors.map(e => ({
-      field: e.path,
-      message: e.message,
-      value: e.value
-    }));
-  }
-
-  if (err.name === 'SequelizeUniqueConstraintError') {
-    status = 409;
-    message = 'Resource already exists';
-    details = err.errors.map(e => ({
-      field: e.path,
-      message: `This ${e.path} is already in use`,
-      value: e.value
-    }));
-  }
-
-  if (err.name === 'SequelizeForeignKeyConstraintError') {
-    status = 400;
-    message = 'Invalid reference';
-    details = {
-      table: err.table,
-      field: err.fields?.join(', '),
-      message: 'Referenced resource does not exist'
-    };
-  }
-
-  if (err.name === 'SequelizeConnectionError' || err.name === 'SequelizeConnectionRefusedError') {
-    status = 503;
-    message = 'Database connection error';
-    details = 'Service temporarily unavailable';
-  }
-
-  if (err.name === 'JsonWebTokenError') {
-    status = 401;
-    message = 'Invalid authentication token';
-  }
-
-  if (err.name === 'TokenExpiredError') {
-    status = 401;
-    message = 'Authentication token has expired';
-  }
-
-  if (err.name === 'UnauthorizedError') {
-    status = 401;
-    message = err.message || 'Unauthorized access';
-  }
-
-  if (err.name === 'ForbiddenError') {
-    status = 403;
-    message = err.message || 'Access forbidden';
-  }
-
-  if (err.name === 'NotFoundError') {
-    status = 404;
-    message = err.message || 'Resource not found';
-  }
-
-  if (err.name === 'ValidationError') {
-    status = 400;
-    message = err.message || 'Validation failed';
-  }
-
-  if (err.name === 'CastError') {
-    status = 400;
-    message = 'Invalid data format';
-  }
-
-  // Handle rate limiting
-  if (err.status === 429 || err.message?.includes('Too many')) {
-    status = 429;
-    message = 'Too many requests, please try again later';
-  }
-
   // Send error response
   const errorResponse = {
     success: false,
-    message,
-    ...(details && { details }),
+    message: normalized.message,
+    errorCode: normalized.errorCode,
     timestamp: new Date().toISOString(),
+    ...(normalized.details && { details: normalized.details }),
     ...(isDevelopment && {
       error: {
         name: err.name,
+        message: err.message,
         stack: err.stack
       },
       requestId: req.id || 'unknown'
     })
   };
 
-  res.status(status).json(errorResponse);
+  res.status(statusCode).json(errorResponse);
 
   // Log the response
   logger.warn('Error Response Sent:', {
-    status,
-    message,
+    statusCode,
+    message: normalized.message,
+    errorCode: normalized.errorCode,
     url: req.originalUrl,
     method: req.method,
     responseSize: JSON.stringify(errorResponse).length
@@ -150,8 +166,7 @@ const errorHandler = (err, req, res, next) => {
  * Should be placed after all routes
  */
 const notFoundHandler = (req, res, next) => {
-  const error = new AppError(`Route not found: ${req.originalUrl}`, 404);
-  error.name = 'NotFoundError';
+  const error = new AppError('Resource not found', 404, 'ERR_ROUTE_NOT_FOUND');
 
   logger.warn('Route not found:', {
     method: req.method,
@@ -179,6 +194,7 @@ const timeoutMiddleware = (req, res, next) => {
       res.status(408).json({
         success: false,
         message: 'Request timeout',
+        errorCode: 'ERR_REQUEST_TIMEOUT',
         timestamp: new Date().toISOString()
       });
     }

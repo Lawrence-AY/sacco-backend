@@ -61,6 +61,12 @@ const User = sequelize.define('User', {
       fields: ['email']
     },
     {
+      fields: ['phone']
+    },
+    {
+      fields: ['nationalId']
+    },
+    {
       fields: ['passwordResetToken']
     }
   ]

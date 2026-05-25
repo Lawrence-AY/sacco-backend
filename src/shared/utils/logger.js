@@ -65,17 +65,15 @@ const transports = [
     )
   }),
 
-  // File transport for all logs in production
-  ...(isProduction ? [
-    new winston.transports.File({
-      filename: path.join(logsDir, 'combined.log'),
-      format: winston.format.combine(
-        winston.format.timestamp(),
-        winston.format.errors({ stack: true }),
-        winston.format.json()
-      )
-    })
-  ] : [])
+  // File transport for all logs in every environment.
+  new winston.transports.File({
+    filename: path.join(logsDir, 'combined.log'),
+    format: winston.format.combine(
+      winston.format.timestamp(),
+      winston.format.errors({ stack: true }),
+      winston.format.json()
+    )
+  })
 ];
 
 // Create the logger

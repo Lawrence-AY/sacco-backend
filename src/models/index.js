@@ -11,6 +11,7 @@ const SystemConfig = require('./systemConfig.model');
 const MembershipApplication = require('./membershipApplication.model');
 const SalaryDeduction = require('./salaryDeduction.model');
 const LoginSession = require('./loginSession.model');
+const AuditLog = require('./auditLog.model');
 
 const sequelize = require('../shared/config/db');
 
@@ -66,7 +67,8 @@ const db = {
   SystemConfig,
   MembershipApplication,
   SalaryDeduction,
-  LoginSession
+  LoginSession,
+  AuditLog
 };
 
 module.exports = db;

@@ -34,8 +34,38 @@ const ensureUserProfileColumns = async (sequelize) => {
   }
 };
 
+const searchIndexes = [
+  ['Members', ['memberNumber'], 'idx_members_member_number'],
+  ['Members', ['nationalId'], 'idx_members_national_id'],
+  ['Users', ['email'], 'idx_users_email'],
+  ['Users', ['phone'], 'idx_users_phone'],
+  ['Users', ['nationalId'], 'idx_users_national_id'],
+  ['Transactions', ['reference'], 'idx_transactions_reference'],
+  ['Transactions', ['memberId'], 'idx_transactions_member_id'],
+  ['Loans', ['memberId'], 'idx_loans_member_id'],
+  ['Loans', ['status'], 'idx_loans_status'],
+  ['MembershipApplications', ['email'], 'idx_applications_email'],
+  ['MembershipApplications', ['phone'], 'idx_applications_phone'],
+  ['MembershipApplications', ['nationalId'], 'idx_applications_national_id'],
+  ['MembershipApplications', ['paymentReference'], 'idx_applications_payment_reference'],
+];
+
+const ensureSearchIndexes = async (sequelize) => {
+  const queryInterface = sequelize.getQueryInterface();
+
+  for (const [tableName, fields, name] of searchIndexes) {
+    const indexes = await queryInterface.showIndex(tableName).catch(() => []);
+    const exists = indexes.some((index) => index.name === name);
+    if (!exists) {
+      await queryInterface.addIndex(tableName, fields, { name });
+      logger.info('Added search index', { tableName, fields, name });
+    }
+  }
+};
+
 const runSchemaMigrations = async (sequelize) => {
   await ensureUserProfileColumns(sequelize);
+  await ensureSearchIndexes(sequelize);
 };
 
 module.exports = {

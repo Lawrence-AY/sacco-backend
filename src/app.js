@@ -35,6 +35,7 @@ const shareRoutes = require('./features/shares/routes/shareRoutes');
 const memberRoutes = require('./features/member/routes/memberRoutes');
 const financeRoutes = require('./features/finance/routes/financeRoutes');
 const adminRoutes = require('./features/admin/routes/adminRoutes');
+const searchRoutes = require('./features/search/routes/searchRoutes');
 
 const applicationController = require('./features/applications/controllers/applicationController');
 
@@ -43,6 +44,20 @@ const { loginUser, verifyLoginOTP, refreshToken, logoutUser, registerUser, verif
 const app = express();
 app.locals.apiReady = false;
 app.locals.apiStartupError = null;
+
+const sanitizeString = (value) => value
+  .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+  .replace(/javascript:/gi, '')
+  .replace(/\son\w+=/gi, '');
+
+const sanitizeInput = (value) => {
+  if (typeof value === 'string') return sanitizeString(value);
+  if (Array.isArray(value)) return value.map(sanitizeInput);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitizeInput(item)]));
+  }
+  return value;
+};
 
 const isLocalRequest = (req) => {
   const ip = req.ip || req.socket?.remoteAddress || '';
@@ -124,6 +139,22 @@ app.use('/api/loans', sensitiveLimiter);
 app.use('/api/transactions', sensitiveLimiter);
 app.use('/api/finance', sensitiveLimiter);
 
+const searchLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  message: {
+    success: false,
+    message: 'Too many search requests, please try again later.',
+    errorCode: 'ERR_RATE_LIMIT',
+    timestamp: new Date().toISOString(),
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.method === 'OPTIONS' || isLocalRequest(req),
+});
+
+app.use(['/api/search', '/search'], searchLimiter);
+
 // ============= CORS =============
 const corsOptions = {
   origin: function (origin, callback) {
@@ -189,7 +220,7 @@ app.use((req, res, next) => {
 
 // Keep the HTTP server reachable while database startup work is still running.
 // This prevents frontend dev proxy calls from failing with ECONNREFUSED/502.
-app.use('/api', (req, res, next) => {
+app.use(['/api', '/search'], (req, res, next) => {
   if (app.locals.apiReady) return next();
 
   return res.status(503).json({
@@ -257,6 +288,16 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ limit: security.inputLimits.urlencoded, extended: true }));
 app.use(cookieParser());
+app.use((req, res, next) => {
+  req.body = sanitizeInput(req.body);
+  req.params = sanitizeInput(req.params);
+  try {
+    req.query = sanitizeInput(req.query);
+  } catch (error) {
+    logger.warn('Unable to sanitize query object', { error: error.message, route: req.originalUrl });
+  }
+  next();
+});
 app.use(auditLogger);
 
 // ============= HEALTH CHECK ENDPOINTS =============
@@ -420,6 +461,8 @@ app.use('/api/shares', shareRoutes);
 app.use('/api/member', memberRoutes);
 app.use('/api/finance', financeRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/search', searchRoutes);
+app.use('/search', searchRoutes);
 
 // ============= STK STATUS ROUTE =============
 app.get('/api/stk-status', applicationController.checkStkStatus);

@@ -42,7 +42,14 @@ const MembershipApplication = sequelize.define('MembershipApplication', {
   approvedById: DataTypes.UUID,
   rejectedReason: DataTypes.STRING
 }, {
-  timestamps: true
+  timestamps: true,
+  indexes: [
+    { fields: ['email'] },
+    { fields: ['phone'] },
+    { fields: ['nationalId'] },
+    { fields: ['paymentReference'] },
+    { fields: ['status'] },
+  ],
 });
 
 module.exports = MembershipApplication;

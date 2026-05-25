@@ -107,6 +107,25 @@ const schemas = {
   }).refine((data) => data.shares !== undefined || data.amount !== undefined, {
     message: 'shares or amount is required',
   }),
+  search: strictObject({
+    q: z.string().trim().min(2).max(100),
+    page: z.coerce.number().int().positive().max(1000).default(1),
+    limit: z.coerce.number().int().positive().max(50).default(10),
+    sortBy: z.enum(['createdAt', 'updatedAt', 'name', 'amount', 'status']).default('createdAt'),
+    sortOrder: z.enum(['ASC', 'DESC', 'asc', 'desc']).default('DESC').transform((value) => value.toUpperCase()),
+    type: z.enum([
+      'all',
+      'members',
+      'transactions',
+      'loans',
+      'applications',
+      'savingsAccounts',
+      'shareAccounts',
+      'dividends',
+      'salaryDeductions',
+    ]).default('all'),
+    status: z.string().trim().max(40).optional(),
+  }),
 };
 
 module.exports = {

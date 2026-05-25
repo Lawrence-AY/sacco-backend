@@ -30,7 +30,13 @@ const Transaction = sequelize.define('Transaction', {
   },
   reference: DataTypes.STRING
 }, {
-  timestamps: true
+  timestamps: true,
+  indexes: [
+    { fields: ['reference'] },
+    { fields: ['memberId'] },
+    { fields: ['loanId'] },
+    { fields: ['status'] },
+  ],
 });
 
 module.exports = Transaction;
