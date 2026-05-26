@@ -1,6 +1,19 @@
 const db = require('../../../models');
 
-const writableFields = ['memberId', 'loanId', 'type', 'amount', 'method', 'status', 'reference', 'description'];
+const writableFields = [
+  'memberId',
+  'loanId',
+  'type',
+  'amount',
+  'method',
+  'status',
+  'reference',
+  'description',
+  'paymentCategory',
+  'kcbEndpoint',
+  'internalReference',
+  'promptChannel',
+];
 
 const pickWritable = (data) => writableFields.reduce((acc, field) => {
   if (data[field] !== undefined) acc[field] = data[field];

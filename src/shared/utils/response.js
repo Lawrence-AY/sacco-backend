@@ -45,6 +45,14 @@ const success = (res, data = null, message = 'Success', statusCode = 200, meta =
   return res.status(statusCode).json(response);
 };
 
+const created = (res, data, message = 'Resource created successfully') => {
+  return success(res, data, message, 201);
+};
+
+const noContent = (res) => {
+  return res.status(204).send();
+};
+
 /**
  * Error response helper
  */
@@ -289,11 +297,11 @@ class ResponseHandler {
   }
 
   static created(res, data, message = 'Resource created successfully') {
-    return success(res, data, message, 201);
+    return created(res, data, message);
   }
 
   static noContent(res) {
-    return res.status(204).send();
+    return noContent(res);
   }
 
   static notFound(res, message = 'Resource not found') {
@@ -311,6 +319,8 @@ class ResponseHandler {
 
 module.exports = {
   success,
+  created,
+  noContent,
   error,
   paginated,
   listResponse,

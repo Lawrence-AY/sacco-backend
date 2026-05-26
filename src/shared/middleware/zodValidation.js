@@ -106,6 +106,10 @@ const schemas = {
     method: z.string().trim().max(50).optional(),
     reference: z.string().trim().max(120).optional(),
     description: z.string().trim().max(255).optional(),
+    paymentCategory: z.string().trim().max(80).optional(),
+    kcbEndpoint: z.string().trim().max(80).optional(),
+    internalReference: z.string().trim().max(120).optional(),
+    promptChannel: z.string().trim().max(50).optional(),
   }),
   moneyAction: strictObject({
     amount: z.coerce.number().positive().max(100000000),

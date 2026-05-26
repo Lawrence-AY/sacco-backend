@@ -172,6 +172,10 @@ const TransactionDTO = {
       type: transaction.type,
       amount: transaction.amount,
       description: transaction.description,
+      paymentCategory: transaction.paymentCategory,
+      kcbEndpoint: transaction.kcbEndpoint,
+      internalReference: transaction.internalReference,
+      promptChannel: transaction.promptChannel,
       status: transaction.status,
       createdAt: transaction.createdAt,
       updatedAt: transaction.updatedAt

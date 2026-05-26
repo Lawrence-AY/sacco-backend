@@ -34,6 +34,26 @@ const ensureUserProfileColumns = async (sequelize) => {
   }
 };
 
+const transactionTrackingColumns = {
+  description: { type: DataTypes.STRING, allowNull: true },
+  paymentCategory: { type: DataTypes.STRING, allowNull: true },
+  kcbEndpoint: { type: DataTypes.STRING, allowNull: true },
+  internalReference: { type: DataTypes.STRING, allowNull: true },
+  promptChannel: { type: DataTypes.STRING, allowNull: true },
+};
+
+const ensureTransactionTrackingColumns = async (sequelize) => {
+  const queryInterface = sequelize.getQueryInterface();
+  const table = await queryInterface.describeTable('Transactions');
+
+  for (const [column, definition] of Object.entries(transactionTrackingColumns)) {
+    if (!table[column]) {
+      await queryInterface.addColumn('Transactions', column, definition);
+      logger.info('Added missing Transactions tracking column', { column });
+    }
+  }
+};
+
 const searchIndexes = [
   ['Members', ['memberNumber'], 'idx_members_member_number'],
   ['Members', ['nationalId'], 'idx_members_national_id'],
@@ -42,6 +62,8 @@ const searchIndexes = [
   ['Users', ['nationalId'], 'idx_users_national_id'],
   ['Transactions', ['reference'], 'idx_transactions_reference'],
   ['Transactions', ['memberId'], 'idx_transactions_member_id'],
+  ['Transactions', ['paymentCategory'], 'idx_transactions_payment_category'],
+  ['Transactions', ['internalReference'], 'idx_transactions_internal_reference'],
   ['Loans', ['memberId'], 'idx_loans_member_id'],
   ['Loans', ['status'], 'idx_loans_status'],
   ['MembershipApplications', ['email'], 'idx_applications_email'],
@@ -65,6 +87,7 @@ const ensureSearchIndexes = async (sequelize) => {
 
 const runSchemaMigrations = async (sequelize) => {
   await ensureUserProfileColumns(sequelize);
+  await ensureTransactionTrackingColumns(sequelize);
   await ensureSearchIndexes(sequelize);
 };
 

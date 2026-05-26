@@ -90,6 +90,10 @@ const serializeTransaction = (transaction) => ({
   method: transaction.method,
   status: transaction.status,
   reference: transaction.reference,
+  paymentCategory: transaction.paymentCategory,
+  kcbEndpoint: transaction.kcbEndpoint,
+  internalReference: transaction.internalReference,
+  promptChannel: transaction.promptChannel,
   createdAt: transaction.createdAt,
   memberNumber: transaction.Member?.memberNumber || null,
 });

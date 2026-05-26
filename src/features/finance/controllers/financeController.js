@@ -67,6 +67,10 @@ const getAllTransactions = asyncHandler(async (req, res) => {
     status: transaction.status,
     method: transaction.method,
     reference: transaction.reference,
+    paymentCategory: transaction.paymentCategory,
+    kcbEndpoint: transaction.kcbEndpoint,
+    internalReference: transaction.internalReference,
+    promptChannel: transaction.promptChannel,
     memberId: transaction.memberId,
     loanId: transaction.loanId,
   }));
@@ -85,6 +89,11 @@ const createTransaction = asyncHandler(async (req, res) => {
     method: req.body.method || 'MANUAL',
     status: req.body.status || 'SUCCESS',
     reference: req.body.reference || null,
+    description: req.body.description || null,
+    paymentCategory: req.body.paymentCategory || null,
+    kcbEndpoint: req.body.kcbEndpoint || null,
+    internalReference: req.body.internalReference || null,
+    promptChannel: req.body.promptChannel || null,
   });
   return ResponseHandler.created(res, {
     id: transaction.id,
@@ -95,6 +104,10 @@ const createTransaction = asyncHandler(async (req, res) => {
     status: transaction.status,
     method: transaction.method,
     reference: transaction.reference,
+    paymentCategory: transaction.paymentCategory,
+    kcbEndpoint: transaction.kcbEndpoint,
+    internalReference: transaction.internalReference,
+    promptChannel: transaction.promptChannel,
     memberId: transaction.memberId,
     loanId: transaction.loanId,
   }, 'Transaction created successfully');
@@ -130,6 +143,10 @@ const verifyTransaction = asyncHandler(async (req, res) => {
     status: transaction.status,
     method: transaction.method,
     reference: transaction.reference,
+    paymentCategory: transaction.paymentCategory,
+    kcbEndpoint: transaction.kcbEndpoint,
+    internalReference: transaction.internalReference,
+    promptChannel: transaction.promptChannel,
     memberId: transaction.memberId,
     loanId: transaction.loanId,
   }, 'Transaction verified successfully', 200);

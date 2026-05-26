@@ -28,7 +28,12 @@ const Transaction = sequelize.define('Transaction', {
   status: {
     type: DataTypes.ENUM('PENDING', 'SUCCESS', 'FAILED')
   },
-  reference: DataTypes.STRING
+  reference: DataTypes.STRING,
+  description: DataTypes.STRING,
+  paymentCategory: DataTypes.STRING,
+  kcbEndpoint: DataTypes.STRING,
+  internalReference: DataTypes.STRING,
+  promptChannel: DataTypes.STRING
 }, {
   timestamps: true,
   indexes: [
@@ -36,6 +41,8 @@ const Transaction = sequelize.define('Transaction', {
     { fields: ['memberId'] },
     { fields: ['loanId'] },
     { fields: ['status'] },
+    { fields: ['paymentCategory'] },
+    { fields: ['internalReference'] },
   ],
 });
 

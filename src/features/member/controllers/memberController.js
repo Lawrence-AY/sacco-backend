@@ -65,7 +65,7 @@ const ensureMemberByUser = async (user) => {
 };
 
 const buildTransactionDescription = (transaction) => {
-  const pieces = [transaction.type];
+  const pieces = [transaction.paymentCategory || transaction.type];
   if (transaction.method) {
     pieces.push(`via ${transaction.method}`);
   }
@@ -87,6 +87,91 @@ const formatShareAccount = (share) => {
     createdAt: share.createdAt,
     updatedAt: share.updatedAt,
   };
+};
+
+const KCB_PROMPT_TYPES = {
+  register: { endpoint: '/register', category: 'registration', label: 'Registration fee', transactionType: 'MEMBERSHIP_FEE' },
+  registration: { endpoint: '/register', category: 'registration', label: 'Registration fee', transactionType: 'MEMBERSHIP_FEE' },
+  kcbmpesa: { endpoint: '/kcbmpesa', category: 'kcb_mpesa', label: 'KCB M-PESA prompt', transactionType: 'DEPOSIT' },
+  stkpush: { endpoint: '/stkpush', category: 'stk_push', label: 'STK push', transactionType: 'DEPOSIT' },
+  monthly: { endpoint: '/monthlycontributions', category: 'monthly_contribution', label: 'Monthly contribution', transactionType: 'DEPOSIT' },
+  monthlycontributions: { endpoint: '/monthlycontributions', category: 'monthly_contribution', label: 'Monthly contribution', transactionType: 'DEPOSIT' },
+  loan_repayment: { endpoint: '/loans_repayment', category: 'loan_repayment', label: 'Loan repayment', transactionType: 'LOAN_REPAYMENT' },
+  loans_repayment: { endpoint: '/loans_repayment', category: 'loan_repayment', label: 'Loan repayment', transactionType: 'LOAN_REPAYMENT' },
+  repayment: { endpoint: '/loans_repayment', category: 'loan_repayment', label: 'Loan repayment', transactionType: 'LOAN_REPAYMENT' },
+  fines: { endpoint: '/fines', category: 'fine', label: 'Fine payment', transactionType: 'DEPOSIT' },
+  fine: { endpoint: '/fines', category: 'fine', label: 'Fine payment', transactionType: 'DEPOSIT' },
+  sharecapital: { endpoint: '/sharecapital', category: 'share_capital', label: 'Share capital', transactionType: 'DEPOSIT' },
+  share_capital: { endpoint: '/sharecapital', category: 'share_capital', label: 'Share capital', transactionType: 'DEPOSIT' },
+  wallet: { endpoint: '/wallet', category: 'wallet', label: 'Wallet top-up', transactionType: 'DEPOSIT' },
+  savings: { endpoint: '/savings', category: 'savings', label: 'Savings deposit', transactionType: 'DEPOSIT' },
+};
+
+const getKcbPromptType = (type) => {
+  const normalized = String(type || 'monthly')
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, '');
+  return KCB_PROMPT_TYPES[normalized] || KCB_PROMPT_TYPES.monthly;
+};
+
+const getKcbRegistrationForTransaction = async (transaction) => {
+  if (!supabase) return null;
+
+  const refs = [
+    transaction.reference,
+    transaction.internalReference,
+  ]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+
+  if (!refs.length) return null;
+
+  const clauses = refs.flatMap((ref) => [
+    `merchant_request_id.eq.${ref}`,
+    `checkout_request_id.eq.${ref}`,
+    `request_id.eq.${ref}`,
+  ]);
+
+  const { data, error } = await supabase
+    .from('registrations')
+    .select('status, mpesa_receipt, transaction_reference, merchant_request_id, checkout_request_id, request_id')
+    .or(clauses.join(','))
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    console.error('[MEMBER] Failed to fetch KCB-MPESA registration', {
+      transactionId: transaction.id,
+      message: error.message,
+    });
+    return null;
+  }
+
+  return data;
+};
+
+const syncTransactionWithKcbRegistration = async (transaction) => {
+  if (!transaction || String(transaction.status || '').toUpperCase() !== 'PENDING') {
+    return { transaction, registration: null };
+  }
+
+  const registration = await getKcbRegistrationForTransaction(transaction);
+  if (!registration) return { transaction, registration: null };
+
+  const normalizedStatus = String(registration.status || '').toLowerCase();
+  const receipt = registration.mpesa_receipt || registration.transaction_reference || null;
+
+  if (normalizedStatus === 'paid') {
+    await transaction.update({
+      status: 'SUCCESS',
+      reference: receipt || transaction.reference,
+    });
+  } else if (normalizedStatus === 'failed') {
+    await transaction.update({ status: 'FAILED' });
+  }
+
+  return { transaction, registration };
 };
 
 const getProfile = asyncHandler(async (req, res) => {
@@ -292,6 +377,16 @@ const getTransactions = asyncHandler(async (req, res) => {
   if (req.query.type) where.type = req.query.type;
 
   const transactions = await db.Transaction.findAll({ where, order: [['createdAt', 'DESC']] });
+  await Promise.all(
+    transactions
+      .filter((transaction) => (
+        String(transaction.status || '').toUpperCase() === 'PENDING'
+        && transaction.method === 'MPESA'
+        && (transaction.paymentCategory || transaction.kcbEndpoint)
+      ))
+      .map((transaction) => syncTransactionWithKcbRegistration(transaction))
+  );
+
   const formatted = transactions.map((transaction) => ({
     id: transaction.id,
     type: transaction.type,
@@ -302,6 +397,10 @@ const getTransactions = asyncHandler(async (req, res) => {
     method: transaction.method,
     reference: transaction.reference,
     mpesaReference: transaction.method === 'MPESA' ? transaction.reference : null,
+    paymentCategory: transaction.paymentCategory,
+    kcbEndpoint: transaction.kcbEndpoint,
+    internalReference: transaction.internalReference,
+    promptChannel: transaction.promptChannel,
   }));
 
   return ResponseHandler.success(res, formatted, 'Transactions retrieved successfully', 200);
@@ -410,14 +509,8 @@ const depositSavings = asyncHandler(async (req, res) => {
     reference: transaction.reference,
     mpesaReference: transaction.method === 'MPESA' ? transaction.reference : null,
   }, 'Savings deposit recorded successfully'));
+   
 });
-
-const getKcbEndpointForContribution = (type) => {
-  const normalized = String(type || 'monthly').toLowerCase();
-  if (normalized.includes('share')) return '/sharecapital';
-  if (normalized.includes('saving')) return '/savings';
-  return '/monthlycontributions';
-};
 
 const initiateContribution = asyncHandler(async (req, res) => {
   const member = await ensureMemberByUser(req.user);
@@ -430,6 +523,7 @@ const initiateContribution = asyncHandler(async (req, res) => {
   const phone = req.body?.phone || req.user.phone;
   const paymentMode = String(req.body?.paymentMode || 'STK').toUpperCase();
   const contributionType = req.body?.contributionType || 'monthly';
+  const promptType = getKcbPromptType(contributionType);
   const reference = `CONTRIB-${Date.now()}`;
   const memberNumber = member.memberNumber || reference;
 
@@ -439,11 +533,16 @@ const initiateContribution = asyncHandler(async (req, res) => {
 
   const transaction = await db.Transaction.create({
     memberId: member.id,
-    type: 'DEPOSIT',
+    type: promptType.transactionType,
     amount,
     method: 'MPESA',
     status: 'PENDING',
     reference,
+    description: promptType.label,
+    paymentCategory: promptType.category,
+    kcbEndpoint: promptType.endpoint,
+    internalReference: reference,
+    promptChannel: paymentMode,
   });
 
   if (paymentMode === 'PAYBILL') {
@@ -454,6 +553,11 @@ const initiateContribution = asyncHandler(async (req, res) => {
       status: transaction.status,
       method: transaction.method,
       reference: transaction.reference,
+      description: transaction.description,
+      paymentCategory: transaction.paymentCategory,
+      kcbEndpoint: transaction.kcbEndpoint,
+      internalReference: transaction.internalReference,
+      promptChannel: transaction.promptChannel,
       paybill: {
         businessNumber: process.env.KCB_PAYBILL_NUMBER || process.env.MPESA_PAYBILL_NUMBER || DEFAULT_KCB_PAYBILL_NUMBER,
         accountNumber: memberNumber,
@@ -477,7 +581,7 @@ const initiateContribution = asyncHandler(async (req, res) => {
     throw new ValidationError('STK push is not configured. Set KCB_MPESA_BASE_URL on the backend or use Paybill.');
   }
 
-  const endpoint = getKcbEndpointForContribution(contributionType);
+  const endpoint = promptType.endpoint;
   const workerUrl = `${workerBaseUrl.replace(/\/$/, '')}${endpoint}`;
   console.info('[MEMBER] Sending KCB-MPESA STK request', {
     workerUrl,
@@ -495,6 +599,9 @@ const initiateContribution = asyncHandler(async (req, res) => {
       invoiceNumber: memberNumber,
       member_number: memberNumber,
       internal_reference: reference,
+      payment_category: promptType.category,
+      kcb_endpoint: endpoint,
+      prompt_channel: 'STK',
       name: req.user.name || `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim(),
       reference,
     }),
@@ -533,6 +640,10 @@ const initiateContribution = asyncHandler(async (req, res) => {
     reference: mpesaRequestReference,
     internalReference: reference,
     mpesaReference: mpesaRequestReference,
+    description: transaction.description,
+    paymentCategory: transaction.paymentCategory,
+    kcbEndpoint: transaction.kcbEndpoint,
+    promptChannel: transaction.promptChannel,
     kcbMpesa: workerPayload,
   }, workerPayload?.message || workerPayload?.customerMessage || 'STK push sent. Check your phone and enter your M-PESA PIN.');
 });
@@ -556,37 +667,29 @@ const checkContributionStatus = asyncHandler(async (req, res) => {
       status: transaction.status,
       reference: transaction.reference,
       mpesaReference: transaction.reference,
+      paymentCategory: transaction.paymentCategory,
+      kcbEndpoint: transaction.kcbEndpoint,
+      internalReference: transaction.internalReference,
+      promptChannel: transaction.promptChannel,
     }, 'Contribution status retrieved');
   }
 
-  const { data, error } = await supabase
-    .from('registrations')
-    .select('status, mpesa_receipt, transaction_reference, merchant_request_id, checkout_request_id')
-    .or(`merchant_request_id.eq.${transaction.reference},checkout_request_id.eq.${transaction.reference},request_id.eq.${transaction.reference}`)
-    .maybeSingle();
+  const { registration: data } = await syncTransactionWithKcbRegistration(transaction);
 
-  if (error) {
-    console.error('[MEMBER] Failed to fetch contribution status', { message: error.message });
-  }
-
-  const isPaid = data?.status === 'paid';
-  const isFailed = data?.status === 'failed';
+  const registrationStatus = String(data?.status || '').toLowerCase();
+  const isPaid = registrationStatus === 'paid';
+  const isFailed = registrationStatus === 'failed';
   const receipt = data?.mpesa_receipt || data?.transaction_reference || null;
-
-  if (isPaid && transaction.status !== 'SUCCESS') {
-    await transaction.update({
-      status: 'SUCCESS',
-      reference: receipt || transaction.reference,
-    });
-  } else if (isFailed && transaction.status !== 'FAILED') {
-    await transaction.update({ status: 'FAILED' });
-  }
 
   return ResponseHandler.success(res, {
     id: transaction.id,
     status: isPaid ? 'SUCCESS' : isFailed ? 'FAILED' : transaction.status,
     reference: receipt || transaction.reference,
     mpesaReference: receipt || transaction.reference,
+    paymentCategory: transaction.paymentCategory,
+    kcbEndpoint: transaction.kcbEndpoint,
+    internalReference: transaction.internalReference,
+    promptChannel: transaction.promptChannel,
     checkoutRequestId: data?.checkout_request_id || null,
     merchantRequestId: data?.merchant_request_id || null,
   }, 'Contribution status retrieved');
@@ -601,16 +704,50 @@ const emailReport = asyncHandler(async (req, res) => {
   const reportType = req.body?.reportType || 'portfolio';
   const member = await findMemberByUserId(req.user.id);
   const transactions = member
-    ? await db.Transaction.findAll({ where: { memberId: member.id }, order: [['createdAt', 'DESC']], limit: 20 })
+    ? await db.Transaction.findAll({ where: { memberId: member.id }, order: [['createdAt', 'DESC']], limit: reportType === 'transactions' ? 100 : 20 })
     : [];
   const loans = member
     ? await db.Loan.findAll({ where: { memberId: member.id }, order: [['createdAt', 'DESC']] })
     : [];
   const shares = await shareService.getShareAccountsForUser(req.user);
 
-  const shareCapital = shares.reduce((sum, share) => sum + Number((share.shares || 0) * (share.shareValue || 0)), 0);
+  const successfulTransactions = transactions.filter((transaction) => ['SUCCESS', 'PAID', 'COMPLETED'].includes(String(transaction.status || '').toUpperCase()));
+  const getCategory = (transaction) => String(
+    transaction.paymentCategory ||
+    transaction.kcbEndpoint ||
+    transaction.description ||
+    transaction.type ||
+    ''
+  ).toLowerCase();
+  const categoryTotal = (tokens) => successfulTransactions.reduce((sum, transaction) => {
+    const category = getCategory(transaction);
+    return tokens.some((token) => category.includes(token))
+      ? sum + Number(transaction.amount || 0)
+      : sum;
+  }, 0);
+  const escapeHtml = (value) => String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+  const paidShareCapital = categoryTotal(['share_capital', 'sharecapital', 'share capital']);
+  const shareAccountCapital = shares.reduce((sum, share) => sum + Number((share.shares || 0) * (share.shareValue || 0)), 0);
+  const shareCapital = Math.max(paidShareCapital, shareAccountCapital);
+  const savingsTotal = categoryTotal(['savings']);
   const outstandingLoans = loans.reduce((sum, loan) => sum + Number(loan.amount || 0), 0);
-  const transactionTotal = transactions.reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+  const transactionTotal = successfulTransactions.reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+  const transactionRows = transactions.map((transaction) => `
+    <tr>
+      <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${escapeHtml(transaction.createdAt ? new Date(transaction.createdAt).toLocaleDateString() : '-')}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${escapeHtml(transaction.type)}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${escapeHtml(transaction.paymentCategory || transaction.description || '-')}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${escapeHtml(transaction.reference || '-')}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; text-align: right;">KSh ${Math.round(Number(transaction.amount || 0)).toLocaleString()}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${escapeHtml(transaction.status || '-')}</td>
+    </tr>
+  `).join('');
 
   const transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
@@ -633,11 +770,28 @@ const emailReport = asyncHandler(async (req, res) => {
         <p>Your requested report summary is below.</p>
         <ul>
           <li><strong>Share capital:</strong> KSh ${Math.round(shareCapital).toLocaleString()}</li>
+          <li><strong>Savings:</strong> KSh ${Math.round(savingsTotal).toLocaleString()}</li>
           <li><strong>Outstanding loans:</strong> KSh ${Math.round(outstandingLoans).toLocaleString()}</li>
-          <li><strong>Recent transaction total:</strong> KSh ${Math.round(transactionTotal).toLocaleString()}</li>
+          <li><strong>Successful transaction total:</strong> KSh ${Math.round(transactionTotal).toLocaleString()}</li>
           <li><strong>Loans:</strong> ${loans.length}</li>
           <li><strong>Transactions reviewed:</strong> ${transactions.length}</li>
         </ul>
+        ${reportType === 'transactions' ? `
+          <h3>Transaction statement</h3>
+          <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+            <thead>
+              <tr style="background: #f8fafc;">
+                <th style="padding: 8px; text-align: left;">Date</th>
+                <th style="padding: 8px; text-align: left;">Type</th>
+                <th style="padding: 8px; text-align: left;">Prompt</th>
+                <th style="padding: 8px; text-align: left;">Reference</th>
+                <th style="padding: 8px; text-align: right;">Amount</th>
+                <th style="padding: 8px; text-align: left;">Status</th>
+              </tr>
+            </thead>
+            <tbody>${transactionRows || '<tr><td colspan="6" style="padding: 8px;">No transactions found.</td></tr>'}</tbody>
+          </table>
+        ` : ''}
         <p>Generated at ${new Date().toISOString()}.</p>
       </div>
     `
