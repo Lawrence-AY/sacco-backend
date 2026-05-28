@@ -12,6 +12,7 @@ const MembershipApplication = require('./membershipApplication.model');
 const SalaryDeduction = require('./salaryDeduction.model');
 const LoginSession = require('./loginSession.model');
 const AuditLog = require('./auditLog.model');
+const Notification = require('./notification.model');
 
 const sequelize = require('../shared/config/db');
 
@@ -24,6 +25,9 @@ MembershipApplication.belongsTo(User, { foreignKey: 'approvedById', as: 'approve
 
 User.hasMany(LoginSession, { foreignKey: 'userId' });
 LoginSession.belongsTo(User, { foreignKey: 'userId' });
+
+User.hasMany(Notification, { foreignKey: 'userId' });
+Notification.belongsTo(User, { foreignKey: 'userId' });
 
 Member.hasOne(SavingsAccount, { foreignKey: 'memberId' });
 SavingsAccount.belongsTo(Member, { foreignKey: 'memberId' });
@@ -68,7 +72,8 @@ const db = {
   MembershipApplication,
   SalaryDeduction,
   LoginSession,
-  AuditLog
+  AuditLog,
+  Notification
 };
 
 module.exports = db;

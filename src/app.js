@@ -37,6 +37,7 @@ const memberRoutes = require('./features/member/routes/memberRoutes');
 const financeRoutes = require('./features/finance/routes/financeRoutes');
 const adminRoutes = require('./features/admin/routes/adminRoutes');
 const searchRoutes = require('./features/search/routes/searchRoutes');
+const notificationRoutes = require('./features/notifications/routes/notificationRoutes');
 
 const applicationController = require('./features/applications/controllers/applicationController');
 
@@ -527,6 +528,7 @@ app.use('/api/finance', financeRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/search', searchRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 // ============= STK STATUS ROUTE =============
 app.get('/api/stk-status', applicationController.checkStkStatus);

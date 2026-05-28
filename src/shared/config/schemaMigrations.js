@@ -104,7 +104,34 @@ const ensureSearchIndexes = async (sequelize) => {
   }
 };
 
+const ensureNotificationTable = async (sequelize) => {
+  const queryInterface = sequelize.getQueryInterface();
+  const tables = await queryInterface.showAllTables();
+  const exists = tables.some((table) => String(typeof table === 'object' ? table.tableName || table.name : table) === 'Notifications');
+
+  if (!exists) {
+    await queryInterface.createTable('Notifications', {
+      id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
+      userId: { type: DataTypes.UUID, allowNull: false },
+      eventKey: { type: DataTypes.STRING, allowNull: false, unique: true },
+      title: { type: DataTypes.STRING, allowNull: false },
+      body: { type: DataTypes.TEXT, allowNull: false },
+      category: { type: DataTypes.STRING, allowNull: false, defaultValue: 'account' },
+      severity: { type: DataTypes.STRING, allowNull: false, defaultValue: 'info' },
+      actionUrl: { type: DataTypes.STRING, allowNull: true },
+      sourceType: { type: DataTypes.STRING, allowNull: true },
+      sourceId: { type: DataTypes.UUID, allowNull: true },
+      readAt: { type: DataTypes.DATE, allowNull: true },
+      metadata: { type: DataTypes.JSONB, defaultValue: {} },
+      createdAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+      updatedAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+    });
+    logger.info('Created Notifications table');
+  }
+};
+
 const runSchemaMigrations = async (sequelize) => {
+  await ensureNotificationTable(sequelize);
   await ensureUserProfileColumns(sequelize);
   await ensureTransactionTrackingColumns(sequelize);
   await ensureSearchIndexes(sequelize);
