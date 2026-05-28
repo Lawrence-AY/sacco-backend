@@ -2,6 +2,8 @@ const applicationService = require('../services/applicationService');
 const asyncHandler = require('../../../shared/utils/asyncHandler');
 const ResponseHandler = require('../../../shared/utils/response');
 const { NotFoundError, ValidationError } = require('../../../shared/utils/errors');
+const { validateRequired, isValidEmail, isValidPhone, validatePagination } = require('../../../shared/utils/validation');
+const { sanitizeModel, sanitizeModels } = require('../../../shared/utils/dtos');
 const logger = require('../../../shared/utils/logger');
 
 const { createClient } = require('@supabase/supabase-js');
@@ -10,14 +12,35 @@ const supabaseKey = process.env.SUPABASE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const submitApplication = asyncHandler(async (req, res) => {
-  const { name, email, phone, nationalId, type } = req.body;
+  const payload = {
+    name: req.body.name,
+    email: req.body.email,
+    phone: req.body.phone,
+    nationalId: req.body.nationalId,
+    type: req.body.type,
+    occupation: req.body.occupation,
+    address: req.body.address,
+    consentGiven: Boolean(req.body.consentGiven),
+  };
 
-  if (!name || !email || !phone || !nationalId || !type) {
-    throw new ValidationError('Name, email, phone, national ID, and application type are required');
+  validateRequired(payload, ['name', 'email', 'phone', 'nationalId', 'type']);
+
+  if (!isValidEmail(payload.email)) {
+    throw new ValidationError('A valid email is required');
   }
 
-  const application = await applicationService.createApplication(req.body);
-  return ResponseHandler.created(res, application, 'Application submitted successfully');
+  if (!isValidPhone(payload.phone)) {
+    throw new ValidationError('A valid phone number is required');
+  }
+
+  const application = await applicationService.createApplication(payload);
+  return ResponseHandler.created(
+    res,
+    sanitizeModel(application, {
+      fields: ['id', 'name', 'email', 'phone', 'status', 'feePaid', 'createdAt', 'updatedAt'],
+    }),
+    'Application submitted successfully'
+  );
 });
 
 const getApplicationById = asyncHandler(async (req, res) => {
@@ -27,19 +50,44 @@ const getApplicationById = asyncHandler(async (req, res) => {
     throw new NotFoundError('Application not found');
   }
 
-  return ResponseHandler.success(res, application, 'Application retrieved successfully', 200);
+  return ResponseHandler.success(
+    res,
+    sanitizeModel(application, {
+      fields: [
+        'id',
+        'name',
+        'email',
+        'phone',
+        'status',
+        'feePaid',
+        'nationalId',
+        'occupation',
+        'address',
+        'consentGiven',
+        'paymentVerifiedAt',
+        'createdAt',
+        'updatedAt',
+      ],
+    }),
+    'Application retrieved successfully',
+    200
+  );
 });
 
 const updateApplication = asyncHandler(async (req, res) => {
-  const { feePaid, paymentReference, paymentPhone, consentGiven } = req.body;
+  const { feePaid, paymentReference, paymentPhone, consentGiven, occupation, address } = req.body;
+  const allowedFields = [feePaid, paymentReference, paymentPhone, consentGiven, occupation, address];
 
-  if (
-    feePaid === undefined &&
-    paymentReference === undefined &&
-    paymentPhone === undefined &&
-    consentGiven === undefined
-  ) {
+  if (allowedFields.every((value) => typeof value === 'undefined')) {
     throw new ValidationError('At least one application field is required to update');
+  }
+
+  if (paymentPhone && !isValidPhone(paymentPhone)) {
+    throw new ValidationError('A valid payment phone number is required');
+  }
+
+  if (paymentReference && typeof paymentReference !== 'string') {
+    throw new ValidationError('Payment reference must be a string');
   }
 
   const application = await applicationService.updateApplication(req.params.id, req.body);
@@ -48,7 +96,14 @@ const updateApplication = asyncHandler(async (req, res) => {
     throw new NotFoundError('Application not found');
   }
 
-  return ResponseHandler.success(res, application, 'Application updated successfully', 200);
+  return ResponseHandler.success(
+    res,
+    sanitizeModel(application, {
+      fields: ['id', 'name', 'email', 'phone', 'status', 'feePaid', 'paymentReference', 'paymentPhone', 'createdAt', 'updatedAt'],
+    }),
+    'Application updated successfully',
+    200
+  );
 });
 
 /**
@@ -57,8 +112,33 @@ const updateApplication = asyncHandler(async (req, res) => {
  * @access  Admin
  */
 const getApplications = asyncHandler(async (req, res) => {
-  const applications = await applicationService.getAllApplications();
-  return ResponseHandler.success(res, applications, 'Applications retrieved successfully', 200);
+  const { status, page = 1, limit = 10 } = req.query;
+  const { page: pageNum, limit: limitNum } = validatePagination(page, limit);
+  const offset = (pageNum - 1) * limitNum;
+
+  const where = {};
+  if (status) where.status = status;
+
+  const { count, rows } = await applicationService.getApplications({
+    where,
+    offset,
+    limit: limitNum,
+    order: [['createdAt', 'DESC']],
+  });
+
+  return ResponseHandler.paginated(
+    res,
+    sanitizeModels(rows, {
+      fields: ['id', 'name', 'email', 'phone', 'status', 'feePaid', 'createdAt', 'updatedAt'],
+    }),
+    {
+      total: count,
+      page: pageNum,
+      limit: limitNum,
+      pages: Math.ceil(count / limitNum),
+    },
+    'Applications retrieved successfully'
+  );
 });
 
 /**
@@ -116,7 +196,7 @@ const checkStkStatus = asyncHandler(async (req, res) => {
 
 const verifyPayment = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  let { paymentReference, phone, checkoutRequestId } = req.body;
+  let { paymentReference, paymentPhone, phone, checkoutRequestId } = req.body;
 
   logger.info('Payment verification requested', { module: 'applications', applicationId: id });
 
@@ -135,38 +215,60 @@ const verifyPayment = asyncHandler(async (req, res) => {
   }
 
   // 2. Guard Clause
-  if (!paymentReference || !phone) {
-    return res.status(400).json({
-      success: false,
-      message: 'Payment reference and phone are required for verification.'
-    });
+  const paymentReferenceValue = paymentReference?.trim() || null;
+  const paymentPhoneValue = paymentPhone?.trim() || phone?.trim() || null;
+
+  if ((!paymentReferenceValue || !paymentPhoneValue) && checkoutRequestId) {
+    const { data: reg } = await supabase
+      .from('registrations')
+      .select('mpesa_receipt, phone, status')
+      .eq('checkout_request_id', checkoutRequestId)
+      .maybeSingle();
+
+    if (reg && reg.status === 'paid') {
+      paymentReferenceValue = paymentReferenceValue || reg.mpesa_receipt;
+      paymentPhoneValue = paymentPhoneValue || reg.phone;
+    }
+  }
+
+  if (!paymentReferenceValue || !paymentPhoneValue) {
+    return ResponseHandler.validationError(res, {
+      paymentReference: !paymentReferenceValue ? 'Payment reference is required' : undefined,
+      paymentPhone: !paymentPhoneValue ? 'Payment phone is required' : undefined,
+    }, 'Payment verification details are required');
+  }
+
+  if (!isValidPhone(paymentPhoneValue)) {
+    return ResponseHandler.validationError(res, { paymentPhone: 'A valid payment phone number is required' }, 'Invalid payment phone');
   }
 
   // 3. Verify final status in Supabase
   const { data: registration } = await supabase
     .from('registrations')
-    .select('*')
-    .eq('mpesa_receipt', paymentReference)
-    .eq('phone', phone)
+    .select('mpesa_receipt, phone, status')
+    .eq('mpesa_receipt', paymentReferenceValue)
+    .eq('phone', paymentPhoneValue)
     .maybeSingle();
 
   if (!registration || registration.status !== 'paid') {
-    return res.status(400).json({
-      success: false,
-      message: 'Payment not confirmed or record not found.'
-    });
+    return ResponseHandler.error(res, 'Payment not confirmed or record not found.', 400);
   }
 
-  // 4. Update the actual application in your DB
   const application = await applicationService.updateApplication(id, {
     feePaid: true,
-    paymentReference,
-    paymentPhone: phone,
+    paymentReference: paymentReferenceValue,
+    paymentPhone: paymentPhoneValue,
   });
 
   if (!application) throw new NotFoundError('Application not found');
 
-  return ResponseHandler.success(res, application, 'Payment verified successfully');
+  return ResponseHandler.success(
+    res,
+    sanitizeModel(application, {
+      fields: ['id', 'name', 'email', 'phone', 'status', 'feePaid', 'paymentReference', 'paymentPhone', 'paymentVerifiedAt', 'createdAt', 'updatedAt'],
+    }),
+    'Payment verified successfully'
+  );
 });
 
 module.exports = {

@@ -264,18 +264,19 @@ const updateProfile = asyncHandler(async (req, res) => {
     'nextOfKinPhone',
     'passportPhotoUrl',
     'consentGiven',
+    'consentGivenAt',
   ];
   const safeBody = allowed.reduce((acc, field) => {
     if (body[field] !== undefined) acc[field] = body[field];
     return acc;
   }, {});
-  const sensitiveFields = ['email', 'phone', 'nationalId', 'kraPin'];
+  const sensitiveFields = ['email'];
   const touchesSensitiveField = sensitiveFields.some((field) => (
     safeBody[field] !== undefined && String(safeBody[field] || '') !== String(req.user[field] || '')
   ));
   if (touchesSensitiveField) {
     if (!body.currentPassword) {
-      throw new ValidationError('Current password is required for sensitive profile updates');
+      throw new ValidationError('Current password is required for email updates');
     }
     const fullUser = await db.User.findByPk(req.user.id);
     const passwordMatches = fullUser?.password && await bcrypt.compare(body.currentPassword, fullUser.password);
