@@ -78,6 +78,7 @@ const schemas = {
     }).optional(),
     passportPhotoUrl: z.string().trim().url().max(2048).optional().or(dataImageUrl.max(2200000)).or(z.literal('')),
     consentGiven: z.boolean().optional(),
+    consentGivenAt: z.string().trim().max(64).optional(),
     currentPassword: z.string().min(1).max(128).optional(),
   }),
   profilePhotoUpload: strictObject({

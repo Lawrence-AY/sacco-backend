@@ -26,6 +26,10 @@ const getAllApplications = async () => {
   });
 };
 
+const getApplications = async (queryOptions = {}) => {
+  return await db.MembershipApplication.findAndCountAll(queryOptions);
+};
+
 const getApplicationById = async (id) => {
   return await db.MembershipApplication.findByPk(id);
 };
