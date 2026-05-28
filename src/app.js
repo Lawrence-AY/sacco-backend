@@ -64,6 +64,45 @@ const sanitizeInput = (value) => {
   return value;
 };
 
+const getConfiguredOrigins = () => [
+  process.env.CORS_ORIGIN,
+  process.env.FRONTEND_URL,
+  process.env.CLIENT_URL,
+]
+  .filter(Boolean)
+  .flatMap((value) => value.split(',').map((entry) => entry.trim()).filter(Boolean));
+
+const allowedOrigins = [
+  ...getConfiguredOrigins(),
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'https://ayedos-sacco.vercel.app',
+  'https://ayedos-webapp.vercel.app'
+];
+
+const isOriginAllowed = (origin) => {
+  if (!origin) return true;
+  const allowAllOrigins = process.env.NODE_ENV !== 'production' && allowedOrigins.includes('*');
+  const allowVercelPreview = process.env.NODE_ENV !== 'production' && /^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(origin);
+  return allowAllOrigins || allowVercelPreview || allowedOrigins.includes(origin);
+};
+
+const getEnvironmentDiagnostics = () => {
+  const required = ['DATABASE_URL', 'JWT_SECRET', 'JWT_REFRESH_SECRET', 'NODE_ENV', 'FRONTEND_URL'];
+  const optional = ['RESEND_API_KEY', 'SMTP_HOST', 'SMTP_USER'];
+  return {
+    nodeEnv: process.env.NODE_ENV || 'development',
+    required: Object.fromEntries(required.map((key) => [key, Boolean(process.env[key])])),
+    optional: Object.fromEntries(optional.map((key) => [key, Boolean(process.env[key])])),
+    railway: {
+      serviceId: Boolean(process.env.RAILWAY_SERVICE_ID),
+      deploymentId: Boolean(process.env.RAILWAY_DEPLOYMENT_ID),
+      environment: process.env.RAILWAY_ENVIRONMENT_NAME || null,
+      publicDomain: process.env.RAILWAY_PUBLIC_DOMAIN || null,
+    }
+  };
+};
+
 const isLocalRequest = (req) => {
   const ip = req.ip || req.socket?.remoteAddress || '';
   return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
@@ -104,7 +143,7 @@ const limiter = rateLimit({
   max: 100, // limit each IP to 100 requests per windowMs
   message: {
     success: false,
-    code: 'ERR_RATE_LIMIT',
+    code: 'RATE_LIMITED',
     message: 'Too many requests from this IP, please try again later.'
   },
   standardHeaders: true,
@@ -120,7 +159,7 @@ const authLimiter = rateLimit({
   max: 5, // limit each IP to 5 auth requests per windowMs
   message: {
     success: false,
-    code: 'ERR_RATE_LIMIT',
+    code: 'RATE_LIMITED',
     message: 'Too many authentication attempts, please try again later.'
   },
   standardHeaders: true,
@@ -143,7 +182,7 @@ const sensitiveLimiter = rateLimit({
   max: 10, // limit each IP to 10 sensitive operations per hour
   message: {
     success: false,
-    code: 'ERR_RATE_LIMIT',
+    code: 'RATE_LIMITED',
     message: 'Too many sensitive operations, please try again later.'
   },
   standardHeaders: true,
@@ -159,9 +198,9 @@ const searchLimiter = rateLimit({
   max: 30,
   message: {
     success: false,
-    code: 'ERR_RATE_LIMIT',
+    code: 'RATE_LIMITED',
     message: 'Too many search requests, please try again later.',
-    errorCode: 'ERR_RATE_LIMIT',
+    errorCode: 'RATE_LIMITED',
     timestamp: new Date().toISOString(),
   },
   standardHeaders: true,
@@ -177,25 +216,7 @@ const corsOptions = {
     // Allow requests with no origin (mobile apps, etc.)
     if (!origin) return callback(null, true);
 
-    const configuredOrigins = [
-      process.env.CORS_ORIGIN,
-      process.env.FRONTEND_URL,
-    ]
-      .filter(Boolean)
-      .flatMap((value) => value.split(',').map((entry) => entry.trim()).filter(Boolean));
-
-    const allowedOrigins = [
-      ...configuredOrigins,
-      'http://localhost:3000',
-      'http://localhost:5173',
-      'https://ayedos-sacco.vercel.app',
-      'https://ayedos-webapp.vercel.app'
-    ];
-
-    const allowAllOrigins = process.env.NODE_ENV !== 'production' && allowedOrigins.includes('*');
-    const allowVercelPreview = /^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(origin);
-
-    if (allowAllOrigins || allowVercelPreview || allowedOrigins.includes(origin)) {
+    if (isOriginAllowed(origin)) {
       callback(null, true);
     } else {
       logger.warn('CORS blocked request', { origin, endpoint: 'CORS' });
@@ -224,7 +245,17 @@ app.use(cors(corsOptions));
 // Handle preflight requests for all routes
 app.use((req, res, next) => {
   if (req.method === 'OPTIONS') {
-    res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+    const origin = req.headers.origin;
+    if (!isOriginAllowed(origin)) {
+      logger.warn('CORS preflight blocked request', { origin, endpoint: req.originalUrl });
+      return res.status(403).json({
+        success: false,
+        message: 'Request origin is not allowed',
+        code: 'FORBIDDEN',
+        timestamp: new Date().toISOString(),
+      });
+    }
+    if (origin) res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-Device-Id, X-Device-Name, X-Session-Id, Accept, Accept-Encoding, Accept-Language, X-API-Key');
     res.header('Access-Control-Allow-Credentials', 'true');
@@ -242,8 +273,8 @@ app.use(['/api', '/search'], (req, res, next) => {
   return res.status(503).json({
     success: false,
     message: 'Service is temporarily unavailable. Please try again later.',
-    code: 'ERR_SERVICE_UNAVAILABLE',
-    errorCode: 'ERR_SERVICE_UNAVAILABLE',
+    code: 'SERVER_ERROR',
+    errorCode: 'SERVER_ERROR',
     requestId: req.id || 'unknown',
     timestamp: new Date().toISOString(),
   });
@@ -319,16 +350,36 @@ app.use(auditLogger);
 // ============= HEALTH CHECK ENDPOINTS =============
 
 // Basic health check
-app.get('/health', (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: 'Service status retrieved',
-    timestamp: new Date().toISOString(),
+app.get('/health', async (req, res) => {
+  const startedAt = Date.now();
+  let database = 'connected';
+  let statusCode = 200;
+
+  try {
+    await db.sequelize.authenticate();
+  } catch (error) {
+    database = 'disconnected';
+    statusCode = 503;
+    logger.error('Health database check failed', {
+      error: error.message,
+      requestId: req.id,
+    });
+  }
+
+  res.status(statusCode).json({
+    success: statusCode === 200,
+    status: statusCode === 200 && app.locals.apiReady ? 'healthy' : 'degraded',
+    database,
     uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+    memory: process.memoryUsage(),
+    environment: getEnvironmentDiagnostics(),
+    railway: getEnvironmentDiagnostics().railway,
     api: {
       ready: Boolean(app.locals.apiReady),
-      status: app.locals.apiReady ? 'ready' : 'unavailable',
+      startupError: app.locals.apiStartupError ? 'startup_failed' : null,
     },
+    responseTimeMs: Date.now() - startedAt,
   });
 });
 
@@ -338,8 +389,8 @@ app.get('/ready', (req, res) => {
   res.status(ready ? 200 : 503).json({
     success: ready,
     message: ready ? 'Service is ready' : 'Service is temporarily unavailable',
-    code: ready ? undefined : 'ERR_SERVICE_UNAVAILABLE',
-    errorCode: ready ? undefined : 'ERR_SERVICE_UNAVAILABLE',
+    code: ready ? undefined : 'SERVER_ERROR',
+    errorCode: ready ? undefined : 'SERVER_ERROR',
     timestamp: new Date().toISOString(),
   });
 });
@@ -384,8 +435,8 @@ app.get('/health/detailed', async (req, res) => {
     res.status(503).json({
       success: false,
       message: 'Service is temporarily unavailable',
-      code: 'ERR_SERVICE_UNAVAILABLE',
-      errorCode: 'ERR_SERVICE_UNAVAILABLE',
+      code: 'SERVER_ERROR',
+      errorCode: 'SERVER_ERROR',
       timestamp: new Date().toISOString(),
     });
   }
@@ -409,8 +460,8 @@ app.get('/health/railway', async (req, res) => {
       status: 'error',
       timestamp: new Date().toISOString(),
       message: 'Service is temporarily unavailable',
-      code: 'ERR_SERVICE_UNAVAILABLE',
-      errorCode: 'ERR_SERVICE_UNAVAILABLE'
+      code: 'SERVER_ERROR',
+      errorCode: 'SERVER_ERROR'
     });
   }
 });

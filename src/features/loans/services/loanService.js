@@ -14,29 +14,31 @@ const getLoanById = async (id) => {
 };
 
 const createLoan = async (data) => {
-  const loan = await db.Loan.create({
-    memberId: data.memberId,
-    amount: data.amount,
-    interestRate: data.interestRate,
-    duration: data.duration,
-    status: data.status || 'PENDING',
-    type: data.type,
-    multiplier: data.multiplier,
-    approvedById: data.approvedById,
-    approvalStage: data.approvalStage || 'INITIAL',
-  });
+  return db.sequelize.transaction(async (transaction) => {
+    const loan = await db.Loan.create({
+      memberId: data.memberId,
+      amount: data.amount,
+      interestRate: data.interestRate,
+      duration: data.duration,
+      status: data.status || 'PENDING',
+      type: data.type,
+      multiplier: data.multiplier,
+      approvedById: data.approvedById,
+      approvalStage: data.approvalStage || 'INITIAL',
+    }, { transaction });
 
-  if (data.guarantors && data.guarantors.length > 0) {
-    for (const guarantor of data.guarantors) {
-      await db.Guarantor.create({
-        loanId: loan.id,
-        memberId: guarantor.memberId,
-        amount: guarantor.amount,
-      });
+    if (data.guarantors && data.guarantors.length > 0) {
+      for (const guarantor of data.guarantors) {
+        await db.Guarantor.create({
+          loanId: loan.id,
+          memberId: guarantor.memberId,
+          amount: guarantor.amount,
+        }, { transaction });
+      }
     }
-  }
 
-  return loan;
+    return loan;
+  });
 };
 
 const updateLoan = async (id, data) => {

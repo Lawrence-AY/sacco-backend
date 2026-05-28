@@ -6,7 +6,9 @@ const asyncHandler = require('../../../shared/utils/asyncHandler');
 const ResponseHandler = require('../../../shared/utils/response');
 const { NotFoundError, ValidationError, ForbiddenError } = require('../../../shared/utils/errors');
 const { UserDTO, LoanDTO, TransactionDTO } = require('../../../shared/utils/dtos');
+const logger = require('../../../shared/utils/logger');
 const nodemailer = require('nodemailer');
+const bcrypt = require('bcrypt');
 const { createClient } = require('@supabase/supabase-js');
 
 const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_KEY
@@ -141,9 +143,10 @@ const getKcbRegistrationForTransaction = async (transaction) => {
     .maybeSingle();
 
   if (error) {
-    console.error('[MEMBER] Failed to fetch KCB-MPESA registration', {
+    logger.error('Failed to fetch KCB-MPESA registration', {
+      module: 'member',
       transactionId: transaction.id,
-      message: error.message,
+      error: error.message,
     });
     return null;
   }
@@ -266,6 +269,20 @@ const updateProfile = asyncHandler(async (req, res) => {
     if (body[field] !== undefined) acc[field] = body[field];
     return acc;
   }, {});
+  const sensitiveFields = ['email', 'phone', 'nationalId', 'kraPin'];
+  const touchesSensitiveField = sensitiveFields.some((field) => (
+    safeBody[field] !== undefined && String(safeBody[field] || '') !== String(req.user[field] || '')
+  ));
+  if (touchesSensitiveField) {
+    if (!body.currentPassword) {
+      throw new ValidationError('Current password is required for sensitive profile updates');
+    }
+    const fullUser = await db.User.findByPk(req.user.id);
+    const passwordMatches = fullUser?.password && await bcrypt.compare(body.currentPassword, fullUser.password);
+    if (!passwordMatches) {
+      throw new ForbiddenError('Current password confirmation failed');
+    }
+  }
   const updated = await userService.updateUser(req.user.id, safeBody);
   if (!updated) {
     throw new NotFoundError('User not found');
@@ -353,18 +370,26 @@ const buyShares = asyncHandler(async (req, res) => {
     throw new ValidationError('Shares or amount is required');
   }
 
-  const shareAccount = await db.ShareAccount.findOne({ where: { memberId: member.id } });
-  if (!shareAccount) {
-    throw new NotFoundError('Share account not found');
-  }
+  const updatedShareAccount = await db.sequelize.transaction(async (transaction) => {
+    const shareAccount = await db.ShareAccount.findOne({
+      where: { memberId: member.id },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+    if (!shareAccount) {
+      throw new NotFoundError('Share account not found');
+    }
 
-  const shareCount = shares !== undefined ? Number(shares) : Number(amount) / Number(shareAccount.shareValue || 1);
-  if (isNaN(shareCount) || shareCount <= 0) {
-    throw new ValidationError('Invalid share quantity or amount');
-  }
+    const shareCount = shares !== undefined ? Number(shares) : Number(amount) / Number(shareAccount.shareValue || 1);
+    if (isNaN(shareCount) || shareCount <= 0) {
+      throw new ValidationError('Invalid share quantity or amount');
+    }
 
-  await shareAccount.update({ shares: shareAccount.shares + shareCount });
-  return ResponseHandler.success(res, formatShareAccount(shareAccount), 'Shares purchased successfully', 200);
+    await shareAccount.update({ shares: Number(shareAccount.shares || 0) + shareCount }, { transaction });
+    return shareAccount;
+  });
+
+  return ResponseHandler.success(res, formatShareAccount(updatedShareAccount), 'Shares purchased successfully', 200);
 });
 
 const getTransactions = asyncHandler(async (req, res) => {
@@ -583,7 +608,8 @@ const initiateContribution = asyncHandler(async (req, res) => {
 
   const endpoint = promptType.endpoint;
   const workerUrl = `${workerBaseUrl.replace(/\/$/, '')}${endpoint}`;
-  console.info('[MEMBER] Sending KCB-MPESA STK request', {
+  logger.info('Sending KCB-MPESA STK request', {
+    module: 'member',
     workerUrl,
     phone,
     amount: Math.round(amount),

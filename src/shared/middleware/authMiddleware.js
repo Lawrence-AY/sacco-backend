@@ -24,6 +24,9 @@ const db = require('../../models');
 
 const OTP_REQUEST_WINDOW_MS = Number(process.env.OTP_RATE_LIMIT_WINDOW_MS || 60 * 1000);
 const OTP_REQUEST_MAX = Number(process.env.OTP_RATE_LIMIT_MAX || 1);
+const LOGIN_LOCK_MAX_ATTEMPTS = Number(process.env.LOGIN_LOCK_MAX_ATTEMPTS || 5);
+const LOGIN_LOCK_WINDOW_MS = Number(process.env.LOGIN_LOCK_WINDOW_MS || 15 * 60 * 1000);
+const OTP_MAX_ATTEMPTS = Number(process.env.OTP_MAX_ATTEMPTS || 5);
 const otpRequestBuckets = new Map();
 
 const normalizeOtpKey = (purpose, email, req) => {
@@ -100,7 +103,74 @@ const exposeTokensForEnvironment = (tokens) => {
   return tokens;
 };
 
-const createAuthTemporaryError = () => new AppError('Something went wrong.', 503, 'ERR_AUTH_TEMPORARY');
+const createAuthTemporaryError = () => new AppError('Something went wrong', 503, 'SERVER_ERROR');
+
+const getClientIp = (req) => {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded) return String(forwarded).split(',')[0].trim();
+  return req.ip || req.socket?.remoteAddress || null;
+};
+
+const createInvalidAuthError = () => new AppError('Invalid credentials or verification code', 401, 'AUTH_INVALID');
+const createLockedError = () => new AppError('This account is temporarily locked. Please try again later.', 423, 'AUTH_LOCKED');
+const createOtpInvalidError = () => new AppError('Invalid or expired verification code', 401, 'OTP_INVALID');
+const createOtpExpiredError = () => new AppError('Invalid or expired verification code', 401, 'OTP_EXPIRED');
+
+const isAccountLocked = (user) => user?.lockedUntil && new Date(user.lockedUntil) > new Date();
+
+const recordFailedLogin = async (user) => {
+  if (!user) return;
+  const attempts = Number(user.failedLoginAttempts || 0) + 1;
+  user.failedLoginAttempts = attempts;
+  if (attempts >= LOGIN_LOCK_MAX_ATTEMPTS) {
+    user.lockedUntil = new Date(Date.now() + LOGIN_LOCK_WINDOW_MS);
+  }
+  await user.save({ fields: ['failedLoginAttempts', 'lockedUntil'] });
+};
+
+const clearFailedLogin = async (user, req) => {
+  user.failedLoginAttempts = 0;
+  user.lockedUntil = null;
+  user.lastLoginIp = getClientIp(req);
+  user.lastLoginAt = new Date();
+  await user.save({ fields: ['failedLoginAttempts', 'lockedUntil', 'lastLoginIp', 'lastLoginAt'] });
+};
+
+const assignOtp = async (user, otp) => {
+  user.otp = otp;
+  user.otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+  user.otpAttempts = 0;
+  user.otpLastSentAt = new Date();
+  await user.save({ fields: ['otp', 'otpExpiresAt', 'otpAttempts', 'otpLastSentAt'] });
+};
+
+const clearOtp = async (user) => {
+  user.otp = null;
+  user.otpExpiresAt = null;
+  user.otpAttempts = 0;
+  await user.save({ fields: ['otp', 'otpExpiresAt', 'otpAttempts'] });
+};
+
+const verifyStoredOtp = async (user, otp) => {
+  if (!user?.otp || !user.otpExpiresAt || new Date(user.otpExpiresAt) < new Date()) {
+    await clearOtp(user);
+    throw createOtpExpiredError();
+  }
+
+  if (Number(user.otpAttempts || 0) >= OTP_MAX_ATTEMPTS) {
+    await clearOtp(user);
+    throw createOtpInvalidError();
+  }
+
+  if (String(user.otp) !== String(otp)) {
+    user.otpAttempts = Number(user.otpAttempts || 0) + 1;
+    await user.save({ fields: ['otpAttempts'] });
+    if (user.otpAttempts >= OTP_MAX_ATTEMPTS) {
+      await clearOtp(user);
+    }
+    throw createOtpInvalidError();
+  }
+};
 
 const ensureMemberRecords = async (user, source = {}) => {
   let member = await db.Member.findOne({ where: { userId: user.id } });
@@ -224,20 +294,22 @@ const loginUser = asyncHandler(async (req, res) => {
   assertOtpRateLimit('login', email, req);
   const user = await User.findOne({ where: { email } });
   if (!user) {
-    throw new UnauthorizedError('Invalid email or password');
+    throw createInvalidAuthError();
+  }
+  if (isAccountLocked(user)) {
+    throw createLockedError();
   }
   if (!user.isVerified) {
-    throw new UnauthorizedError('Please verify your email first');
+    throw createInvalidAuthError();
   }
   const isValid = await verifyPassword(password, user.password);
   if (!isValid) {
-    throw new UnauthorizedError('Invalid email or password');
+    await recordFailedLogin(user);
+    throw createInvalidAuthError();
   }
 
   const otp = generateOTP();
-  user.otp = otp;
-  user.otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
-  await user.save({ fields: ['otp', 'otpExpiresAt'] });
+  await assignOtp(user, otp);
 
   const loginSession = await sessionService.createOtpSession(user, req);
 
@@ -252,9 +324,7 @@ const loginUser = asyncHandler(async (req, res) => {
       error: emailError.message,
       stack: emailError.stack,
     });
-    user.otp = null;
-    user.otpExpiresAt = null;
-    await user.save({ fields: ['otp', 'otpExpiresAt'] });
+    await clearOtp(user);
     throw createAuthTemporaryError();
   }
 
@@ -280,18 +350,15 @@ const verifyLoginOTP = asyncHandler(async (req, res) => {
 
   const user = await User.findOne({ where: { email } });
   if (!user) {
-    throw new UnauthorizedError('User not found');
+    throw createOtpInvalidError();
   }
-  if (!user.otp || String(user.otp) !== String(otp)) {
-    throw new UnauthorizedError('Invalid OTP. Please check the code and try again.');
+  if (isAccountLocked(user)) {
+    throw createLockedError();
   }
-  if (!user.otpExpiresAt || new Date(user.otpExpiresAt) < new Date()) {
-    throw new UnauthorizedError('OTP expired. Please request a new code.');
-  }
+  await verifyStoredOtp(user, otp);
 
-  user.otp = null;
-  user.otpExpiresAt = null;
-  await user.save({ fields: ['otp', 'otpExpiresAt'] });
+  await clearOtp(user);
+  await clearFailedLogin(user, req);
   const loginSession = await sessionService.activateSession(user, req);
 
   const tokens = jwtUtils.generateTokens(user.id, {
@@ -371,7 +438,7 @@ const registerUser = asyncHandler(async (req, res) => {
 
   const existingUser = await User.findOne({ where: { email } });
   if (existingUser) {
-    throw new ConflictError('User already exists');
+    throw new ConflictError('Unable to complete registration with the provided details');
   }
 
   const application = applicationId
@@ -397,7 +464,9 @@ const registerUser = asyncHandler(async (req, res) => {
     role: 'PENDING',
     isVerified: false,
     otp,
-    otpExpiresAt: new Date(Date.now() + 10 * 60 * 1000) // 10 min
+    otpExpiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 min
+    otpAttempts: 0,
+    otpLastSentAt: new Date()
   });
 
   try {
@@ -411,9 +480,7 @@ const registerUser = asyncHandler(async (req, res) => {
       error: emailError.message,
       stack: emailError.stack,
     });
-    user.otp = null;
-    user.otpExpiresAt = null;
-    await user.save({ fields: ['otp', 'otpExpiresAt'] });
+    await clearOtp(user);
     throw createAuthTemporaryError();
   }
 
@@ -513,20 +580,16 @@ const verifyOTP = asyncHandler(async (req, res) => {
 
   const user = await User.findOne({ where: { email } });
   if (!user) {
-    throw new UnauthorizedError('User not found');
+    throw createOtpInvalidError();
   }
-  if (!user.otp || String(user.otp) !== String(otp)) {
-    throw new UnauthorizedError('Invalid OTP. Please check the code and try again.');
-  }
-  if (!user.otpExpiresAt || new Date(user.otpExpiresAt) < new Date()) {
-    throw new UnauthorizedError('OTP expired. Please request a new code.');
-  }
+  await verifyStoredOtp(user, otp);
 
   user.isVerified = true;
   user.role = 'MEMBER';
   user.otp = null;
   user.otpExpiresAt = null;
-  await user.save();
+  user.otpAttempts = 0;
+  await user.save({ fields: ['isVerified', 'role', 'otp', 'otpExpiresAt', 'otpAttempts'] });
   await ensureMemberRecords(user);
 
   const tokens = jwtUtils.generateTokens(user.id, {
@@ -554,17 +617,25 @@ const resendOTP = asyncHandler(async (req, res) => {
 
   const user = await User.findOne({ where: { email } });
   if (!user) {
-    throw new UnauthorizedError('User not found');
+    return ResponseHandler.success(res, { resendAvailableIn: 60 }, 'If eligible, a new verification code will be sent', 200);
   }
+
   if (user.isVerified) {
-    throw new ValidationError('Already verified');
+    const sessionId = req.headers['x-session-id'] || req.body?.sessionId || null;
+    const pendingLogin = sessionId
+      ? await db.LoginSession.findOne({ where: { id: sessionId, userId: user.id, status: 'OTP_SENT' } })
+      : await db.LoginSession.findOne({
+        where: { userId: user.id, status: 'OTP_SENT' },
+        order: [['createdAt', 'DESC']]
+      });
+    if (!pendingLogin) {
+      return ResponseHandler.success(res, { resendAvailableIn: 60 }, 'If eligible, a new verification code will be sent', 200);
+    }
   }
 
   const otp = generateOTP(); // same digit length as register
 
-  user.otp = otp;
-  user.otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
-  await user.save();
+  await assignOtp(user, otp);
 
   try {
     await sendOTPEmail(email, otp);
@@ -577,13 +648,11 @@ const resendOTP = asyncHandler(async (req, res) => {
       error: emailError.message,
       stack: emailError.stack,
     });
-    user.otp = null;
-    user.otpExpiresAt = null;
-    await user.save({ fields: ['otp', 'otpExpiresAt'] });
+    await clearOtp(user);
     throw createAuthTemporaryError();
   }
 
-  return ResponseHandler.success(res, { message: 'OTP resent successfully' }, 'OTP resent');
+  return ResponseHandler.success(res, { resendAvailableIn: 60 }, 'OTP resent');
 });
 
 /**

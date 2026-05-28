@@ -10,6 +10,12 @@ const userColumns = {
   nextOfKinName: { type: DataTypes.STRING, allowNull: true },
   nextOfKinRelationship: { type: DataTypes.STRING, allowNull: true },
   nextOfKinPhone: { type: DataTypes.STRING, allowNull: true },
+  otpAttempts: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+  otpLastSentAt: { type: DataTypes.DATE, allowNull: true },
+  failedLoginAttempts: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+  lockedUntil: { type: DataTypes.DATE, allowNull: true },
+  lastLoginIp: { type: DataTypes.STRING, allowNull: true },
+  lastLoginAt: { type: DataTypes.DATE, allowNull: true },
 };
 
 const ensureUserProfileColumns = async (sequelize) => {
@@ -60,6 +66,7 @@ const searchIndexes = [
   ['Users', ['email'], 'idx_users_email'],
   ['Users', ['phone'], 'idx_users_phone'],
   ['Users', ['nationalId'], 'idx_users_national_id'],
+  ['Users', ['lockedUntil'], 'idx_users_locked_until'],
   ['Transactions', ['reference'], 'idx_transactions_reference'],
   ['Transactions', ['memberId'], 'idx_transactions_member_id'],
   ['Transactions', ['paymentCategory'], 'idx_transactions_payment_category'],

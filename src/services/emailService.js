@@ -1,5 +1,7 @@
 // services/emailService.js
 const { createClient } = require('@supabase/supabase-js');
+const crypto = require('crypto');
+const logger = require('../shared/utils/logger');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -23,7 +25,7 @@ async function sendApplicationConfirmationEmail(email, name, applicationId) {
 
   if (error) throw error;
 
-  console.info('[APPLICATION] Confirmation email triggered', { applicationId });
+  logger.info('Application confirmation email triggered', { module: 'applications', applicationId });
   return data;
 }
 

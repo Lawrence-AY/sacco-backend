@@ -41,6 +41,18 @@ const User = sequelize.define('User', {
   },
   otp: DataTypes.STRING(8),
   otpExpiresAt: DataTypes.DATE,
+  otpAttempts: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0
+  },
+  otpLastSentAt: DataTypes.DATE,
+  failedLoginAttempts: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0
+  },
+  lockedUntil: DataTypes.DATE,
+  lastLoginIp: DataTypes.STRING,
+  lastLoginAt: DataTypes.DATE,
   passwordResetToken: {
     type: DataTypes.STRING,
     allowNull: true

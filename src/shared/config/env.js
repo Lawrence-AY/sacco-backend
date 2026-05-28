@@ -5,7 +5,6 @@ const requiredAlways = [
 ];
 
 const requiredProduction = [
-  'FRONTEND_URL',
   'JWT_SECRET',
   'JWT_REFRESH_SECRET',
 ];
@@ -29,6 +28,12 @@ const validateEnvironment = () => {
   const errors = [];
   if (missing.length) {
     errors.push(`Missing required environment variables: ${missing.join(', ')}`);
+  }
+  if (isProduction && !process.env.FRONTEND_URL && !process.env.CLIENT_URL) {
+    errors.push('Missing required environment variable: FRONTEND_URL or CLIENT_URL');
+  }
+  if (isProduction && !process.env.RESEND_API_KEY && !process.env.SMTP_HOST) {
+    errors.push('Missing email provider configuration: RESEND_API_KEY or SMTP_HOST');
   }
   if (weakSecrets.length) {
     errors.push(`Weak or missing JWT secrets: ${weakSecrets.join(', ')}`);

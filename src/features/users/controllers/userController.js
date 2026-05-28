@@ -4,6 +4,8 @@ const asyncHandler = require('../../../shared/utils/asyncHandler');
 const ResponseHandler = require('../../../shared/utils/response');
 const { NotFoundError, ValidationError, ForbiddenError } = require('../../../shared/utils/errors');
 const { UserDTO } = require('../../../shared/utils/dtos');
+const bcrypt = require('bcrypt');
+const db = require('../../../models');
 
 const getAllUsers = asyncHandler(async (req, res) => {
   const users = await userService.getAllUsers();
@@ -76,6 +78,23 @@ const updateUser = asyncHandler(async (req, res) => {
   const hasUpdate = Object.keys(safeBody).length > 0;
   if (!hasUpdate) {
     throw new ValidationError('At least one field is required to update the user');
+  }
+
+  if (!['ADMIN', 'SUPERADMIN'].includes(req.user.role) && req.user.id === userId) {
+    const sensitiveFields = ['email', 'phone', 'nationalId', 'kraPin'];
+    const touchesSensitiveField = sensitiveFields.some((field) => (
+      safeBody[field] !== undefined && String(safeBody[field] || '') !== String(req.user[field] || '')
+    ));
+    if (touchesSensitiveField) {
+      if (!req.body.currentPassword) {
+        throw new ValidationError('Current password is required for sensitive profile updates');
+      }
+      const fullUser = await db.User.findByPk(req.user.id);
+      const passwordMatches = fullUser?.password && await bcrypt.compare(req.body.currentPassword, fullUser.password);
+      if (!passwordMatches) {
+        throw new ForbiddenError('Current password confirmation failed');
+      }
+    }
   }
 
   const updatedUser = await userService.updateUser(userId, safeBody);

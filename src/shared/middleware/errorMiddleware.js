@@ -25,7 +25,7 @@ const normalizeSequelizeError = (err) => {
   if (err.name === 'SequelizeValidationError') {
     return {
       statusCode: 400,
-      errorCode: 'ERR_DATABASE_VALIDATION',
+      errorCode: 'VALIDATION_ERROR',
       message: 'Validation failed',
       details: err.errors?.map((e) => ({ field: e.path, message: e.message })) || null,
     };
@@ -34,7 +34,7 @@ const normalizeSequelizeError = (err) => {
   if (err.name === 'SequelizeUniqueConstraintError') {
     return {
       statusCode: 409,
-      errorCode: 'ERR_DUPLICATE_RESOURCE',
+      errorCode: 'VALIDATION_ERROR',
       message: 'Resource already exists',
       details: err.errors?.map((e) => ({ field: e.path, message: `This ${e.path} is already in use` })) || null,
     };
@@ -43,7 +43,7 @@ const normalizeSequelizeError = (err) => {
   if (err.name === 'SequelizeForeignKeyConstraintError') {
     return {
       statusCode: 400,
-      errorCode: 'ERR_INVALID_REFERENCE',
+      errorCode: 'VALIDATION_ERROR',
       message: 'Invalid referenced resource',
     };
   }
@@ -58,9 +58,9 @@ const normalizeSequelizeError = (err) => {
   ].includes(err.name)) {
     return {
       statusCode: err.name === 'SequelizeDatabaseError' ? 500 : 503,
-      errorCode: err.name === 'SequelizeDatabaseError' ? 'ERR_DATABASE' : 'ERR_DATABASE_UNAVAILABLE',
+      errorCode: 'SERVER_ERROR',
       message: err.name === 'SequelizeDatabaseError'
-        ? 'Something went wrong.'
+        ? 'Something went wrong'
         : 'Service temporarily unavailable',
     };
   }
@@ -73,21 +73,21 @@ const normalizeError = (err) => {
   if (dbError) return dbError;
 
   if (err.name === 'JsonWebTokenError') {
-    return { statusCode: 401, errorCode: 'ERR_INVALID_TOKEN', message: 'Invalid authentication token' };
+    return { statusCode: 401, errorCode: 'TOKEN_INVALID', message: 'Authentication failed' };
   }
 
   if (err.name === 'TokenExpiredError') {
-    return { statusCode: 401, errorCode: 'ERR_TOKEN_EXPIRED', message: 'Authentication token has expired' };
+    return { statusCode: 401, errorCode: 'TOKEN_EXPIRED', message: 'Your session has expired' };
   }
 
   if (err.status === 429 || err.statusCode === 429) {
-    return { statusCode: 429, errorCode: 'ERR_RATE_LIMIT', message: 'Too many requests, please try again later' };
+    return { statusCode: 429, errorCode: 'RATE_LIMITED', message: 'Too many requests, please try again later' };
   }
 
   if (err instanceof AppError || err.isOperational) {
     return {
       statusCode: err.statusCode || err.status || 500,
-      errorCode: err.errorCode || 'ERR_APPLICATION',
+      errorCode: err.errorCode || 'SERVER_ERROR',
       message: err.message || 'Something went wrong.',
       details: err.details || null,
     };
@@ -95,8 +95,8 @@ const normalizeError = (err) => {
 
   return {
     statusCode: err.statusCode || err.status || 500,
-    errorCode: 'ERR_INTERNAL_SERVER',
-    message: 'Something went wrong.',
+    errorCode: 'SERVER_ERROR',
+    message: 'Something went wrong',
   };
 };
 
@@ -133,11 +133,12 @@ const errorHandler = (err, req, res, next) => {
   });
 
   // Send error response
+  const isServerError = statusCode >= 500;
   const errorResponse = {
     success: false,
-    code: normalized.errorCode,
-    message: normalized.message,
-    errorCode: normalized.errorCode,
+    code: isServerError ? 'SERVER_ERROR' : normalized.errorCode,
+    message: isServerError && !isDevelopment ? 'Something went wrong' : normalized.message,
+    errorCode: isServerError ? 'SERVER_ERROR' : normalized.errorCode,
     requestId: req.id || 'unknown',
     timestamp: new Date().toISOString(),
     ...(normalized.details && { details: normalized.details }),
@@ -170,7 +171,7 @@ const errorHandler = (err, req, res, next) => {
  * Should be placed after all routes
  */
 const notFoundHandler = (req, res, next) => {
-  const error = new AppError('Resource not found', 404, 'ERR_ROUTE_NOT_FOUND');
+  const error = new AppError('Resource not found', 404, 'NOT_FOUND');
 
   logger.warn('Route not found:', {
     method: req.method,
@@ -198,9 +199,9 @@ const timeoutMiddleware = (req, res, next) => {
     if (!res.headersSent) {
       res.status(408).json({
         success: false,
-        code: 'ERR_REQUEST_TIMEOUT',
+        code: 'SERVER_ERROR',
         message: 'Request timeout',
-        errorCode: 'ERR_REQUEST_TIMEOUT',
+        errorCode: 'SERVER_ERROR',
         requestId: req.id || 'unknown',
         timestamp: new Date().toISOString()
       });

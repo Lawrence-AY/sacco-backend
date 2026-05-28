@@ -3,7 +3,7 @@
  */
 
 class AppError extends Error {
-  constructor(message = 'Something went wrong.', statusCode = 500, errorCode = 'ERR_INTERNAL_SERVER', isOperational = true) {
+  constructor(message = 'Something went wrong', statusCode = 500, errorCode = 'SERVER_ERROR', isOperational = true) {
     super(message);
     this.name = this.constructor.name;
     this.status = statusCode;
@@ -17,26 +17,26 @@ class AppError extends Error {
 
 class ValidationError extends AppError {
   constructor(message, details = null) {
-    super(message || 'Validation failed', 400, 'ERR_VALIDATION');
+    super(message || 'Validation failed', 400, 'VALIDATION_ERROR');
     this.details = details;
   }
 }
 
 class NotFoundError extends AppError {
   constructor(message = 'Resource not found') {
-    super(message, 404, 'ERR_RESOURCE_NOT_FOUND');
+    super(message, 404, 'NOT_FOUND');
   }
 }
 
 class AuthenticationError extends AppError {
   constructor(message = 'Authentication required') {
-    super(message, 401, 'ERR_AUTHENTICATION');
+    super(message, 401, 'TOKEN_INVALID');
   }
 }
 
 class AuthorizationError extends AppError {
   constructor(message = 'Access forbidden') {
-    super(message, 403, 'ERR_AUTHORIZATION');
+    super(message, 403, 'FORBIDDEN');
   }
 }
 
@@ -46,26 +46,26 @@ class ForbiddenError extends AuthorizationError {}
 
 class ConflictError extends AppError {
   constructor(message = 'Conflict occurred') {
-    super(message, 409, 'ERR_CONFLICT');
+    super(message, 409, 'VALIDATION_ERROR');
   }
 }
 
 class DatabaseError extends AppError {
   constructor(message = 'Database operation failed', details = null) {
-    super(message, 500, 'ERR_DATABASE');
+    super(message, 500, 'SERVER_ERROR');
     this.details = details;
   }
 }
 
 class BadRequestError extends AppError {
   constructor(message = 'Bad request') {
-    super(message, 400, 'ERR_BAD_REQUEST');
+    super(message, 400, 'VALIDATION_ERROR');
   }
 }
 
 class RateLimitError extends AppError {
   constructor(message = 'Too many requests') {
-    super(message, 429, 'ERR_RATE_LIMIT');
+    super(message, 429, 'RATE_LIMITED');
   }
 }
 

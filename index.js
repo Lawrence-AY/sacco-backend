@@ -94,10 +94,16 @@ async function initializeDatabase(app, db) {
 
         logger.info('Syncing database schema...', { options: syncOptions });
         await db.sequelize.sync(syncOptions);
-        await runSchemaMigrations(db.sequelize);
         logger.info('Database schema sync completed');
       } else {
         logger.info('Skipping database schema sync because DB_SYNC_ON_START=false');
+      }
+
+      if (process.env.DB_MIGRATIONS_ON_START !== 'false') {
+        await runSchemaMigrations(db.sequelize);
+        logger.info('Database safety migrations completed');
+      } else {
+        logger.warn('Skipping database safety migrations because DB_MIGRATIONS_ON_START=false');
       }
 
       app.locals.apiReady = true;

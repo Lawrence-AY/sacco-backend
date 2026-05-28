@@ -1,6 +1,7 @@
 const nodemailer = require('nodemailer');
 const { Op } = require('sequelize');
 const db = require('../models');
+const logger = require('../shared/utils/logger');
 
 const getClientIp = (req) => {
   const forwarded = req.headers['x-forwarded-for'];
@@ -138,7 +139,7 @@ const activateSession = async (user, req) => {
 
   if (record.isNewDevice) {
     notifyNewDevice(user, record).catch((error) => {
-      console.error('[AUTH] New device email failed', { userId: user.id, message: error.message });
+      logger.error('New device email failed', { module: 'auth', userId: user.id, error: error.message });
     });
   }
 

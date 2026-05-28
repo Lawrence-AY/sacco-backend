@@ -1,7 +1,7 @@
 const db = require('../../../models');
-const { DatabaseError } = require('../../../shared/utils/errors');
+const { DatabaseError, ValidationError } = require('../../../shared/utils/errors');
 
-const privateUserFields = ['password', 'otp', 'otpExpiresAt', 'passwordResetToken', 'passwordResetExpires'];
+const privateUserFields = ['password', 'otp', 'otpExpiresAt', 'otpAttempts', 'otpLastSentAt', 'failedLoginAttempts', 'lockedUntil', 'passwordResetToken', 'passwordResetExpires'];
 
 const getAllUsers = async () => {
   try {
@@ -37,6 +37,14 @@ const updateUser = async (id, data) => {
     const user = await db.User.findByPk(id);
     if (!user) {
       return null;
+    }
+
+    if (data.email && data.email !== user.email) {
+      const existingEmail = await db.User.findOne({ where: { email: data.email } });
+      if (existingEmail && existingEmail.id !== id) {
+        throw new ValidationError('Email address is already in use');
+      }
+      data.isVerified = false;
     }
 
     await user.update({
@@ -77,6 +85,7 @@ const updateUser = async (id, data) => {
     privateUserFields.forEach((field) => delete result[field]);
     return result;
   } catch (error) {
+    if (error.isOperational) throw error;
     throw new DatabaseError('Failed to update user', error.message);
   }
 };
