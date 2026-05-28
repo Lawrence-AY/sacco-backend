@@ -68,9 +68,11 @@ const searchIndexes = [
   ['Users', ['nationalId'], 'idx_users_national_id'],
   ['Users', ['lockedUntil'], 'idx_users_locked_until'],
   ['Transactions', ['reference'], 'idx_transactions_reference'],
+  ['Transactions', ['reference'], 'uniq_transactions_reference', true],
   ['Transactions', ['memberId'], 'idx_transactions_member_id'],
   ['Transactions', ['paymentCategory'], 'idx_transactions_payment_category'],
   ['Transactions', ['internalReference'], 'idx_transactions_internal_reference'],
+  ['Transactions', ['internalReference'], 'uniq_transactions_internal_reference', true],
   ['Loans', ['memberId'], 'idx_loans_member_id'],
   ['Loans', ['status'], 'idx_loans_status'],
   ['MembershipApplications', ['email'], 'idx_applications_email'],
@@ -82,12 +84,22 @@ const searchIndexes = [
 const ensureSearchIndexes = async (sequelize) => {
   const queryInterface = sequelize.getQueryInterface();
 
-  for (const [tableName, fields, name] of searchIndexes) {
+  for (const [tableName, fields, name, unique = false] of searchIndexes) {
     const indexes = await queryInterface.showIndex(tableName).catch(() => []);
     const exists = indexes.some((index) => index.name === name);
     if (!exists) {
-      await queryInterface.addIndex(tableName, fields, { name });
-      logger.info('Added search index', { tableName, fields, name });
+      try {
+        await queryInterface.addIndex(tableName, fields, { name, unique });
+        logger.info('Added search index', { tableName, fields, name, unique });
+      } catch (error) {
+        logger.warn('Unable to add search index', {
+          tableName,
+          fields,
+          name,
+          unique,
+          error: error.message,
+        });
+      }
     }
   }
 };
