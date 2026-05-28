@@ -125,11 +125,6 @@ async function initializeDatabase(app, db) {
         timestamp: new Date().toISOString()
       });
 
-      if (process.env.NODE_ENV === 'production') {
-        shutdown();
-        return;
-      }
-
       logger.warn('Retrying API startup after database connection failure', {
         retryDelayMs,
       });

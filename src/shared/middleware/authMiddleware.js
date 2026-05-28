@@ -23,7 +23,8 @@ const MembershipApplication = require('../../models/membershipApplication.model'
 const db = require('../../models');
 
 const OTP_REQUEST_WINDOW_MS = Number(process.env.OTP_RATE_LIMIT_WINDOW_MS || 60 * 1000);
-const OTP_REQUEST_MAX = Number(process.env.OTP_RATE_LIMIT_MAX || 1);
+const OTP_REQUEST_MAX = Number(process.env.OTP_RATE_LIMIT_MAX || 3);
+const OTP_RESEND_COOLDOWN_MS = Number(process.env.OTP_RESEND_COOLDOWN_MS || 60 * 1000);
 const LOGIN_LOCK_MAX_ATTEMPTS = Number(process.env.LOGIN_LOCK_MAX_ATTEMPTS || 5);
 const LOGIN_LOCK_WINDOW_MS = Number(process.env.LOGIN_LOCK_WINDOW_MS || 15 * 60 * 1000);
 const OTP_MAX_ATTEMPTS = Number(process.env.OTP_MAX_ATTEMPTS || 5);
@@ -52,6 +53,8 @@ const assertOtpRateLimit = (purpose, email, req) => {
     throw new RateLimitError(`Please wait ${retryAfter} seconds before requesting another OTP`);
   }
 };
+
+const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
 
 const serializeUser = (user) => {
   if (!user) return null;
@@ -142,6 +145,15 @@ const assignOtp = async (user, otp) => {
   user.otpAttempts = 0;
   user.otpLastSentAt = new Date();
   await user.save({ fields: ['otp', 'otpExpiresAt', 'otpAttempts', 'otpLastSentAt'] });
+};
+
+const assertUserOtpCooldown = (user) => {
+  if (!user?.otpLastSentAt) return;
+  const nextAllowedAt = new Date(user.otpLastSentAt).getTime() + OTP_RESEND_COOLDOWN_MS;
+  if (nextAllowedAt > Date.now()) {
+    const retryAfter = Math.ceil((nextAllowedAt - Date.now()) / 1000);
+    throw new RateLimitError(`Please wait ${retryAfter} seconds before requesting another OTP`);
+  }
 };
 
 const clearOtp = async (user) => {
@@ -288,11 +300,11 @@ const verifyPassword = async (password, hashedPassword) => {
  */
 const loginUser = asyncHandler(async (req, res) => {
   const { email, password } = req.body || {};
-  if (!email || !password) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail || !password) {
     throw new ValidationError('Email and password are required');
   }
-  assertOtpRateLimit('login', email, req);
-  const user = await User.findOne({ where: { email } });
+  const user = await User.findOne({ where: { email: normalizedEmail } });
   if (!user) {
     throw createInvalidAuthError();
   }
@@ -344,11 +356,12 @@ const loginUser = asyncHandler(async (req, res) => {
 
 const verifyLoginOTP = asyncHandler(async (req, res) => {
   const { email, otp } = req.body || {};
-  if (!email || !otp) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail || !otp) {
     throw new ValidationError('Email and OTP required');
   }
 
-  const user = await User.findOne({ where: { email } });
+  const user = await User.findOne({ where: { email: normalizedEmail } });
   if (!user) {
     throw createOtpInvalidError();
   }
@@ -431,19 +444,20 @@ const registerUser = asyncHandler(async (req, res) => {
     applicationId
   } = req.body || {};
 
-  if (!firstName || !lastName || !email || !password) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!firstName || !lastName || !normalizedEmail || !password) {
     throw new ValidationError('Missing required fields');
   }
-  assertOtpRateLimit('register', email, req);
+  assertOtpRateLimit('register', normalizedEmail, req);
 
-  const existingUser = await User.findOne({ where: { email } });
+  const existingUser = await User.findOne({ where: { email: normalizedEmail } });
   if (existingUser) {
     throw new ConflictError('Unable to complete registration with the provided details');
   }
 
   const application = applicationId
     ? await MembershipApplication.findByPk(applicationId)
-    : await MembershipApplication.findOne({ where: { email } });
+    : await MembershipApplication.findOne({ where: { email: normalizedEmail } });
 
   if (application && application.status !== 'APPROVED') {
     throw new ValidationError('Application not approved yet');
@@ -458,7 +472,7 @@ const registerUser = asyncHandler(async (req, res) => {
     firstName: firstName.trim(),
     lastName: lastName.trim(),
     name: name || `${firstName} ${lastName}`,
-    email: email.trim(),
+    email: normalizedEmail,
     phone: phone || null,
     password: hashedPassword,
     role: 'PENDING',
@@ -470,7 +484,7 @@ const registerUser = asyncHandler(async (req, res) => {
   });
 
   try {
-    await sendOTPEmail(email, otp);
+    await sendOTPEmail(normalizedEmail, otp);
   } catch (emailError) {
     logger.error({
       message: 'OTP send failed during registration',
@@ -574,11 +588,12 @@ const setPassword = asyncHandler(async (req, res) => {
  */
 const verifyOTP = asyncHandler(async (req, res) => {
   const { email, otp } = req.body || {};
-  if (!email || !otp) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail || !otp) {
     throw new ValidationError('Email and OTP required');
   }
 
-  const user = await User.findOne({ where: { email } });
+  const user = await User.findOne({ where: { email: normalizedEmail } });
   if (!user) {
     throw createOtpInvalidError();
   }
@@ -610,15 +625,17 @@ const verifyOTP = asyncHandler(async (req, res) => {
  */
 const resendOTP = asyncHandler(async (req, res) => {
   const { email } = req.body || {};
-  if (!email) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) {
     throw new ValidationError('Email required');
   }
-  assertOtpRateLimit('resend', email, req);
+  assertOtpRateLimit('resend', normalizedEmail, req);
 
-  const user = await User.findOne({ where: { email } });
+  const user = await User.findOne({ where: { email: normalizedEmail } });
   if (!user) {
     return ResponseHandler.success(res, { resendAvailableIn: 60 }, 'If eligible, a new verification code will be sent', 200);
   }
+  assertUserOtpCooldown(user);
 
   if (user.isVerified) {
     const sessionId = req.headers['x-session-id'] || req.body?.sessionId || null;
@@ -638,7 +655,7 @@ const resendOTP = asyncHandler(async (req, res) => {
   await assignOtp(user, otp);
 
   try {
-    await sendOTPEmail(email, otp);
+    await sendOTPEmail(normalizedEmail, otp);
   } catch (emailError) {
     logger.error({
       message: 'OTP resend failed',

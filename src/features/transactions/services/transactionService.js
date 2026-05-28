@@ -1,4 +1,5 @@
 const db = require('../../../models');
+const { ValidationError, ConflictError } = require('../../../shared/utils/errors');
 
 const writableFields = [
   'memberId',
@@ -28,15 +29,62 @@ const getTransactionById = async (id) => {
   return await db.Transaction.findByPk(id);
 };
 
+const assertValidTransaction = (data) => {
+  const amount = Number(data.amount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new ValidationError('Transaction amount must be greater than zero');
+  }
+  if (!data.type) {
+    throw new ValidationError('Transaction type is required');
+  }
+};
+
 const createTransaction = async (data) => {
-  return await db.Transaction.create(pickWritable(data));
+  assertValidTransaction(data);
+  return db.sequelize.transaction(async (transaction) => {
+    const references = [data.reference, data.internalReference].filter(Boolean);
+    if (references.length) {
+      const existing = await db.Transaction.findOne({
+        where: {
+          [db.Sequelize.Op.or]: [
+            { reference: { [db.Sequelize.Op.in]: references } },
+            { internalReference: { [db.Sequelize.Op.in]: references } },
+          ],
+        },
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
+      if (existing) {
+        throw new ConflictError('Duplicate transaction reference');
+      }
+    }
+
+    return db.Transaction.create(pickWritable({
+      ...data,
+      amount: Number(data.amount),
+      status: data.status || 'PENDING',
+    }), { transaction });
+  });
 };
 
 const updateTransaction = async (id, data) => {
-  const transaction = await db.Transaction.findByPk(id);
-  if (!transaction) return null;
-  await transaction.update(pickWritable(data));
-  return transaction;
+  return db.sequelize.transaction(async (sequelizeTransaction) => {
+    const transaction = await db.Transaction.findByPk(id, {
+      transaction: sequelizeTransaction,
+      lock: sequelizeTransaction.LOCK.UPDATE,
+    });
+    if (!transaction) return null;
+    const next = pickWritable(data);
+    if (next.amount !== undefined) {
+      const amount = Number(next.amount);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        throw new ValidationError('Transaction amount must be greater than zero');
+      }
+      next.amount = amount;
+    }
+    await transaction.update(next, { transaction: sequelizeTransaction });
+    return transaction;
+  });
 };
 
 const deleteTransaction = async (id) => {
