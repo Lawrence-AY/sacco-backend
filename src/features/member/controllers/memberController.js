@@ -1,3 +1,4 @@
+const { Op } = require('sequelize');
 const db = require('../../../models');
 const userService = require('../../users/services/userService');
 const loanService = require('../../loans/services/loanService');
@@ -729,12 +730,14 @@ const emailReport = asyncHandler(async (req, res) => {
   }
 
   const reportType = req.body?.reportType || 'portfolio';
+  const durationMonths = Number(req.body?.duration) || 0;
   const member = await findMemberByUserId(req.user.id);
+  const dateFilter = durationMonths > 0 ? { createdAt: { [Op.gte]: new Date(new Date().setMonth(new Date().getMonth() - durationMonths)) } } : {};
   const transactions = member
-    ? await db.Transaction.findAll({ where: { memberId: member.id }, order: [['createdAt', 'DESC']], limit: reportType === 'transactions' ? 100 : 20 })
+    ? await db.Transaction.findAll({ where: { memberId: member.id, ...dateFilter }, order: [['createdAt', 'DESC']], limit: reportType === 'transactions' ? 100 : 20 })
     : [];
   const loans = member
-    ? await db.Loan.findAll({ where: { memberId: member.id }, order: [['createdAt', 'DESC']] })
+    ? await db.Loan.findAll({ where: { memberId: member.id, ...dateFilter }, order: [['createdAt', 'DESC']] })
     : [];
   const shares = await shareService.getShareAccountsForUser(req.user);
 
@@ -765,13 +768,14 @@ const emailReport = asyncHandler(async (req, res) => {
   const savingsTotal = categoryTotal(['savings']);
   const outstandingLoans = loans.reduce((sum, loan) => sum + Number(loan.amount || 0), 0);
   const transactionTotal = successfulTransactions.reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+  const formatMoney = (value) => Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const transactionRows = transactions.map((transaction) => `
     <tr>
       <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${escapeHtml(transaction.createdAt ? new Date(transaction.createdAt).toLocaleDateString() : '-')}</td>
       <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${escapeHtml(transaction.type)}</td>
       <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${escapeHtml(transaction.paymentCategory || transaction.description || '-')}</td>
       <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${escapeHtml(transaction.reference || '-')}</td>
-      <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; text-align: right;">KSh ${Math.round(Number(transaction.amount || 0)).toLocaleString()}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; text-align: right;">KSh ${formatMoney(transaction.amount)}</td>
       <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${escapeHtml(transaction.status || '-')}</td>
     </tr>
   `).join('');
@@ -796,10 +800,10 @@ const emailReport = asyncHandler(async (req, res) => {
         <p>Hello ${user.name || 'Member'},</p>
         <p>Your requested report summary is below.</p>
         <ul>
-          <li><strong>Share capital:</strong> KSh ${Math.round(shareCapital).toLocaleString()}</li>
-          <li><strong>Savings:</strong> KSh ${Math.round(savingsTotal).toLocaleString()}</li>
-          <li><strong>Outstanding loans:</strong> KSh ${Math.round(outstandingLoans).toLocaleString()}</li>
-          <li><strong>Successful transaction total:</strong> KSh ${Math.round(transactionTotal).toLocaleString()}</li>
+          <li><strong>Share capital:</strong> KSh ${formatMoney(shareCapital)}</li>
+          <li><strong>Savings:</strong> KSh ${formatMoney(savingsTotal)}</li>
+          <li><strong>Outstanding loans:</strong> KSh ${formatMoney(outstandingLoans)}</li>
+          <li><strong>Successful transaction total:</strong> KSh ${formatMoney(transactionTotal)}</li>
           <li><strong>Loans:</strong> ${loans.length}</li>
           <li><strong>Transactions reviewed:</strong> ${transactions.length}</li>
         </ul>

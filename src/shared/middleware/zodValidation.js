@@ -143,6 +143,10 @@ const schemas = {
     ]).default('all'),
     status: z.string().trim().max(40).optional(),
   }),
+  reportRequest: strictObject({
+    reportType: z.enum(['portfolio', 'transactions', 'loans', 'savings']).default('portfolio'),
+    duration: z.coerce.number().int().positive().max(120).optional(),
+  }),
 };
 
 module.exports = {
