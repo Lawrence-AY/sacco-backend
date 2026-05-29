@@ -25,12 +25,15 @@ const decodeHeaderLocation = (value) => {
 };
 
 const getLoginLocation = (req) => {
-  const city = decodeHeaderLocation(getHeaderValue(req, 'x-vercel-ip-city'));
-  const region = decodeHeaderLocation(getHeaderValue(req, 'x-vercel-ip-country-region'));
+  const city = decodeHeaderLocation(getHeaderValue(req, 'x-vercel-ip-city')) || decodeHeaderLocation(getHeaderValue(req, 'x-geo-city'));
+  const region = decodeHeaderLocation(getHeaderValue(req, 'x-vercel-ip-country-region')) || decodeHeaderLocation(getHeaderValue(req, 'x-region')) || decodeHeaderLocation(getHeaderValue(req, 'x-country-region'));
   const country =
     decodeHeaderLocation(getHeaderValue(req, 'x-vercel-ip-country')) ||
     decodeHeaderLocation(getHeaderValue(req, 'cf-ipcountry')) ||
-    decodeHeaderLocation(getHeaderValue(req, 'cloudfront-viewer-country'));
+    decodeHeaderLocation(getHeaderValue(req, 'cloudfront-viewer-country')) ||
+    decodeHeaderLocation(getHeaderValue(req, 'x-akamai-country-code')) ||
+    decodeHeaderLocation(getHeaderValue(req, 'x-country-code')) ||
+    decodeHeaderLocation(getHeaderValue(req, 'x-geo-country'));
 
   const parts = [city, region, country].filter(Boolean);
   return parts.length ? parts.join(', ') : 'Location unavailable';
