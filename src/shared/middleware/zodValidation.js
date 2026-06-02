@@ -14,6 +14,7 @@ const validate = (schema, source = 'body') => (req, res, next) => {
 
 const strictObject = (shape) => z.object(shape).strict();
 const optionalEmptyableString = (max) => z.string().trim().max(max).optional().or(z.literal(''));
+const optionalNullableString = (max) => z.string().trim().max(max).optional().nullable().transform((value) => value ?? undefined);
 const dataImageUrl = z.string().trim().regex(/^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/=]+$/i);
 const profilePhotoDataUrl = dataImageUrl.max(2200000);
 
@@ -60,7 +61,7 @@ const schemas = {
     email: z.string().trim().email().toLowerCase().optional(),
     phone: z.string().trim().max(20).optional(),
     nationalId: z.string().trim().max(20).optional(),
-    kraPin: z.string().trim().max(20).optional(),
+    kraPin: optionalNullableString(20),
     occupation: z.string().trim().max(100).optional(),
     address: z.string().trim().max(255).optional(),
     dateOfBirth: optionalEmptyableString(20),

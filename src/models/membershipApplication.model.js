@@ -10,6 +10,12 @@ const MembershipApplication = sequelize.define('MembershipApplication', {
   },
   name: DataTypes.STRING,
   nationalId: DataTypes.STRING,
+  identityType: {
+    type: DataTypes.ENUM('national', 'passport', 'drivers_license'),
+    defaultValue: 'national'
+  },
+  identityNumber: DataTypes.STRING,
+  idDocument: DataTypes.TEXT,
   kraPin: DataTypes.STRING,
   phone: DataTypes.STRING,
   email: DataTypes.STRING,
