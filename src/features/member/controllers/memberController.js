@@ -144,11 +144,21 @@ const getKcbRegistrationForTransaction = async (transaction) => {
     .maybeSingle();
 
   if (error) {
-    logger.error('Failed to fetch KCB-MPESA registration', {
-      module: 'member',
-      transactionId: transaction.id,
-      error: error.message,
-    });
+    // Supabase may return HTML on 5xx — truncate and log at warn level
+    const msg = String(error?.message || error || '').slice(0, 200);
+    const isHtmlError = /^\s*<\!DOCTYPE/i.test(msg);
+    if (isHtmlError) {
+      logger.warn('KCB-MPESA registration lookup skipped (Supabase unavailable)', {
+        module: 'member',
+        transactionId: transaction.id,
+      });
+    } else {
+      logger.error('Failed to fetch KCB-MPESA registration', {
+        module: 'member',
+        transactionId: transaction.id,
+        error: msg,
+      });
+    }
     return null;
   }
 
@@ -160,13 +170,31 @@ const syncTransactionWithKcbRegistration = async (transaction) => {
     return { transaction, registration: null };
   }
 
-  const registration = await getKcbRegistrationForTransaction(transaction);
+  // Don't sync transactions that are too old (over 5 minutes)
+  const ageMs = Date.now() - new Date(transaction.createdAt).getTime();
+  if (ageMs > 5 * 60 * 1000) {
+    return { transaction, registration: null };
+  }
+
+  let registration = null;
+  try {
+    registration = await getKcbRegistrationForTransaction(transaction);
+  } catch (error) {
+    // Supabase may be down — gracefully skip sync
+    logger.warn('KCB-MPESA registration sync skipped (Supabase unavailable)', {
+      module: 'member',
+      transactionId: transaction.id,
+      error: String(error?.message || error).slice(0, 200),
+    });
+    return { transaction, registration: null };
+  }
+
   if (!registration) return { transaction, registration: null };
 
   const normalizedStatus = String(registration.status || '').toLowerCase();
   const receipt = registration.mpesa_receipt || registration.transaction_reference || null;
 
-  if (normalizedStatus === 'paid') {
+  if (['paid', 'completed', 'success'].includes(normalizedStatus)) {
     await transaction.update({
       status: 'SUCCESS',
       reference: receipt || transaction.reference,
@@ -646,7 +674,11 @@ const initiateContribution = asyncHandler(async (req, res) => {
   if (!workerRes.ok) {
     await transaction.update({ status: 'FAILED' });
     const workerMessage = workerPayload?.error || workerPayload?.message || workerPayload?.raw || 'KCB-MPESA STK push failed';
-    throw new ValidationError(`KCB-MPESA STK push failed (${workerRes.status}): ${workerMessage}`);
+    const isSystemBusy = String(workerMessage).toLowerCase().includes('busy') || String(workerMessage).toLowerCase().includes('system');
+    const friendlyMessage = isSystemBusy
+      ? 'M-PESA is currently busy. Please try Paybill as an alternative, or wait a few minutes and try STK Push again.'
+      : `M-PESA payment failed: ${workerMessage}`;
+    throw new ValidationError(friendlyMessage);
   }
 
   const mpesaRequestReference = workerPayload?.merchantRequestId || workerPayload?.checkoutRequestId || null;
@@ -705,7 +737,7 @@ const checkContributionStatus = asyncHandler(async (req, res) => {
   const { registration: data } = await syncTransactionWithKcbRegistration(transaction);
 
   const registrationStatus = String(data?.status || '').toLowerCase();
-  const isPaid = registrationStatus === 'paid';
+  const isPaid = ['paid', 'completed', 'success'].includes(registrationStatus);
   const isFailed = registrationStatus === 'failed';
   const receipt = data?.mpesa_receipt || data?.transaction_reference || null;
 

@@ -12,18 +12,24 @@ const supabaseKey = process.env.SUPABASE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const submitApplication = asyncHandler(async (req, res) => {
+  const identityNumber = req.body.identityNumber || req.body.nationalId || '';
+  const identityType = req.body.identityType || 'national';
+
   const payload = {
     name: req.body.name,
     email: req.body.email,
     phone: req.body.phone,
-    nationalId: req.body.nationalId,
+    nationalId: identityNumber,
+    identityType,
+    identityNumber,
+    idDocument: req.body.idDocument || null,
     type: req.body.type,
     occupation: req.body.occupation,
     address: req.body.address,
     consentGiven: Boolean(req.body.consentGiven),
   };
 
-  validateRequired(payload, ['name', 'email', 'phone', 'nationalId', 'type']);
+  validateRequired(payload, ['name', 'email', 'phone', 'identityNumber', 'type']);
 
   if (!isValidEmail(payload.email)) {
     throw new ValidationError('A valid email is required');
@@ -215,8 +221,8 @@ const verifyPayment = asyncHandler(async (req, res) => {
   }
 
   // 2. Guard Clause
-  const paymentReferenceValue = paymentReference?.trim() || null;
-  const paymentPhoneValue = paymentPhone?.trim() || phone?.trim() || null;
+  let paymentReferenceValue = paymentReference?.trim() || null;
+  let paymentPhoneValue = paymentPhone?.trim() || phone?.trim() || null;
 
   if ((!paymentReferenceValue || !paymentPhoneValue) && checkoutRequestId) {
     const { data: reg } = await supabase
@@ -243,14 +249,24 @@ const verifyPayment = asyncHandler(async (req, res) => {
   }
 
   // 3. Verify final status in Supabase
-  const { data: registration } = await supabase
+  let { data: registration } = await supabase
     .from('registrations')
     .select('mpesa_receipt, phone, status')
     .eq('mpesa_receipt', paymentReferenceValue)
     .eq('phone', paymentPhoneValue)
     .maybeSingle();
 
-  if (!registration || registration.status !== 'paid') {
+  if (!registration) {
+    const { data } = await supabase
+      .from('registrations')
+      .select('transaction_reference, phone, status')
+      .eq('transaction_reference', paymentReferenceValue)
+      .eq('phone', paymentPhoneValue)
+      .maybeSingle();
+    registration = data;
+  }
+
+  if (!registration || !['paid', 'completed', 'success'].includes(String(registration.status || '').toLowerCase())) {
     return ResponseHandler.error(res, 'Payment not confirmed or record not found.', 400);
   }
 
