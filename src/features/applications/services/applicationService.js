@@ -6,7 +6,10 @@ const createApplication = async (data) => {
     name: data.name,
     email: data.email,
     phone: data.phone,
-    nationalId: data.nationalId,
+    nationalId: data.nationalId || data.identityNumber,
+    identityType: data.identityType || 'national',
+    identityNumber: data.identityNumber || data.nationalId,
+    idDocument: data.idDocument || null,
     kraPin: data.kraPin,
     occupation: data.occupation ?? null,
     address: data.address ?? null,
@@ -24,6 +27,10 @@ const getAllApplications = async () => {
   return await db.MembershipApplication.findAll({
     order: [['createdAt', 'DESC']],
   });
+};
+
+const getApplications = async (queryOptions = {}) => {
+  return await db.MembershipApplication.findAndCountAll(queryOptions);
 };
 
 const getApplicationById = async (id) => {

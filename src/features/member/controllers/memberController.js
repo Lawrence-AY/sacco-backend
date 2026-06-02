@@ -1,3 +1,4 @@
+const { Op } = require('sequelize');
 const db = require('../../../models');
 const userService = require('../../users/services/userService');
 const loanService = require('../../loans/services/loanService');
@@ -143,11 +144,21 @@ const getKcbRegistrationForTransaction = async (transaction) => {
     .maybeSingle();
 
   if (error) {
-    logger.error('Failed to fetch KCB-MPESA registration', {
-      module: 'member',
-      transactionId: transaction.id,
-      error: error.message,
-    });
+    // Supabase may return HTML on 5xx — truncate and log at warn level
+    const msg = String(error?.message || error || '').slice(0, 200);
+    const isHtmlError = /^\s*<\!DOCTYPE/i.test(msg);
+    if (isHtmlError) {
+      logger.warn('KCB-MPESA registration lookup skipped (Supabase unavailable)', {
+        module: 'member',
+        transactionId: transaction.id,
+      });
+    } else {
+      logger.error('Failed to fetch KCB-MPESA registration', {
+        module: 'member',
+        transactionId: transaction.id,
+        error: msg,
+      });
+    }
     return null;
   }
 
@@ -159,13 +170,31 @@ const syncTransactionWithKcbRegistration = async (transaction) => {
     return { transaction, registration: null };
   }
 
-  const registration = await getKcbRegistrationForTransaction(transaction);
+  // Don't sync transactions that are too old (over 5 minutes)
+  const ageMs = Date.now() - new Date(transaction.createdAt).getTime();
+  if (ageMs > 5 * 60 * 1000) {
+    return { transaction, registration: null };
+  }
+
+  let registration = null;
+  try {
+    registration = await getKcbRegistrationForTransaction(transaction);
+  } catch (error) {
+    // Supabase may be down — gracefully skip sync
+    logger.warn('KCB-MPESA registration sync skipped (Supabase unavailable)', {
+      module: 'member',
+      transactionId: transaction.id,
+      error: String(error?.message || error).slice(0, 200),
+    });
+    return { transaction, registration: null };
+  }
+
   if (!registration) return { transaction, registration: null };
 
   const normalizedStatus = String(registration.status || '').toLowerCase();
   const receipt = registration.mpesa_receipt || registration.transaction_reference || null;
 
-  if (normalizedStatus === 'paid') {
+  if (['paid', 'completed', 'success'].includes(normalizedStatus)) {
     await transaction.update({
       status: 'SUCCESS',
       reference: receipt || transaction.reference,
@@ -264,18 +293,19 @@ const updateProfile = asyncHandler(async (req, res) => {
     'nextOfKinPhone',
     'passportPhotoUrl',
     'consentGiven',
+    'consentGivenAt',
   ];
   const safeBody = allowed.reduce((acc, field) => {
     if (body[field] !== undefined) acc[field] = body[field];
     return acc;
   }, {});
-  const sensitiveFields = ['email', 'phone', 'nationalId', 'kraPin'];
+  const sensitiveFields = ['email'];
   const touchesSensitiveField = sensitiveFields.some((field) => (
     safeBody[field] !== undefined && String(safeBody[field] || '') !== String(req.user[field] || '')
   ));
   if (touchesSensitiveField) {
     if (!body.currentPassword) {
-      throw new ValidationError('Current password is required for sensitive profile updates');
+      throw new ValidationError('Current password is required for email updates');
     }
     const fullUser = await db.User.findByPk(req.user.id);
     const passwordMatches = fullUser?.password && await bcrypt.compare(body.currentPassword, fullUser.password);
@@ -644,7 +674,11 @@ const initiateContribution = asyncHandler(async (req, res) => {
   if (!workerRes.ok) {
     await transaction.update({ status: 'FAILED' });
     const workerMessage = workerPayload?.error || workerPayload?.message || workerPayload?.raw || 'KCB-MPESA STK push failed';
-    throw new ValidationError(`KCB-MPESA STK push failed (${workerRes.status}): ${workerMessage}`);
+    const isSystemBusy = String(workerMessage).toLowerCase().includes('busy') || String(workerMessage).toLowerCase().includes('system');
+    const friendlyMessage = isSystemBusy
+      ? 'M-PESA is currently busy. Please try Paybill as an alternative, or wait a few minutes and try STK Push again.'
+      : `M-PESA payment failed: ${workerMessage}`;
+    throw new ValidationError(friendlyMessage);
   }
 
   const mpesaRequestReference = workerPayload?.merchantRequestId || workerPayload?.checkoutRequestId || null;
@@ -703,7 +737,7 @@ const checkContributionStatus = asyncHandler(async (req, res) => {
   const { registration: data } = await syncTransactionWithKcbRegistration(transaction);
 
   const registrationStatus = String(data?.status || '').toLowerCase();
-  const isPaid = registrationStatus === 'paid';
+  const isPaid = ['paid', 'completed', 'success'].includes(registrationStatus);
   const isFailed = registrationStatus === 'failed';
   const receipt = data?.mpesa_receipt || data?.transaction_reference || null;
 
@@ -728,12 +762,14 @@ const emailReport = asyncHandler(async (req, res) => {
   }
 
   const reportType = req.body?.reportType || 'portfolio';
+  const durationMonths = Number(req.body?.duration) || 0;
   const member = await findMemberByUserId(req.user.id);
+  const dateFilter = durationMonths > 0 ? { createdAt: { [Op.gte]: new Date(new Date().setMonth(new Date().getMonth() - durationMonths)) } } : {};
   const transactions = member
-    ? await db.Transaction.findAll({ where: { memberId: member.id }, order: [['createdAt', 'DESC']], limit: reportType === 'transactions' ? 100 : 20 })
+    ? await db.Transaction.findAll({ where: { memberId: member.id, ...dateFilter }, order: [['createdAt', 'DESC']], limit: reportType === 'transactions' ? 100 : 20 })
     : [];
   const loans = member
-    ? await db.Loan.findAll({ where: { memberId: member.id }, order: [['createdAt', 'DESC']] })
+    ? await db.Loan.findAll({ where: { memberId: member.id, ...dateFilter }, order: [['createdAt', 'DESC']] })
     : [];
   const shares = await shareService.getShareAccountsForUser(req.user);
 
@@ -764,13 +800,14 @@ const emailReport = asyncHandler(async (req, res) => {
   const savingsTotal = categoryTotal(['savings']);
   const outstandingLoans = loans.reduce((sum, loan) => sum + Number(loan.amount || 0), 0);
   const transactionTotal = successfulTransactions.reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+  const formatMoney = (value) => Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const transactionRows = transactions.map((transaction) => `
     <tr>
       <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${escapeHtml(transaction.createdAt ? new Date(transaction.createdAt).toLocaleDateString() : '-')}</td>
       <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${escapeHtml(transaction.type)}</td>
       <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${escapeHtml(transaction.paymentCategory || transaction.description || '-')}</td>
       <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${escapeHtml(transaction.reference || '-')}</td>
-      <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; text-align: right;">KSh ${Math.round(Number(transaction.amount || 0)).toLocaleString()}</td>
+      <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; text-align: right;">KSh ${formatMoney(transaction.amount)}</td>
       <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${escapeHtml(transaction.status || '-')}</td>
     </tr>
   `).join('');
@@ -795,10 +832,10 @@ const emailReport = asyncHandler(async (req, res) => {
         <p>Hello ${user.name || 'Member'},</p>
         <p>Your requested report summary is below.</p>
         <ul>
-          <li><strong>Share capital:</strong> KSh ${Math.round(shareCapital).toLocaleString()}</li>
-          <li><strong>Savings:</strong> KSh ${Math.round(savingsTotal).toLocaleString()}</li>
-          <li><strong>Outstanding loans:</strong> KSh ${Math.round(outstandingLoans).toLocaleString()}</li>
-          <li><strong>Successful transaction total:</strong> KSh ${Math.round(transactionTotal).toLocaleString()}</li>
+          <li><strong>Share capital:</strong> KSh ${formatMoney(shareCapital)}</li>
+          <li><strong>Savings:</strong> KSh ${formatMoney(savingsTotal)}</li>
+          <li><strong>Outstanding loans:</strong> KSh ${formatMoney(outstandingLoans)}</li>
+          <li><strong>Successful transaction total:</strong> KSh ${formatMoney(transactionTotal)}</li>
           <li><strong>Loans:</strong> ${loans.length}</li>
           <li><strong>Transactions reviewed:</strong> ${transactions.length}</li>
         </ul>
