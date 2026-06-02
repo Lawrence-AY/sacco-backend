@@ -114,6 +114,7 @@ async function initializeDatabase(app, db) {
         memory: process.memoryUsage(),
         timestamp: new Date().toISOString()
       });
+      require('./src/services/email/emailQueue').startEmailWorkers();
       return;
     } catch (error) {
       app.locals.apiReady = false;

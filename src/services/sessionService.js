@@ -1,7 +1,8 @@
-const nodemailer = require('nodemailer');
+const crypto = require('crypto');
 const { Op } = require('sequelize');
 const db = require('../models');
 const logger = require('../shared/utils/logger');
+const { enqueueEmail, QUEUES } = require('./email/emailQueue');
 
 const getClientIp = (req) => {
   const forwarded = req.headers['x-forwarded-for'];
@@ -48,21 +49,7 @@ const getDeviceInfo = (req) => {
 };
 
 const notifyNewDevice = async (user, session) => {
-  const required = ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS'];
-  if (required.some((key) => !process.env[key])) return;
-
-  const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT),
-    secure: process.env.SMTP_PORT === '465',
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
-  });
-
-  await transporter.sendMail({
-    from: `"Ayedos SACCO" <${process.env.SMTP_USER}>`,
+  await enqueueEmail(QUEUES.NOTIFICATIONS, 'NOTIFICATION', {
     to: user.email,
     subject: 'New device login on your AYEDOS account',
     html: `
@@ -81,8 +68,17 @@ const notifyNewDevice = async (user, session) => {
   });
 };
 
-const createOtpSession = async (user, req) => {
+const createOtpSession = async (user, req, idempotencyKey = null) => {
   const device = getDeviceInfo(req);
+  if (idempotencyKey) {
+    const idempotentSession = await db.LoginSession.findOne({ where: { idempotencyKey, userId: user.id } });
+    if (idempotentSession) return idempotentSession;
+  }
+  const existing = await db.LoginSession.findOne({
+    where: { userId: user.id, deviceId: device.deviceId, status: 'OTP_SENT' },
+    order: [['createdAt', 'DESC']],
+  });
+  if (existing && Date.now() - new Date(existing.createdAt).getTime() < 10 * 60_000) return existing;
   const knownDevice = await db.LoginSession.findOne({
     where: {
       userId: user.id,
@@ -91,15 +87,39 @@ const createOtpSession = async (user, req) => {
     }
   });
 
-  return db.LoginSession.create({
-    userId: user.id,
-    ...device,
-    status: 'OTP_SENT',
-    isNewDevice: !knownDevice,
-    event: 'Login OTP sent',
-    lastActiveAt: new Date()
-  });
+  try {
+    return await db.LoginSession.create({
+      userId: user.id,
+      ...device,
+      status: 'OTP_SENT',
+      isNewDevice: !knownDevice,
+      event: 'Login OTP sent',
+      lastActiveAt: new Date(),
+      idempotencyKey,
+    });
+  } catch (error) {
+    if (error.name === 'SequelizeUniqueConstraintError' && idempotencyKey) {
+      return db.LoginSession.findOne({ where: { idempotencyKey, userId: user.id } });
+    }
+    throw error;
+  }
 };
+
+const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
+
+const setRefreshToken = async (sessionId, refreshToken) => {
+  if (!sessionId || !refreshToken) return null;
+  const session = await db.LoginSession.findByPk(sessionId);
+  if (!session) return null;
+  await session.update({ refreshTokenHash: hashToken(refreshToken) });
+  return session;
+};
+
+const matchesRefreshToken = (session, refreshToken) => Boolean(
+  session?.refreshTokenHash &&
+  refreshToken &&
+  crypto.timingSafeEqual(Buffer.from(session.refreshTokenHash, 'hex'), Buffer.from(hashToken(refreshToken), 'hex'))
+);
 
 const activateSession = async (user, req) => {
   const device = getDeviceInfo(req);
@@ -214,5 +234,7 @@ module.exports = {
   touchSession,
   logoutSession,
   revokeSession,
-  listSessions
+  listSessions,
+  setRefreshToken,
+  matchesRefreshToken
 };

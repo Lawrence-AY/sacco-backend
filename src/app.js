@@ -15,6 +15,9 @@ const { errorHandler, notFoundHandler, timeoutMiddleware } = require('./shared/m
 const auditLogger = require('./shared/middleware/auditLogger');
 const security = require('./shared/config/security');
 const { validate, schemas } = require('./shared/middleware/zodValidation');
+const csrfProtection = require('./shared/middleware/csrfProtection');
+const { loginLimiter, otpVerificationLimiter, otpResendLimiter, passwordResetLimiter } = require('./shared/middleware/authRateLimits');
+const { getProviderHealth } = require('./services/email/emailProviders');
 
 // Import email config utility (for diagnostics only - validates lazily)
 const { getConfigStatus } = require('./shared/config/emailConfig');
@@ -154,29 +157,6 @@ const limiter = rateLimit({
 
 app.use('/api/', limiter);
 
-// Stricter rate limiting for auth routes
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // limit each IP to 5 auth requests per windowMs
-  message: {
-    success: false,
-    code: 'RATE_LIMITED',
-    message: 'Too many authentication attempts, please try again later.'
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-  skip: (req) => req.method === 'OPTIONS' || isLocalRequest(req),
-});
-
-app.use([
-  '/api/auth/login',
-  '/api/auth/register',
-  '/api/auth/verify-otp',
-  '/api/auth/resend-otp',
-  '/api/auth/forgot-password',
-  '/api/auth/reset-password',
-], authLimiter);
-
 // Stricter rate limiting for sensitive operations
 const sensitiveLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
@@ -233,6 +213,8 @@ const corsOptions = {
     'X-Device-Id',
     'X-Device-Name',
     'X-Session-Id',
+    'X-Idempotency-Key',
+    'X-CSRF-Token',
     'Accept',
     'Accept-Encoding',
     'Accept-Language'
@@ -258,7 +240,7 @@ app.use((req, res, next) => {
     }
     if (origin) res.header('Access-Control-Allow-Origin', origin);
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-Device-Id, X-Device-Name, X-Session-Id, Accept, Accept-Encoding, Accept-Language, X-API-Key');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-Device-Id, X-Device-Name, X-Session-Id, X-Idempotency-Key, X-CSRF-Token, Accept, Accept-Encoding, Accept-Language, X-API-Key');
     res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Access-Control-Max-Age', '86400');
     return res.sendStatus(200);
@@ -336,6 +318,7 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ limit: security.inputLimits.urlencoded, extended: true }));
 app.use(cookieParser());
+app.use(csrfProtection);
 app.use((req, res, next) => {
   req.body = sanitizeInput(req.body);
   req.params = sanitizeInput(req.params);
@@ -487,6 +470,7 @@ app.get('/api/diagnostics', (req, res) => {
       CORS_ORIGIN: process.env.CORS_ORIGIN || 'not set'
     },
     email: emailStatus,
+    emailProviders: getProviderHealth(),
     system: {
       uptime: process.uptime(),
       memoryUsage: process.memoryUsage(),
@@ -503,10 +487,10 @@ app.get('/api/diagnostics', (req, res) => {
 // ============= AUTH ROUTES =============
 app.use('/api/auth', authRoutes);
 app.post('/api/auth/register', validate(schemas.register), registerUser);
-app.post('/api/auth/verify-otp', validate(schemas.otp), verifyOTP);
-app.post('/api/auth/resend-otp', validate(schemas.emailOnly), resendOTP);
-app.post('/api/auth/login', validate(schemas.login), loginUser);
-app.post('/api/auth/login/verify-otp', validate(schemas.otp), verifyLoginOTP);
+app.post('/api/auth/verify-otp', otpVerificationLimiter, validate(schemas.otp), verifyOTP);
+app.post('/api/auth/resend-otp', otpResendLimiter, validate(schemas.emailOnly), resendOTP);
+app.post('/api/auth/login', loginLimiter, validate(schemas.login), loginUser);
+app.post('/api/auth/login/verify-otp', otpVerificationLimiter, validate(schemas.otp), verifyLoginOTP);
 app.post('/api/auth/refresh', validate(schemas.refresh), refreshToken);
 app.post('/api/auth/logout', protect, logoutUser);
 app.post('/api/auth/set-password', setPassword);

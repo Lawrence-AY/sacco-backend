@@ -35,6 +35,9 @@ const validateEnvironment = () => {
   if (isProduction && !process.env.RESEND_API_KEY && !process.env.SMTP_HOST) {
     errors.push('Missing email provider configuration: RESEND_API_KEY or SMTP_HOST');
   }
+  if (isProduction && process.env.RESEND_API_KEY && !process.env.RESEND_FROM_EMAIL) {
+    errors.push('Missing RESEND_FROM_EMAIL for the verified production sending domain');
+  }
   if (weakSecrets.length) {
     errors.push(`Weak or missing JWT secrets: ${weakSecrets.join(', ')}`);
   }

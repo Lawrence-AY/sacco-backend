@@ -13,6 +13,10 @@ const SalaryDeduction = require('./salaryDeduction.model');
 const LoginSession = require('./loginSession.model');
 const AuditLog = require('./auditLog.model');
 const Notification = require('./notification.model');
+const OtpSession = require('./otpSession.model');
+const LoginAttempt = require('./loginAttempt.model');
+const EmailJob = require('./emailJob.model');
+const PasswordHistory = require('./passwordHistory.model');
 
 const sequelize = require('../shared/config/db');
 
@@ -28,6 +32,11 @@ LoginSession.belongsTo(User, { foreignKey: 'userId' });
 
 User.hasMany(Notification, { foreignKey: 'userId' });
 Notification.belongsTo(User, { foreignKey: 'userId' });
+
+User.hasMany(OtpSession, { foreignKey: 'userId' });
+OtpSession.belongsTo(User, { foreignKey: 'userId' });
+User.hasMany(PasswordHistory, { foreignKey: 'userId' });
+PasswordHistory.belongsTo(User, { foreignKey: 'userId' });
 
 Member.hasOne(SavingsAccount, { foreignKey: 'memberId' });
 SavingsAccount.belongsTo(Member, { foreignKey: 'memberId' });
@@ -73,7 +82,11 @@ const db = {
   SalaryDeduction,
   LoginSession,
   AuditLog,
-  Notification
+  Notification,
+  OtpSession,
+  LoginAttempt,
+  EmailJob,
+  PasswordHistory
 };
 
 module.exports = db;

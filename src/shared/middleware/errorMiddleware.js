@@ -1,5 +1,6 @@
 const logger = require('../utils/logger');
 const { AppError } = require('../utils/errors');
+const errorCatalog = require('../utils/errorCatalog');
 
 /**
  * Async error wrapper to catch errors in async route handlers
@@ -137,7 +138,7 @@ const errorHandler = (err, req, res, next) => {
   const errorResponse = {
     success: false,
     code: isServerError ? 'SERVER_ERROR' : normalized.errorCode,
-    message: isServerError && !isDevelopment ? 'Something went wrong' : normalized.message,
+    message: isServerError && !isDevelopment ? errorCatalog.SERVER_ERROR.message : normalized.message,
     errorCode: isServerError ? 'SERVER_ERROR' : normalized.errorCode,
     requestId: req.id || 'unknown',
     timestamp: new Date().toISOString(),

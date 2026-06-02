@@ -37,13 +37,16 @@ const LoginSession = sequelize.define('LoginSession', {
   event: {
     type: DataTypes.STRING,
     defaultValue: 'Login verification'
-  }
+  },
+  idempotencyKey: DataTypes.STRING,
+  refreshTokenHash: DataTypes.STRING(64),
 }, {
   timestamps: true,
   indexes: [
     { fields: ['userId'] },
     { fields: ['deviceId'] },
     { fields: ['status'] }
+    , { unique: true, fields: ['idempotencyKey'] }
   ]
 });
 

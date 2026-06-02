@@ -14,8 +14,9 @@ const asyncHandler = require('../utils/asyncHandler');
 
 // 🔐 LOCAL OTP SYSTEM (configurable digit length)
 const { generateOTP } = require('../utils/generateOTP');  // default 6-digit
-const sendOTPEmail = require('../utils/sendOTPEmail');
 const sessionService = require('../../services/sessionService');
+const otpService = require('../../services/otpService');
+const { enqueueEmail, QUEUES } = require('../../services/email/emailQueue');
 
 // Models
 const User = require('../../models/user.model');
@@ -24,10 +25,8 @@ const db = require('../../models');
 
 const OTP_REQUEST_WINDOW_MS = Number(process.env.OTP_RATE_LIMIT_WINDOW_MS || 60 * 1000);
 const OTP_REQUEST_MAX = Number(process.env.OTP_RATE_LIMIT_MAX || 3);
-const OTP_RESEND_COOLDOWN_MS = Number(process.env.OTP_RESEND_COOLDOWN_MS || 60 * 1000);
 const LOGIN_LOCK_MAX_ATTEMPTS = Number(process.env.LOGIN_LOCK_MAX_ATTEMPTS || 5);
 const LOGIN_LOCK_WINDOW_MS = Number(process.env.LOGIN_LOCK_WINDOW_MS || 15 * 60 * 1000);
-const OTP_MAX_ATTEMPTS = Number(process.env.OTP_MAX_ATTEMPTS || 5);
 const otpRequestBuckets = new Map();
 
 const normalizeOtpKey = (purpose, email, req) => {
@@ -106,7 +105,6 @@ const exposeTokensForEnvironment = (tokens) => {
   return tokens;
 };
 
-const createAuthTemporaryError = () => new AppError('Something went wrong', 503, 'SERVER_ERROR');
 
 const getClientIp = (req) => {
   const forwarded = req.headers['x-forwarded-for'];
@@ -117,7 +115,6 @@ const getClientIp = (req) => {
 const createInvalidAuthError = () => new AppError('Invalid credentials or verification code', 401, 'AUTH_INVALID');
 const createLockedError = () => new AppError('This account is temporarily locked. Please try again later.', 423, 'AUTH_LOCKED');
 const createOtpInvalidError = () => new AppError('Invalid or expired verification code', 401, 'OTP_INVALID');
-const createOtpExpiredError = () => new AppError('Invalid or expired verification code', 401, 'OTP_EXPIRED');
 
 const isAccountLocked = (user) => user?.lockedUntil && new Date(user.lockedUntil) > new Date();
 
@@ -139,50 +136,13 @@ const clearFailedLogin = async (user, req) => {
   await user.save({ fields: ['failedLoginAttempts', 'lockedUntil', 'lastLoginIp', 'lastLoginAt'] });
 };
 
-const assignOtp = async (user, otp) => {
-  user.otp = otp;
-  user.otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
-  user.otpAttempts = 0;
-  user.otpLastSentAt = new Date();
-  await user.save({ fields: ['otp', 'otpExpiresAt', 'otpAttempts', 'otpLastSentAt'] });
-};
-
-const assertUserOtpCooldown = (user) => {
-  if (!user?.otpLastSentAt) return;
-  const nextAllowedAt = new Date(user.otpLastSentAt).getTime() + OTP_RESEND_COOLDOWN_MS;
-  if (nextAllowedAt > Date.now()) {
-    const retryAfter = Math.ceil((nextAllowedAt - Date.now()) / 1000);
-    throw new RateLimitError(`Please wait ${retryAfter} seconds before requesting another OTP`);
-  }
-};
-
-const clearOtp = async (user) => {
-  user.otp = null;
-  user.otpExpiresAt = null;
-  user.otpAttempts = 0;
-  await user.save({ fields: ['otp', 'otpExpiresAt', 'otpAttempts'] });
-};
-
-const verifyStoredOtp = async (user, otp) => {
-  if (!user?.otp || !user.otpExpiresAt || new Date(user.otpExpiresAt) < new Date()) {
-    await clearOtp(user);
-    throw createOtpExpiredError();
-  }
-
-  if (Number(user.otpAttempts || 0) >= OTP_MAX_ATTEMPTS) {
-    await clearOtp(user);
-    throw createOtpInvalidError();
-  }
-
-  if (String(user.otp) !== String(otp)) {
-    user.otpAttempts = Number(user.otpAttempts || 0) + 1;
-    await user.save({ fields: ['otpAttempts'] });
-    if (user.otpAttempts >= OTP_MAX_ATTEMPTS) {
-      await clearOtp(user);
-    }
-    throw createOtpInvalidError();
-  }
-};
+const recordLoginAttempt = (req, email, status) => db.LoginAttempt.create({
+  email,
+  ip: getClientIp(req),
+  userAgent: req.get('User-Agent'),
+  status,
+  requestId: req.id,
+}).catch((error) => logger.error('Unable to persist login attempt', { module: 'auth', error: error.message }));
 
 const ensureMemberRecords = async (user, source = {}) => {
   let member = await db.Member.findOne({ where: { userId: user.id } });
@@ -306,9 +266,11 @@ const loginUser = asyncHandler(async (req, res) => {
   }
   const user = await User.findOne({ where: { email: normalizedEmail } });
   if (!user) {
+    await recordLoginAttempt(req, normalizedEmail, 'INVALID_CREDENTIALS');
     throw createInvalidAuthError();
   }
   if (isAccountLocked(user)) {
+    await recordLoginAttempt(req, normalizedEmail, 'LOCKED');
     throw createLockedError();
   }
   if (!user.isVerified) {
@@ -317,28 +279,20 @@ const loginUser = asyncHandler(async (req, res) => {
   const isValid = await verifyPassword(password, user.password);
   if (!isValid) {
     await recordFailedLogin(user);
+    await recordLoginAttempt(req, normalizedEmail, 'INVALID_CREDENTIALS');
     throw createInvalidAuthError();
   }
 
-  const otp = generateOTP();
-  await assignOtp(user, otp);
-
-  const loginSession = await sessionService.createOtpSession(user, req);
-
-  try {
-    await sendOTPEmail(user.email, otp);
-  } catch (emailError) {
-    logger.error({
-      message: 'OTP send failed',
-      module: 'auth',
-      userId: user.id,
-      email: user.email,
-      error: emailError.message,
-      stack: emailError.stack,
-    });
-    await clearOtp(user);
-    throw createAuthTemporaryError();
+  const idempotencyKey = req.get('X-Idempotency-Key') || null;
+  const loginSession = await sessionService.createOtpSession(user, req, idempotencyKey);
+  let otpSession = await otpService.getActiveOtpSession({ userId: user.id, loginSessionId: loginSession.id, purpose: 'LOGIN' });
+  if (!otpSession) {
+    const otp = generateOTP();
+    otpSession = await otpService.createOtpSession({ userId: user.id, loginSessionId: loginSession.id, purpose: 'LOGIN', otp });
+    await enqueueEmail(QUEUES.OTP, 'OTP', { to: user.email, otp });
+    logger.info('Login OTP generated', { module: 'auth', userId: user.id, requestId: req.id, loginSessionId: loginSession.id });
   }
+  await recordLoginAttempt(req, normalizedEmail, 'OTP_QUEUED');
 
   return ResponseHandler.success(
     res,
@@ -349,7 +303,7 @@ const loginUser = asyncHandler(async (req, res) => {
       sessionId: loginSession.id,
       newDevice: loginSession.isNewDevice
     },
-    'Login verification code sent',
+    'Login verification code queued',
     200
   );
 });
@@ -368,9 +322,8 @@ const verifyLoginOTP = asyncHandler(async (req, res) => {
   if (isAccountLocked(user)) {
     throw createLockedError();
   }
-  await verifyStoredOtp(user, otp);
-
-  await clearOtp(user);
+  const loginSessionId = req.headers['x-session-id'] || req.body?.sessionId || null;
+  await otpService.verifyOtp({ userId: user.id, loginSessionId, purpose: 'LOGIN', otp });
   await clearFailedLogin(user, req);
   const loginSession = await sessionService.activateSession(user, req);
 
@@ -378,6 +331,9 @@ const verifyLoginOTP = asyncHandler(async (req, res) => {
     role: user.role,
     sessionId: loginSession.id
   });
+  await sessionService.setRefreshToken(loginSession.id, tokens.refreshToken);
+  await recordLoginAttempt(req, normalizedEmail, 'SUCCESS');
+  logger.info('Login OTP verified', { module: 'auth', userId: user.id, requestId: req.id, loginSessionId: loginSession.id });
   setAuthCookies(res, tokens, loginSession.id);
   return ResponseHandler.success(
     res,
@@ -413,7 +369,7 @@ const refreshToken = asyncHandler(async (req, res) => {
     }
     if (decoded.sessionId) {
       const session = await sessionService.assertActiveSession(decoded.sessionId, user.id);
-      if (!session) {
+      if (!session || !sessionService.matchesRefreshToken(session, token)) {
         throw new UnauthorizedError('This login session has expired or was revoked');
       }
     }
@@ -421,6 +377,7 @@ const refreshToken = asyncHandler(async (req, res) => {
       role: user.role,
       sessionId: decoded.sessionId
     });
+    await sessionService.setRefreshToken(decoded.sessionId, newTokens.refreshToken);
     setAuthCookies(res, newTokens, decoded.sessionId);
     return ResponseHandler.success(res, exposeTokensForEnvironment(newTokens) || { refreshed: true }, 'Token refreshed', 200);
   } catch (error) {
@@ -477,26 +434,10 @@ const registerUser = asyncHandler(async (req, res) => {
     password: hashedPassword,
     role: 'PENDING',
     isVerified: false,
-    otp,
-    otpExpiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 min
-    otpAttempts: 0,
-    otpLastSentAt: new Date()
+    otpAttempts: 0
   });
-
-  try {
-    await sendOTPEmail(normalizedEmail, otp);
-  } catch (emailError) {
-    logger.error({
-      message: 'OTP send failed during registration',
-      module: 'auth',
-      userId: user.id,
-      email: user.email,
-      error: emailError.message,
-      stack: emailError.stack,
-    });
-    await clearOtp(user);
-    throw createAuthTemporaryError();
-  }
+  await otpService.createOtpSession({ userId: user.id, purpose: 'REGISTRATION', otp });
+  await enqueueEmail(QUEUES.OTP, 'OTP', { to: normalizedEmail, otp });
 
   return ResponseHandler.created(
     res,
@@ -597,14 +538,11 @@ const verifyOTP = asyncHandler(async (req, res) => {
   if (!user) {
     throw createOtpInvalidError();
   }
-  await verifyStoredOtp(user, otp);
+  await otpService.verifyOtp({ userId: user.id, purpose: 'REGISTRATION', otp });
 
   user.isVerified = true;
   user.role = 'MEMBER';
-  user.otp = null;
-  user.otpExpiresAt = null;
-  user.otpAttempts = 0;
-  await user.save({ fields: ['isVerified', 'role', 'otp', 'otpExpiresAt', 'otpAttempts'] });
+  await user.save({ fields: ['isVerified', 'role'] });
   await ensureMemberRecords(user);
 
   const tokens = jwtUtils.generateTokens(user.id, {
@@ -635,11 +573,12 @@ const resendOTP = asyncHandler(async (req, res) => {
   if (!user) {
     return ResponseHandler.success(res, { resendAvailableIn: 60 }, 'If eligible, a new verification code will be sent', 200);
   }
-  assertUserOtpCooldown(user);
+  const purpose = user.isVerified ? 'LOGIN' : 'REGISTRATION';
 
+  let pendingLogin = null;
   if (user.isVerified) {
     const sessionId = req.headers['x-session-id'] || req.body?.sessionId || null;
-    const pendingLogin = sessionId
+    pendingLogin = sessionId
       ? await db.LoginSession.findOne({ where: { id: sessionId, userId: user.id, status: 'OTP_SENT' } })
       : await db.LoginSession.findOne({
         where: { userId: user.id, status: 'OTP_SENT' },
@@ -650,24 +589,16 @@ const resendOTP = asyncHandler(async (req, res) => {
     }
   }
 
-  const otp = generateOTP(); // same digit length as register
-
-  await assignOtp(user, otp);
-
-  try {
-    await sendOTPEmail(normalizedEmail, otp);
-  } catch (emailError) {
-    logger.error({
-      message: 'OTP resend failed',
-      module: 'auth',
-      userId: user.id,
-      email: user.email,
-      error: emailError.message,
-      stack: emailError.stack,
-    });
-    await clearOtp(user);
-    throw createAuthTemporaryError();
-  }
+  const activeOtpSession = await otpService.getActiveOtpSession({
+    userId: user.id,
+    loginSessionId: user.isVerified ? pendingLogin?.id : null,
+    purpose,
+  });
+  otpService.assertResendAllowed(activeOtpSession);
+  const otp = generateOTP();
+  await otpService.createOtpSession({ userId: user.id, loginSessionId: user.isVerified ? pendingLogin?.id : null, purpose, otp });
+  await enqueueEmail(QUEUES.OTP, 'OTP', { to: normalizedEmail, otp });
+  logger.info('OTP resend queued', { module: 'auth', userId: user.id, requestId: req.id, purpose });
 
   return ResponseHandler.success(res, { resendAvailableIn: 60 }, 'OTP resent');
 });

@@ -12,7 +12,8 @@ const {
   normalizeEmail,
   validatePasswordStrength
 } = require('../../../shared/utils/passwordReset');
-const { sendPasswordResetEmail } = require('../../../shared/utils/sendPasswordResetEmail');
+const { enqueueEmail, QUEUES } = require('../../../services/email/emailQueue');
+const passwordHistoryService = require('../../../services/passwordHistoryService');
 
 const FORGOT_PASSWORD_SUCCESS_MESSAGE =
   'If an account with that email exists, a password reset link will be sent shortly.';
@@ -42,19 +43,19 @@ const forgotPassword = async (req, res, next) => {
       await user.save({ fields: ['passwordResetToken', 'passwordResetExpires'] });
 
       try {
-        await sendPasswordResetEmail({
+        await enqueueEmail(QUEUES.PASSWORD_RESET, 'PASSWORD_RESET', {
           to: user.email,
           recipientName: user.firstName || user.name || 'there',
           resetUrl,
           expiresInMinutes: RESET_TOKEN_TTL_MINUTES
         });
 
-        logger.info('Password reset email sent', {
+        logger.info('Password reset email queued', {
           module: 'auth',
           userId: user.id
         });
       } catch (emailError) {
-        logger.error('Password reset email failed', {
+        logger.error('Password reset email queueing failed', {
           module: 'auth',
           userId: user.id,
           error: emailError.message,
@@ -119,6 +120,7 @@ const resetPassword = async (req, res, next) => {
     user.passwordResetToken = null;
     user.passwordResetExpires = null;
     await user.save({ fields: ['password', 'passwordResetToken', 'passwordResetExpires'] });
+    await passwordHistoryService.recordPassword(user.id, user.password);
 
     logger.info('Password reset completed', {
       module: 'auth',
@@ -163,8 +165,11 @@ const changePassword = async (req, res, next) => {
       throw new UnauthorizedError('Current password is incorrect');
     }
 
+    await passwordHistoryService.assertNotReused(user.id, newPassword);
+    await passwordHistoryService.assertNotReused(user.id, newPassword);
     user.password = await bcrypt.hash(newPassword, 10);
     await user.save({ fields: ['password'] });
+    await passwordHistoryService.recordPassword(user.id, user.password);
 
     return ResponseHandler.success(res, null, 'Password changed successfully', 200);
   } catch (error) {
