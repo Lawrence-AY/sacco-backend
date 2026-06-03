@@ -60,6 +60,23 @@ const ensureTransactionTrackingColumns = async (sequelize) => {
   }
 };
 
+const loginSessionColumns = {
+  idempotencyKey: { type: DataTypes.STRING, allowNull: true },
+  refreshTokenHash: { type: DataTypes.STRING(64), allowNull: true },
+};
+
+const ensureLoginSessionColumns = async (sequelize) => {
+  const queryInterface = sequelize.getQueryInterface();
+  const table = await queryInterface.describeTable('LoginSessions');
+
+  for (const [column, definition] of Object.entries(loginSessionColumns)) {
+    if (!table[column]) {
+      await queryInterface.addColumn('LoginSessions', column, definition);
+      logger.info('Added missing LoginSessions column', { column });
+    }
+  }
+};
+
 const searchIndexes = [
   ['Members', ['memberNumber'], 'idx_members_member_number'],
   ['Members', ['nationalId'], 'idx_members_national_id'],
@@ -79,6 +96,7 @@ const searchIndexes = [
   ['MembershipApplications', ['phone'], 'idx_applications_phone'],
   ['MembershipApplications', ['nationalId'], 'idx_applications_national_id'],
   ['MembershipApplications', ['paymentReference'], 'idx_applications_payment_reference'],
+  ['LoginSessions', ['idempotencyKey'], 'uniq_login_sessions_idempotency_key', true],
 ];
 
 const ensureSearchIndexes = async (sequelize) => {
@@ -134,6 +152,7 @@ const runSchemaMigrations = async (sequelize) => {
   await ensureNotificationTable(sequelize);
   await ensureUserProfileColumns(sequelize);
   await ensureTransactionTrackingColumns(sequelize);
+  await ensureLoginSessionColumns(sequelize);
   await ensureSearchIndexes(sequelize);
 };
 
