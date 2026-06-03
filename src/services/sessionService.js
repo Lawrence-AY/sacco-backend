@@ -75,13 +75,19 @@ const createOtpSession = async (user, req, idempotencyKey = null) => {
   const device = getDeviceInfo(req);
   if (idempotencyKey) {
     const idempotentSession = await db.LoginSession.findOne({ where: { idempotencyKey, userId: user.id } });
-    if (idempotentSession) return idempotentSession;
+    if (idempotentSession) {
+      logger.info('Login session reused by idempotency key', { module: 'auth', userId: user.id, loginSessionId: idempotentSession.id });
+      return idempotentSession;
+    }
   }
   const existing = await db.LoginSession.findOne({
     where: { userId: user.id, deviceId: device.deviceId, status: 'OTP_SENT' },
     order: [['createdAt', 'DESC']],
   });
-  if (existing && Date.now() - new Date(existing.createdAt).getTime() < 10 * 60_000) return existing;
+  if (existing && Date.now() - new Date(existing.createdAt).getTime() < 10 * 60_000) {
+    logger.info('Existing pending login session reused', { module: 'auth', userId: user.id, loginSessionId: existing.id });
+    return existing;
+  }
   const knownDevice = await db.LoginSession.findOne({
     where: {
       userId: user.id,
@@ -91,7 +97,7 @@ const createOtpSession = async (user, req, idempotencyKey = null) => {
   });
 
   try {
-    return await db.LoginSession.create({
+    const session = await db.LoginSession.create({
       userId: user.id,
       ...device,
       status: 'OTP_SENT',
@@ -100,9 +106,13 @@ const createOtpSession = async (user, req, idempotencyKey = null) => {
       lastActiveAt: new Date(),
       idempotencyKey,
     });
+    logger.info('Login session created', { module: 'auth', userId: user.id, loginSessionId: session.id, isNewDevice: session.isNewDevice });
+    return session;
   } catch (error) {
     if (error.name === 'SequelizeUniqueConstraintError' && idempotencyKey) {
-      return db.LoginSession.findOne({ where: { idempotencyKey, userId: user.id } });
+      const session = await db.LoginSession.findOne({ where: { idempotencyKey, userId: user.id } });
+      logger.info('Login session recovered after idempotency race', { module: 'auth', userId: user.id, loginSessionId: session?.id });
+      return session;
     }
     throw error;
   }
@@ -181,6 +191,7 @@ const assertActiveSession = async (sessionId, userId) => {
   if (!sessionId) return null;
   const session = await db.LoginSession.findOne({ where: { id: sessionId, userId } });
   if (!session || session.status !== 'ACTIVE') {
+    logger.warn('Login session expired or inactive', { module: 'auth', userId, sessionId });
     return null;
   }
   return session;

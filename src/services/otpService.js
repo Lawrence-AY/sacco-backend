@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { Op } = require('sequelize');
 const db = require('../models');
 const { AppError, RateLimitError } = require('../shared/utils/errors');
+const logger = require('../shared/utils/logger');
 
 const OTP_TTL_MS = Number(process.env.OTP_TTL_MS || 10 * 60_000);
 const OTP_RESEND_COOLDOWN_MS = Number(process.env.OTP_RESEND_COOLDOWN_MS || 60_000);
@@ -14,7 +15,7 @@ const hashOtp = (otp) => crypto
 
 const createOtpSession = async ({ userId, loginSessionId = null, purpose, otp }) => {
   await db.OtpSession.update({ consumed: true }, { where: { userId, purpose, consumed: false } });
-  return db.OtpSession.create({
+  const session = await db.OtpSession.create({
     userId,
     loginSessionId,
     purpose,
@@ -24,6 +25,8 @@ const createOtpSession = async ({ userId, loginSessionId = null, purpose, otp })
     consumed: false,
     lastSentAt: new Date(),
   });
+  logger.info('OTP session created', { module: 'auth', userId, loginSessionId, purpose, otpSessionId: session.id, expiresAt: session.expiresAt });
+  return session;
 };
 
 const getActiveOtpSession = ({ userId, loginSessionId = null, purpose }) => db.OtpSession.findOne({
@@ -44,17 +47,51 @@ const assertResendAllowed = (session) => {
 };
 
 const verifyOtp = async ({ userId, loginSessionId = null, purpose, otp }) => {
-  const session = await getActiveOtpSession({ userId, loginSessionId, purpose });
-  if (!session) throw new AppError('Invalid or expired verification code', 401, 'AUTH_OTP_EXPIRED');
-  if (session.attempts >= OTP_MAX_ATTEMPTS) throw new AppError('Invalid or expired verification code', 401, 'AUTH_OTP_INVALID');
-  const actual = Buffer.from(hashOtp(otp), 'hex');
-  const expected = Buffer.from(session.otpHash, 'hex');
-  if (!crypto.timingSafeEqual(actual, expected)) {
-    await session.increment('attempts');
-    throw new AppError('Invalid or expired verification code', 401, 'AUTH_OTP_INVALID');
-  }
-  await session.update({ consumed: true });
-  return session;
+  logger.info('OTP verification started', { module: 'auth', userId, loginSessionId, purpose });
+
+  return db.sequelize.transaction(async (transaction) => {
+    const session = await db.OtpSession.findOne({
+      where: {
+        userId,
+        purpose,
+        consumed: false,
+        expiresAt: { [Op.gt]: new Date() },
+        ...(loginSessionId ? { loginSessionId } : {}),
+      },
+      order: [['createdAt', 'DESC']],
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+
+    if (!session) {
+      logger.warn('OTP verification failed: no active session', { module: 'auth', userId, loginSessionId, purpose });
+      throw new AppError('Invalid or expired verification code', 401, 'AUTH_OTP_EXPIRED');
+    }
+
+    if (session.attempts >= OTP_MAX_ATTEMPTS) {
+      logger.warn('OTP verification failed: max attempts reached', { module: 'auth', userId, loginSessionId, purpose, otpSessionId: session.id });
+      throw new AppError('Invalid or expired verification code', 401, 'AUTH_OTP_INVALID');
+    }
+
+    const actual = Buffer.from(hashOtp(otp), 'hex');
+    const expected = Buffer.from(session.otpHash, 'hex');
+    if (!crypto.timingSafeEqual(actual, expected)) {
+      await session.update({ attempts: session.attempts + 1 }, { transaction });
+      logger.warn('OTP verification failed: invalid code', {
+        module: 'auth',
+        userId,
+        loginSessionId,
+        purpose,
+        otpSessionId: session.id,
+        attempts: session.attempts + 1,
+      });
+      throw new AppError('Invalid or expired verification code', 401, 'AUTH_OTP_INVALID');
+    }
+
+    await session.update({ consumed: true }, { transaction });
+    logger.info('OTP verification success', { module: 'auth', userId, loginSessionId, purpose, otpSessionId: session.id });
+    return session;
+  });
 };
 
 module.exports = { createOtpSession, getActiveOtpSession, assertResendAllowed, verifyOtp };
