@@ -42,14 +42,39 @@ const getQueue = (queueName) => {
   return queues.get(queueName);
 };
 
-const buildMessage = (job) => {
-  if (job.type === 'OTP') {
-    return { to: job.to, subject: 'Verification Code (OTP) - AYEDOS SACCO', html: buildOtpEmail(job) };
+const stripHtml = (html) => String(html || '')
+  .replace(/<style[\s\S]*?<\/style>/gi, '')
+  .replace(/<script[\s\S]*?<\/script>/gi, '')
+  .replace(/<[^>]+>/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const withTextFallback = (message) => {
+  if (message.text || !message.html) return message;
+  return { ...message, text: stripHtml(message.html) };
+};
+
+const buildMessage = (type, job) => {
+  if (type === 'OTP') {
+    return withTextFallback({
+      to: job.to,
+      subject: 'Verification Code (OTP) - AYEDOS SACCO',
+      html: buildOtpEmail(job),
+    });
   }
-  if (job.type === 'PASSWORD_RESET') {
-    return { to: job.to, subject: 'Reset your AYEDOS password', html: buildPasswordResetEmail(job) };
+  if (type === 'PASSWORD_RESET') {
+    return withTextFallback({
+      to: job.to,
+      subject: 'Reset your AYEDOS password',
+      html: buildPasswordResetEmail(job),
+    });
   }
-  return { to: job.to, subject: job.subject, html: job.html };
+  return withTextFallback({
+    to: job.to,
+    subject: job.subject,
+    html: job.html,
+    text: job.text,
+  });
 };
 
 const processEmailJob = async (emailJobId) => {
@@ -57,7 +82,7 @@ const processEmailJob = async (emailJobId) => {
   if (!record || record.status === 'SENT') return;
   await record.update({ status: 'PROCESSING', attempts: record.attempts + 1 });
   try {
-    const result = await sendEmail(buildMessage(decrypt(record.encryptedPayload)));
+    const result = await sendEmail(buildMessage(record.type, decrypt(record.encryptedPayload)));
     await record.update({
       status: 'SENT',
       provider: result.provider,

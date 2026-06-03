@@ -73,6 +73,7 @@ class ResendProvider extends EmailProvider {
       to: message.to,
       subject: message.subject,
       html: message.html,
+      text: message.text,
     });
     if (result.error) throw new Error(result.error.message || 'Resend rejected the email');
     return { messageId: result.data?.id };
@@ -112,6 +113,10 @@ class SmtpProvider extends EmailProvider {
 const providers = [new ResendProvider(), new SmtpProvider()];
 
 const sendEmail = async (message) => {
+  if (!message?.html && !message?.text) {
+    throw new Error('Email message must include html or text content');
+  }
+
   const failures = [];
   for (const provider of providers) {
     if (!provider.isAvailable()) continue;
