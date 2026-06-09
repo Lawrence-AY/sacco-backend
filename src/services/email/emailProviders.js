@@ -110,7 +110,7 @@ class SmtpProvider extends EmailProvider {
   }
 }
 
-const providers = [new ResendProvider(), new SmtpProvider()];
+const providers = [new SmtpProvider(), new ResendProvider()];
 
 const sendEmail = async (message) => {
   if (!message?.html && !message?.text) {

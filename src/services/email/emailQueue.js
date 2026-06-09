@@ -125,8 +125,14 @@ const enqueueEmail = async (queueName, type, payload) => {
 };
 
 const pollOutbox = async () => {
+  // Pick up PENDING jobs and recently FAILED jobs (within 24h, for retry)
   const pending = await db.EmailJob.findAll({
-    where: { status: 'PENDING', nextAttemptAt: { [Op.lte]: new Date() } },
+    where: {
+      [Op.or]: [
+        { status: 'PENDING', nextAttemptAt: { [Op.lte]: new Date() } },
+        { status: 'FAILED', attempts: { [Op.gte]: 5 }, createdAt: { [Op.gte]: new Date(Date.now() - 24 * 60 * 60 * 1000) } },
+      ],
+    },
     order: [['createdAt', 'ASC']],
     limit: 25,
   });
