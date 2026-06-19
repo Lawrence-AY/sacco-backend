@@ -8,4 +8,5 @@ coverage
 .idea
 *.log
 *.tsbuildinfo   
- .vscode
+.vscode
+logs/

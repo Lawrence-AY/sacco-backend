@@ -78,8 +78,11 @@ function getStartupErrorMessage(error) {
 
 async function initializeDatabase(app, db) {
   const retryDelayMs = Number.parseInt(process.env.DB_STARTUP_RETRY_MS, 10) || 10000;
+  const maxRetries = Number.parseInt(process.env.DB_STARTUP_MAX_RETRIES, 10) || 30;
+  let attempt = 0;
 
-  while (true) {
+  while (attempt < maxRetries) {
+    attempt += 1;
     try {
       // Test database connection
       logger.info('Testing database connection...');
@@ -132,6 +135,15 @@ async function initializeDatabase(app, db) {
       await delay(retryDelayMs);
     }
   }
+
+  // Max retries exhausted — log and let the process continue
+  // Railway will detect the health check failure and restart
+  logger.error('Database startup failed after maximum retries', {
+    maxRetries,
+    retryDelayMs,
+    lastError: app.locals.apiStartupError,
+    timestamp: new Date().toISOString()
+  });
 }
 
 // Async startup function

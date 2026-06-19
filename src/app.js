@@ -225,29 +225,6 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-// Handle preflight requests for all routes
-app.use((req, res, next) => {
-  if (req.method === 'OPTIONS') {
-    const origin = req.headers.origin;
-    if (!isOriginAllowed(origin)) {
-      logger.warn('CORS preflight blocked request', { origin, endpoint: req.originalUrl });
-      return res.status(403).json({
-        success: false,
-        message: 'Request origin is not allowed',
-        code: 'FORBIDDEN',
-        timestamp: new Date().toISOString(),
-      });
-    }
-    if (origin) res.header('Access-Control-Allow-Origin', origin);
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-Device-Id, X-Device-Name, X-Session-Id, X-Idempotency-Key, X-CSRF-Token, Accept, Accept-Encoding, Accept-Language, X-API-Key');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    res.header('Access-Control-Max-Age', '86400');
-    return res.sendStatus(200);
-  }
-  next();
-});
-
 // Keep the HTTP server reachable while database startup work is still running.
 // This prevents frontend dev proxy calls from failing with ECONNREFUSED/502.
 app.use(['/api', '/search'], (req, res, next) => {
@@ -333,9 +310,11 @@ app.use(auditLogger);
 
 // ============= HEALTH CHECK ENDPOINTS =============
 
-// Basic health check
+// Health check — consolidated single endpoint
+// Use ?detailed=true for extended diagnostics
 app.get('/health', async (req, res) => {
   const startedAt = Date.now();
+  const isDetailed = req.query.detailed === 'true';
   let database = 'connected';
   let statusCode = 200;
 
@@ -350,104 +329,44 @@ app.get('/health', async (req, res) => {
     });
   }
 
-  res.status(statusCode).json({
-    success: statusCode === 200,
-    status: statusCode === 200 && app.locals.apiReady ? 'healthy' : 'degraded',
+  const ready = Boolean(app.locals.apiReady);
+  const healthy = statusCode === 200 && ready;
+
+  const response = {
+    success: healthy,
+    status: healthy ? 'healthy' : 'degraded',
     database,
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
-    memory: process.memoryUsage(),
-    environment: getEnvironmentDiagnostics(),
-    railway: getEnvironmentDiagnostics().railway,
     api: {
-      ready: Boolean(app.locals.apiReady),
+      ready,
       startupError: app.locals.apiStartupError ? 'startup_failed' : null,
     },
     responseTimeMs: Date.now() - startedAt,
-  });
-});
+  };
 
-app.get('/ready', (req, res) => {
-  const ready = Boolean(app.locals.apiReady);
-
-  res.status(ready ? 200 : 503).json({
-    success: ready,
-    message: ready ? 'Service is ready' : 'Service is temporarily unavailable',
-    code: ready ? undefined : 'SERVER_ERROR',
-    errorCode: ready ? undefined : 'SERVER_ERROR',
-    timestamp: new Date().toISOString(),
-  });
-});
-
-// Comprehensive health check with DB connectivity
-app.get('/health/detailed', async (req, res) => {
-  try {
-    const startTime = Date.now();
-
-    // Check database connectivity
-    await db.sequelize.authenticate();
-    const dbResponseTime = Date.now() - startTime;
-
-    // Get database stats
-    const [results] = await db.sequelize.query('SELECT version() as version');
-    const dbVersion = results[0]?.version || 'unknown';
-
-    res.status(200).json({
-      success: true,
-      message: 'All systems operational',
-      timestamp: new Date().toISOString(),
-      uptime: process.uptime(),
-      environment: process.env.NODE_ENV,
-      database: {
-        status: 'connected',
-        responseTime: `${dbResponseTime}ms`,
-        version: dbVersion
-      },
-      memory: process.memoryUsage(),
-      system: {
+  if (isDetailed) {
+    try {
+      const [results] = await db.sequelize.query('SELECT version() as version');
+      response.database = {
+        status: database,
+        responseTime: `${Date.now() - startedAt}ms`,
+        version: results[0]?.version || 'unknown',
+      };
+      response.memory = process.memoryUsage();
+      response.system = {
         platform: process.platform,
         arch: process.arch,
-        nodeVersion: process.version
-      }
-    });
-  } catch (error) {
-    logger.error('Health check failed:', {
-      error: error.message,
-      stack: error.stack
-    });
-
-    res.status(503).json({
-      success: false,
-      message: 'Service is temporarily unavailable',
-      code: 'SERVER_ERROR',
-      errorCode: 'SERVER_ERROR',
-      timestamp: new Date().toISOString(),
-    });
+        nodeVersion: process.version,
+      };
+      response.environment = getEnvironmentDiagnostics();
+      response.railway = getEnvironmentDiagnostics().railway;
+    } catch (error) {
+      logger.error('Detailed health check failed:', { error: error.message });
+    }
   }
-});
 
-// Railway-specific health check
-app.get('/health/railway', async (req, res) => {
-  try {
-    // Quick DB check
-    await db.sequelize.authenticate();
-
-    res.status(200).json({
-      status: 'ok',
-      timestamp: new Date().toISOString(),
-      uptime: Math.floor(process.uptime())
-    });
-  } catch (error) {
-    logger.error('Railway health check failed:', { error: error.message });
-
-    res.status(503).json({
-      status: 'error',
-      timestamp: new Date().toISOString(),
-      message: 'Service is temporarily unavailable',
-      code: 'SERVER_ERROR',
-      errorCode: 'SERVER_ERROR'
-    });
-  }
+  res.status(statusCode).json(response);
 });
 
 // ============= DIAGNOSTICS ENDPOINT (Dev/Staging) =============
