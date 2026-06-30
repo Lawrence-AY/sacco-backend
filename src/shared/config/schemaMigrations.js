@@ -148,8 +148,41 @@ const ensureNotificationTable = async (sequelize) => {
   }
 };
 
+const ensureMemberExitRequestTable = async (sequelize) => {
+  const queryInterface = sequelize.getQueryInterface();
+  const tables = await queryInterface.showAllTables();
+  const exists = tables.some((table) => String(typeof table === 'object' ? table.tableName || table.name : table) === 'MemberExitRequests');
+
+  if (!exists) {
+    await queryInterface.createTable('MemberExitRequests', {
+      id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
+      memberId: { type: DataTypes.UUID, allowNull: false },
+      status: {
+        type: DataTypes.ENUM('PENDING', 'APPROVED', 'REJECTED', 'COMPLETED', 'CANCELLED'),
+        allowNull: false,
+        defaultValue: 'PENDING'
+      },
+      savingsWithdrawalAmount: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
+      shareCapitalAmount: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
+      saccoFeeAmount: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
+      auctionAmount: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
+      buyerMemberNumber: { type: DataTypes.STRING, allowNull: true },
+      reason: { type: DataTypes.TEXT, allowNull: true },
+      acknowledgedTerms: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+      requestedAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+      reviewedAt: { type: DataTypes.DATE, allowNull: true },
+      reviewedById: { type: DataTypes.UUID, allowNull: true },
+      notes: { type: DataTypes.TEXT, allowNull: true },
+      createdAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+      updatedAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+    });
+    logger.info('Created MemberExitRequests table');
+  }
+};
+
 const runSchemaMigrations = async (sequelize) => {
   await ensureNotificationTable(sequelize);
+  await ensureMemberExitRequestTable(sequelize);
   await ensureUserProfileColumns(sequelize);
   await ensureTransactionTrackingColumns(sequelize);
   await ensureLoginSessionColumns(sequelize);

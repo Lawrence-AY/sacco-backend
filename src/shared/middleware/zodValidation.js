@@ -148,6 +148,13 @@ const schemas = {
     reportType: z.enum(['portfolio', 'transactions', 'loans', 'savings']).default('portfolio'),
     duration: z.coerce.number().int().positive().max(120).optional(),
   }),
+  memberOptOutRequest: strictObject({
+    reason: z.string().trim().max(1000).optional().or(z.literal('')),
+    buyerMemberNumber: z.string().trim().max(60).optional().or(z.literal('')),
+    acknowledgedTerms: z.boolean().refine((value) => value === true, {
+      message: 'You must acknowledge the opt-out terms',
+    }),
+  }),
 };
 
 module.exports = {

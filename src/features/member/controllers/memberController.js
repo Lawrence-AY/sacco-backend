@@ -320,6 +320,90 @@ const updateProfile = asyncHandler(async (req, res) => {
   return ResponseHandler.success(res, UserDTO.private(updated), 'Profile updated successfully', 200);
 });
 
+const getMemberExitBalances = async (memberId) => {
+  const [savingsAccount, shareAccount, successfulTransactions] = await Promise.all([
+    db.SavingsAccount.findOne({ where: { memberId } }),
+    db.ShareAccount.findOne({ where: { memberId } }),
+    db.Transaction.findAll({
+      where: {
+        memberId,
+        status: 'SUCCESS',
+      },
+    }),
+  ]);
+
+  const categoryTotal = (tokens) => successfulTransactions.reduce((sum, transaction) => {
+    const category = String(
+      transaction.paymentCategory ||
+      transaction.kcbEndpoint ||
+      transaction.description ||
+      transaction.type ||
+      ''
+    ).toLowerCase();
+    return tokens.some((token) => category.includes(token))
+      ? sum + Number(transaction.amount || 0)
+      : sum;
+  }, 0);
+
+  const savings = Math.max(Number(savingsAccount?.balance || 0), categoryTotal(['savings']));
+  const shareAccountCapital = Number(shareAccount?.shares || 0) * Number(shareAccount?.shareValue || 0);
+  const shareCapital = Math.max(
+    shareAccountCapital,
+    categoryTotal(['share_capital', 'sharecapital', 'share capital'])
+  );
+  const saccoFee = shareCapital * 0.01;
+
+  return {
+    savings,
+    shareCapital,
+    saccoFee,
+    auctionAmount: Math.max(shareCapital - saccoFee, 0),
+  };
+};
+
+const requestOptOut = asyncHandler(async (req, res) => {
+  const member = await findMemberByUserId(req.user.id);
+  if (!member) {
+    throw new NotFoundError('Member profile not found');
+  }
+
+  const existingRequest = await db.MemberExitRequest.findOne({
+    where: {
+      memberId: member.id,
+      status: { [Op.in]: ['PENDING', 'APPROVED'] },
+    },
+    order: [['createdAt', 'DESC']],
+  });
+
+  if (existingRequest) {
+    throw new ValidationError('You already have an active opt-out request under review.');
+  }
+
+  const balances = await getMemberExitBalances(member.id);
+  const request = await db.MemberExitRequest.create({
+    memberId: member.id,
+    savingsWithdrawalAmount: balances.savings,
+    shareCapitalAmount: balances.shareCapital,
+    saccoFeeAmount: balances.saccoFee,
+    auctionAmount: balances.auctionAmount,
+    buyerMemberNumber: req.body.buyerMemberNumber || null,
+    reason: req.body.reason || null,
+    acknowledgedTerms: req.body.acknowledgedTerms,
+    requestedAt: new Date(),
+  });
+
+  return ResponseHandler.success(res, {
+    id: request.id,
+    status: request.status,
+    savingsWithdrawalAmount: request.savingsWithdrawalAmount,
+    shareCapitalAmount: request.shareCapitalAmount,
+    saccoFeeAmount: request.saccoFeeAmount,
+    auctionAmount: request.auctionAmount,
+    buyerMemberNumber: request.buyerMemberNumber,
+    requestedAt: request.requestedAt,
+  }, 'Opt-out request submitted successfully', 201);
+});
+
 const getLoans = asyncHandler(async (req, res) => {
   const member = await findMemberByUserId(req.user.id);
   if (!member) {
@@ -867,6 +951,7 @@ module.exports = {
   getProfile,
   uploadProfilePhoto,
   updateProfile,
+  requestOptOut,
   getLoans,
   applyForLoan,
   cancelLoan,

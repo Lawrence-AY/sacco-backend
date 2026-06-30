@@ -17,6 +17,7 @@ const OtpSession = require('./otpSession.model');
 const LoginAttempt = require('./loginAttempt.model');
 const EmailJob = require('./emailJob.model');
 const PasswordHistory = require('./passwordHistory.model');
+const MemberExitRequest = require('./memberExitRequest.model');
 
 const sequelize = require('../shared/config/db');
 
@@ -59,6 +60,9 @@ SalaryDeduction.belongsTo(Member, { foreignKey: 'memberId' });
 Member.hasMany(Guarantor, { foreignKey: 'memberId' });
 Guarantor.belongsTo(Member, { foreignKey: 'memberId' });
 
+Member.hasMany(MemberExitRequest, { foreignKey: 'memberId' });
+MemberExitRequest.belongsTo(Member, { foreignKey: 'memberId' });
+
 Loan.hasMany(Transaction, { foreignKey: 'loanId' });
 Transaction.belongsTo(Loan, { foreignKey: 'loanId' });
 
@@ -86,7 +90,8 @@ const db = {
   OtpSession,
   LoginAttempt,
   EmailJob,
-  PasswordHistory
+  PasswordHistory,
+  MemberExitRequest
 };
 
 module.exports = db;
