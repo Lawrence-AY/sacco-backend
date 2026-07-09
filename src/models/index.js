@@ -18,6 +18,8 @@ const LoginAttempt = require('./loginAttempt.model');
 const EmailJob = require('./emailJob.model');
 const PasswordHistory = require('./passwordHistory.model');
 const MemberExitRequest = require('./memberExitRequest.model');
+const ShareCapitalListing = require('./shareCapitalListing.model');
+const Bid = require('./bid.model');
 
 const sequelize = require('../shared/config/db');
 
@@ -63,6 +65,15 @@ Guarantor.belongsTo(Member, { foreignKey: 'memberId' });
 Member.hasMany(MemberExitRequest, { foreignKey: 'memberId' });
 MemberExitRequest.belongsTo(Member, { foreignKey: 'memberId' });
 
+Member.hasMany(ShareCapitalListing, { foreignKey: 'memberId' });
+ShareCapitalListing.belongsTo(Member, { foreignKey: 'memberId' });
+
+ShareCapitalListing.hasMany(Bid, { foreignKey: 'listingId' });
+Bid.belongsTo(ShareCapitalListing, { foreignKey: 'listingId' });
+
+Member.hasMany(Bid, { foreignKey: 'bidderId' });
+Bid.belongsTo(Member, { foreignKey: 'bidderId' });
+
 Loan.hasMany(Transaction, { foreignKey: 'loanId' });
 Transaction.belongsTo(Loan, { foreignKey: 'loanId' });
 
@@ -91,7 +102,9 @@ const db = {
   LoginAttempt,
   EmailJob,
   PasswordHistory,
-  MemberExitRequest
+  MemberExitRequest,
+  ShareCapitalListing,
+  Bid
 };
 
 module.exports = db;
