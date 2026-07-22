@@ -27,4 +27,8 @@ router.get('/deductions', financeController.getAllDeductions);
 router.post('/deductions', financeController.createDeduction);
 router.put('/deductions/:deductionId', financeController.updateDeduction);
 
+router.get('/members', financeController.getAllMembers);
+router.get('/companies', financeController.getAllCompanies);
+router.get('/reports', financeController.getFinancialReports);
+
 module.exports = router;

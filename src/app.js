@@ -168,6 +168,7 @@ const sensitiveLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => req.method === 'OPTIONS' || isLocalRequest(req),
 });
 
 app.use('/api/loans', sensitiveLimiter);
@@ -312,7 +313,7 @@ app.use(auditLogger);
 
 // Health check — consolidated single endpoint
 // Use ?detailed=true for extended diagnostics
-app.get('/health', async (req, res) => {
+const healthHandler = async (req, res) => {
   const startedAt = Date.now();
   const isDetailed = req.query.detailed === 'true';
   let database = 'connected';
@@ -367,7 +368,10 @@ app.get('/health', async (req, res) => {
   }
 
   res.status(statusCode).json(response);
-});
+};
+
+app.get('/health', healthHandler);
+app.get('/api/health', healthHandler);
 
 // ============= DIAGNOSTICS ENDPOINT (Dev/Staging) =============
 app.get('/api/diagnostics', (req, res) => {

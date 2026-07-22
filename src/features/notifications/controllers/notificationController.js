@@ -20,8 +20,14 @@ const markAllNotificationsRead = asyncHandler(async (req, res) => {
   return ResponseHandler.success(res, null, 'Notifications marked as read');
 });
 
+const sendNotification = asyncHandler(async (req, res) => {
+  const result = await notificationService.createManualNotification(req.user, req.body);
+  return ResponseHandler.created(res, result, 'Notification sent successfully');
+});
+
 module.exports = {
   listNotifications,
   markNotificationRead,
   markAllNotificationsRead,
+  sendNotification,
 };
