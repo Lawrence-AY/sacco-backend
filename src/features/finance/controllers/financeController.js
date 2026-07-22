@@ -302,6 +302,75 @@ const updateDeduction = asyncHandler(async (req, res) => {
   return ResponseHandler.success(res, formatDeduction(deduction, member), 'Deduction updated successfully', 200);
 });
 
+const getAllMembers = asyncHandler(async (req, res) => {
+  const members = await db.Member.findAll({
+    include: [{ model: db.User, attributes: ['name', 'firstName', 'lastName', 'email', 'phone', 'employer', 'monthlyIncome'] }],
+    order: [['createdAt', 'DESC']],
+  });
+
+  const formatted = members.map((member) => {
+    const user = member.User || {};
+    const name = user.name || [user.firstName, user.lastName].filter(Boolean).join(' ') || member.memberNumber || member.id;
+    return {
+      id: member.memberNumber || member.id,
+      memberId: member.id,
+      userId: member.userId,
+      name,
+      phone: user.phone,
+      email: user.email,
+      company: user.employer || null,
+      salary: Number(user.monthlyIncome || 0),
+      deduction: 0,
+      savings: 0,
+      loans: 0,
+      shares: 0,
+      risk: 'Low',
+      status: member.isVerified ? 'Active' : 'Pending',
+      createdAt: member.createdAt,
+    };
+  });
+
+  return ResponseHandler.success(res, formatted, 'Members retrieved successfully', 200);
+});
+
+const getAllCompanies = asyncHandler(async (req, res) => {
+  const users = await db.User.findAll({
+    where: { employer: { [db.Sequelize.Op.ne]: null } },
+    attributes: ['employer', 'monthlyIncome'],
+  });
+
+  const companyMap = new Map();
+  users.forEach((user) => {
+    const name = String(user.employer || '').trim();
+    if (!name) return;
+    const current = companyMap.get(name) || { id: name, name, employees: 0, totalDeductions: 0, status: 'Active' };
+    current.employees += 1;
+    current.totalDeductions += Number(user.monthlyIncome || 0) * 0.1;
+    companyMap.set(name, current);
+  });
+
+  return ResponseHandler.success(res, Array.from(companyMap.values()), 'Companies retrieved successfully', 200);
+});
+
+const getFinancialReports = asyncHandler(async (req, res) => {
+  const [transactions, loans, dividends] = await Promise.all([
+    db.Transaction.findAll({ order: [['createdAt', 'DESC']], limit: 500 }),
+    db.Loan.findAll({ order: [['createdAt', 'DESC']], limit: 500 }),
+    db.Dividend.findAll({ order: [['createdAt', 'DESC']], limit: 100 }),
+  ]);
+
+  return ResponseHandler.success(res, {
+    totals: {
+      transactions: transactions.length,
+      loans: loans.length,
+      dividends: dividends.length,
+      transactionAmount: transactions.reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0),
+      loanPrincipal: loans.reduce((sum, loan) => sum + Number(loan.amount || 0), 0),
+      dividendsDeclared: dividends.reduce((sum, dividend) => sum + Number(dividend.amount || 0), 0),
+    },
+  }, 'Financial reports retrieved successfully', 200);
+});
+
 module.exports = {
   getAllTransactions,
   createTransaction,
@@ -320,4 +389,7 @@ module.exports = {
   getAllDeductions,
   createDeduction,
   updateDeduction,
+  getAllMembers,
+  getAllCompanies,
+  getFinancialReports,
 };

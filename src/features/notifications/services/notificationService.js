@@ -1,4 +1,5 @@
 const db = require('../../../models');
+const { Op } = require('sequelize');
 
 const IMPORTANT_TRANSACTION_STATUSES = new Set(['SUCCESS', 'FAILED', 'PENDING']);
 const IMPORTANT_LOAN_STATUSES = new Set(['PENDING', 'APPROVED', 'ACTIVE', 'REJECTED']);
@@ -152,8 +153,85 @@ const markAllRead = async (user) => {
   await db.Notification.update({ readAt: new Date() }, { where: { userId: user.id, readAt: null } });
 };
 
+const createManualNotification = async (sender, payload = {}) => {
+  const title = String(payload.title || '').trim();
+  const body = String(payload.body || '').trim();
+  const audience = String(payload.audience || 'MEMBER').toUpperCase();
+  const category = String(payload.category || 'announcement').trim() || 'announcement';
+  const severity = String(payload.severity || 'info').trim() || 'info';
+  const recipientUserId = payload.recipientUserId || null;
+
+  if (!title || !body) {
+    const error = new Error('Title and message are required.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  let users = [];
+
+  if (audience === 'INDIVIDUAL') {
+    if (!recipientUserId) {
+      const error = new Error('Please choose a member to notify.');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const recipient = await db.User.findOne({
+      where: { id: recipientUserId, role: 'MEMBER' },
+      attributes: ['id'],
+    });
+
+    if (!recipient) {
+      const error = new Error('Selected member was not found.');
+      error.statusCode = 404;
+      throw error;
+    }
+
+    users = [recipient];
+  } else {
+    const rolesByAudience = {
+      ALL: ['MEMBER', 'FINANCE', 'ADMIN', 'SUPERADMIN'],
+      MEMBERS: ['MEMBER'],
+      MEMBER: ['MEMBER'],
+      FINANCE: ['FINANCE'],
+      ADMINS: ['ADMIN', 'SUPERADMIN'],
+      ADMIN: ['ADMIN', 'SUPERADMIN'],
+    };
+
+    const roles = rolesByAudience[audience] || rolesByAudience.MEMBER;
+    users = await db.User.findAll({
+      where: { role: { [Op.in]: roles } },
+      attributes: ['id'],
+    });
+  }
+
+  const now = Date.now();
+  const notifications = await Promise.all(users.map((recipient, index) => upsertNotification({
+    userId: recipient.id,
+    eventKey: `manual:${sender.id}:${now}:${index}`,
+    title,
+    body,
+    category,
+    severity,
+    actionUrl: payload.actionUrl || null,
+    sourceType: 'ManualNotification',
+    sourceId: null,
+    metadata: {
+      audience,
+      recipientUserId,
+      sentBy: sender.id,
+    },
+  })));
+
+  return {
+    sent: notifications.length,
+    notifications: notifications.map(serialize),
+  };
+};
+
 module.exports = {
   listForUser,
   markRead,
   markAllRead,
+  createManualNotification,
 };
