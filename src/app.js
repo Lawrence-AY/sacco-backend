@@ -41,6 +41,7 @@ const financeRoutes = require('./features/finance/routes/financeRoutes');
 const adminRoutes = require('./features/admin/routes/adminRoutes');
 const searchRoutes = require('./features/search/routes/searchRoutes');
 const notificationRoutes = require('./features/notifications/routes/notificationRoutes');
+const mpesaRoutes = require('./features/routes/mpesa.routes');
 
 const applicationController = require('./features/applications/controllers/applicationController');
 
@@ -229,6 +230,7 @@ app.use(cors(corsOptions));
 // Keep the HTTP server reachable while database startup work is still running.
 // This prevents frontend dev proxy calls from failing with ECONNREFUSED/502.
 app.use(['/api', '/search'], (req, res, next) => {
+  if (req.path === '/health' || req.originalUrl.startsWith('/api/mpesa')) return next();
   if (app.locals.apiReady) return next();
 
   return res.status(503).json({
@@ -436,6 +438,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/search', searchRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/mpesa', mpesaRoutes);
 
 // ============= STK STATUS ROUTE =============
 app.get('/api/stk-status', applicationController.checkStkStatus);
