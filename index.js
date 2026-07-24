@@ -4,7 +4,6 @@
  */
 require('dotenv').config();
 
-const express = require('express');
 const { createServer } = require('http');
 
 // Import logger first for startup logging
@@ -73,7 +72,21 @@ function shutdown() {
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function getStartupErrorMessage(error) {
-  return error?.message || error?.name || 'Database startup failed';
+  return error?.parent?.message || error?.original?.message || error?.message || error?.name || 'Database startup failed';
+}
+
+function getStartupErrorDetails(error) {
+  const parent = error?.parent || error?.original;
+  return {
+    name: error?.name,
+    message: error?.message,
+    parentMessage: parent?.message,
+    code: parent?.code || error?.code,
+    errno: parent?.errno || error?.errno,
+    syscall: parent?.syscall || error?.syscall,
+    address: parent?.address || error?.address,
+    port: parent?.port || error?.port,
+  };
 }
 
 async function initializeDatabase(app, db) {
@@ -125,6 +138,7 @@ async function initializeDatabase(app, db) {
 
       logger.error('API startup failed:', {
         error: app.locals.apiStartupError,
+        details: getStartupErrorDetails(error),
         stack: error.stack,
         timestamp: new Date().toISOString()
       });
