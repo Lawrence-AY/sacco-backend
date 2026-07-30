@@ -103,6 +103,7 @@ const UserDTO = {
       isVerified: user.isVerified,
       consentGiven: user.consentGiven,
       consentGivenAt: user.consentGivenAt,
+      Member: user.Member || user.member || null,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt
     });

@@ -1,6 +1,5 @@
 const crypto = require('crypto');
 const { Queue, Worker } = require('bullmq');
-const { Op } = require('sequelize');
 const db = require('../../models');
 const logger = require('../../shared/utils/logger');
 const { sendEmail } = require('./emailProviders');
@@ -125,17 +124,17 @@ const enqueueEmail = async (queueName, type, payload) => {
 };
 
 const pollOutbox = async () => {
-  // Pick up PENDING jobs and recently FAILED jobs (within 24h, for retry)
-  const pending = await db.EmailJob.findAll({
-    where: {
-      [Op.or]: [
-        { status: 'PENDING', nextAttemptAt: { [Op.lte]: new Date() } },
-        { status: 'FAILED', attempts: { [Op.gte]: 5 }, createdAt: { [Op.gte]: new Date(Date.now() - 24 * 60 * 60 * 1000) } },
-      ],
-    },
+  const records = await db.EmailJob.findAll({
+    where: { status: 'PENDING' },
     order: [['createdAt', 'ASC']],
-    limit: 25,
   });
+  const pending = records
+    .filter((record) => {
+      const nextAttemptAt = record.nextAttemptAt?.toDate?.()
+        || (record.nextAttemptAt instanceof Date ? record.nextAttemptAt : null);
+      return !nextAttemptAt || nextAttemptAt <= new Date();
+    })
+    .slice(0, 25);
   pending.forEach((record) => {
     if (connection) scheduleQueueDelivery(record);
     else processEmailJob(record.id).catch(() => {});

@@ -9,7 +9,6 @@ const { createServer } = require('http');
 // Import logger first for startup logging
 const logger = require('./src/shared/utils/logger');
 const { validateEnvironment } = require('./src/shared/config/env');
-const { runSchemaMigrations } = require('./src/shared/config/schemaMigrations');
 
 // Global error handlers - DO NOT EXIT PROCESS in production
 process.on('uncaughtException', (error) => {
@@ -171,6 +170,13 @@ async function startServer() {
 
     validateEnvironment();
 
+    const { testFirebaseConnection } = require('./src/shared/config/firebase');
+    const firebase = await testFirebaseConnection();
+    logger.info('Firebase connection successful', {
+      projectId: firebase.projectId,
+      service: firebase.service,
+    });
+
     // Import app after env is loaded
     const app = require('./src/app');
     const db = require('./src/models');
@@ -205,7 +211,13 @@ async function startServer() {
       timestamp: new Date().toISOString()
     });
 
-    initializeDatabase(app, db);
+    app.locals.apiReady = true;
+    app.locals.apiStartupError = null;
+    app.locals.dataBackend = 'firebase';
+    logger.info('API marked ready using Firebase', {
+      projectId: firebase.projectId,
+    });
+    require('./src/services/email/emailQueue').startEmailWorkers();
 
   } catch (error) {
     logger.error('Failed to start server:', {

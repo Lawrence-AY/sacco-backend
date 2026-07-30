@@ -18,6 +18,10 @@ const { validate, schemas } = require('./shared/middleware/zodValidation');
 const csrfProtection = require('./shared/middleware/csrfProtection');
 const { loginLimiter, otpVerificationLimiter, otpResendLimiter, passwordResetLimiter } = require('./shared/middleware/authRateLimits');
 const { getProviderHealth } = require('./services/email/emailProviders');
+const {
+  getFirebaseConfigStatus,
+  testFirebaseConnection,
+} = require('./shared/config/firebase');
 
 // Import email config utility (for diagnostics only - validates lazily)
 const { getConfigStatus } = require('./shared/config/emailConfig');
@@ -93,8 +97,16 @@ const isOriginAllowed = (origin) => {
 };
 
 const getEnvironmentDiagnostics = () => {
-  const required = ['DATABASE_URL', 'JWT_SECRET', 'JWT_REFRESH_SECRET', 'NODE_ENV', 'FRONTEND_URL'];
-  const optional = ['RESEND_API_KEY', 'SMTP_HOST', 'SMTP_USER'];
+  const required = [
+    'FIREBASE_PROJECT_ID',
+    'FIREBASE_CLIENT_EMAIL',
+    'FIREBASE_PRIVATE_KEY',
+    'JWT_SECRET',
+    'JWT_REFRESH_SECRET',
+    'NODE_ENV',
+    'FRONTEND_URL',
+  ];
+  const optional = ['RESEND_API_KEY', 'SMTP_HOST', 'SMTP_USER', 'MPESA_URL'];
   return {
     nodeEnv: process.env.NODE_ENV || 'development',
     required: Object.fromEntries(required.map((key) => [key, Boolean(process.env[key])])),
@@ -217,6 +229,7 @@ const corsOptions = {
     'X-Session-Id',
     'X-Idempotency-Key',
     'X-CSRF-Token',
+    'Ngrok-Skip-Browser-Warning',
     'Accept',
     'Accept-Encoding',
     'Accept-Language'
@@ -230,7 +243,11 @@ app.use(cors(corsOptions));
 // Keep the HTTP server reachable while database startup work is still running.
 // This prevents frontend dev proxy calls from failing with ECONNREFUSED/502.
 app.use(['/api', '/search'], (req, res, next) => {
-  if (req.path === '/health' || req.originalUrl.startsWith('/api/mpesa')) return next();
+  if (
+    req.path === '/health'
+    || req.path === '/firebase/test'
+    || req.originalUrl.startsWith('/api/mpesa')
+  ) return next();
   if (app.locals.apiReady) return next();
 
   return res.status(503).json({
@@ -318,15 +335,20 @@ app.use(auditLogger);
 const healthHandler = async (req, res) => {
   const startedAt = Date.now();
   const isDetailed = req.query.detailed === 'true';
-  let database = 'connected';
+  let database = 'firestore';
+  let firebase = null;
   let statusCode = 200;
 
   try {
     await db.sequelize.authenticate();
+    firebase = await testFirebaseConnection();
   } catch (error) {
-    database = 'disconnected';
+    firebase = {
+      connected: false,
+      projectId: getFirebaseConfigStatus().projectId,
+    };
     statusCode = 503;
-    logger.error('Health database check failed', {
+    logger.error('Health Firebase check failed', {
       error: error.message,
       requestId: req.id,
     });
@@ -339,6 +361,7 @@ const healthHandler = async (req, res) => {
     success: healthy,
     status: healthy ? 'healthy' : 'degraded',
     database,
+    firebase,
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
     api: {
@@ -350,11 +373,11 @@ const healthHandler = async (req, res) => {
 
   if (isDetailed) {
     try {
-      const [results] = await db.sequelize.query('SELECT version() as version');
       response.database = {
-        status: database,
+        status: 'connected',
+        provider: database,
         responseTime: `${Date.now() - startedAt}ms`,
-        version: results[0]?.version || 'unknown',
+        projectId: process.env.FIREBASE_PROJECT_ID,
       };
       response.memory = process.memoryUsage();
       response.system = {
@@ -374,6 +397,43 @@ const healthHandler = async (req, res) => {
 
 app.get('/health', healthHandler);
 app.get('/api/health', healthHandler);
+
+app.get('/api/firebase/test', async (req, res) => {
+  const startedAt = Date.now();
+
+  try {
+    const connection = await testFirebaseConnection();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Firebase connection successful',
+      firebase: connection,
+      responseTimeMs: Date.now() - startedAt,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    const config = getFirebaseConfigStatus();
+
+    logger.error('Firebase connection test failed', {
+      error: error.message,
+      requestId: req.id,
+      projectId: config.projectId,
+    });
+
+    return res.status(503).json({
+      success: false,
+      message: 'Firebase connection failed',
+      firebase: {
+        connected: false,
+        configured: config.configured,
+        projectId: config.projectId,
+        missing: config.missing,
+      },
+      responseTimeMs: Date.now() - startedAt,
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
 
 // ============= DIAGNOSTICS ENDPOINT (Dev/Staging) =============
 app.get('/api/diagnostics', (req, res) => {

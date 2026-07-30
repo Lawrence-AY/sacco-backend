@@ -9,7 +9,7 @@ const getAllUsers = async () => {
       attributes: { exclude: privateUserFields },
       include: [{
         model: db.Member,
-        attributes: ['id', 'memberNumber', 'type', 'nationalId', 'isVerified'],
+        attributes: ['id', 'userId', 'memberNumber', 'type', 'nationalId', 'status', 'dateJoined', 'applicationId', 'paymentReference', 'registrationTransactionId', 'isVerified'],
       }],
       order: [['createdAt', 'DESC']]
     });
@@ -24,7 +24,7 @@ const getUserById = async (id) => {
       attributes: { exclude: privateUserFields },
       include: [{
         model: db.Member,
-        attributes: ['id', 'memberNumber', 'type', 'nationalId', 'isVerified'],
+        attributes: ['id', 'userId', 'memberNumber', 'type', 'nationalId', 'status', 'dateJoined', 'applicationId', 'paymentReference', 'registrationTransactionId', 'isVerified'],
       }],
     });
   } catch (error) {
@@ -77,7 +77,7 @@ const updateUser = async (id, data) => {
       attributes: { exclude: privateUserFields },
       include: [{
         model: db.Member,
-        attributes: ['id', 'memberNumber', 'type', 'nationalId', 'isVerified'],
+        attributes: ['id', 'userId', 'memberNumber', 'type', 'nationalId', 'status', 'dateJoined', 'applicationId', 'paymentReference', 'registrationTransactionId', 'isVerified'],
       }],
     });
 

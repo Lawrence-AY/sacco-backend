@@ -1,5 +1,6 @@
 // services/applicationService.js
 const db = require('../../../models');
+const { getFirebaseDb } = require('../../../shared/config/firebase');
 
 const createApplication = async (data) => {
   return await db.MembershipApplication.create({
@@ -63,6 +64,147 @@ const updateApplication = async (id, data) => {
   });
 };
 
+const finalizePaidApplication = async ({
+  applicationId,
+  userId,
+  paymentReference,
+  paymentPhone,
+  checkoutRequestId,
+}) => {
+  const application = await db.MembershipApplication.findByPk(applicationId);
+  const user = await db.User.findByPk(userId);
+  if (!application || !user) return null;
+
+  if (String(application.email || '').trim().toLowerCase() !== String(user.email || '').trim().toLowerCase()) {
+    const error = new Error('This application does not belong to the authenticated user');
+    error.statusCode = 403;
+    throw error;
+  }
+
+  await user.update({
+    name: application.name || user.name,
+    phone: application.phone || paymentPhone || user.phone,
+    nationalId: application.nationalId || application.identityNumber || user.nationalId,
+    kraPin: application.kraPin || user.kraPin,
+    occupation: application.occupation || user.occupation,
+    address: application.address || user.address,
+    consentGiven: application.consentGiven ?? user.consentGiven,
+    consentGivenAt: application.consentGivenAt || user.consentGivenAt || new Date(),
+    role: 'MEMBER',
+    isVerified: true,
+  });
+
+  let member = await db.Member.findOne({ where: { userId: user.id } });
+  if (!member) {
+    member = await db.Member.create({
+      userId: user.id,
+      memberNumber: `M-${Date.now()}-${String(user.id).slice(0, 6).toUpperCase()}`,
+      type: application.type || 'NON_EMPLOYEE',
+      nationalId: application.nationalId || application.identityNumber || user.nationalId || null,
+      status: 'ACTIVE',
+      dateJoined: new Date(),
+      applicationId: application.id,
+      paymentReference,
+      isVerified: true,
+    });
+  } else {
+    await member.update({
+      type: application.type || member.type || 'NON_EMPLOYEE',
+      nationalId: application.nationalId || application.identityNumber || member.nationalId,
+      status: 'ACTIVE',
+      dateJoined: member.dateJoined || new Date(),
+      applicationId: application.id,
+      paymentReference,
+      isVerified: true,
+    });
+  }
+
+  const references = [paymentReference, checkoutRequestId].filter(Boolean);
+  let transaction = null;
+  if (references.length) {
+    transaction = await db.Transaction.findOne({
+      where: {
+        [db.Sequelize.Op.or]: references.flatMap((reference) => [
+          { reference },
+          { internalReference: reference },
+        ]),
+      },
+    });
+  }
+
+  if (transaction) {
+    await transaction.update({
+      memberId: member.id,
+      status: 'SUCCESS',
+      reference: paymentReference || transaction.reference,
+      type: 'MEMBERSHIP_FEE',
+      paymentCategory: 'registration',
+    });
+    await member.update({ registrationTransactionId: transaction.id });
+  }
+
+  if (!transaction && references.length) {
+    const firestore = getFirebaseDb();
+    for (const collectionName of ['Transactions', 'transactions']) {
+      for (const field of ['reference', 'internalReference', 'checkout_request_id', 'checkoutRequestId']) {
+        for (const reference of references) {
+          const snapshot = await firestore.collection(collectionName)
+            .where(field, '==', reference)
+            .limit(1)
+            .get();
+          if (snapshot.empty) continue;
+
+          const document = snapshot.docs[0];
+          await document.ref.set({
+            memberId: member.id,
+            userId: user.id,
+            applicationId: application.id,
+            status: 'SUCCESS',
+            paymentCategory: 'registration',
+            updatedAt: new Date(),
+          }, { merge: true });
+          await member.update({ registrationTransactionId: document.id });
+          transaction = { id: document.id };
+          break;
+        }
+        if (transaction) break;
+      }
+      if (transaction) break;
+    }
+  }
+
+  await Promise.all([
+    db.SavingsAccount.findOne({ where: { memberId: member.id } })
+      .then((record) => record || db.SavingsAccount.create({ memberId: member.id })),
+    db.ShareAccount.findOne({ where: { memberId: member.id } })
+      .then((record) => record || db.ShareAccount.create({ memberId: member.id })),
+  ]);
+
+  await application.update({
+    feePaid: true,
+    status: 'APPROVED',
+    paymentReference,
+    paymentPhone,
+    paymentConfirmedAt: application.paymentConfirmedAt || new Date(),
+    paymentVerifiedAt: application.paymentVerifiedAt || new Date(),
+  });
+
+  if (checkoutRequestId) {
+    await getFirebaseDb().collection('registrations').doc(String(checkoutRequestId)).set({
+      user_id: user.id,
+      member_id: member.id,
+      member_number: member.memberNumber,
+      application_id: application.id,
+      transaction_id: transaction?.id || null,
+      membership_status: 'ACTIVE',
+      onboarding_completed_at: new Date(),
+      updated_at: new Date(),
+    }, { merge: true });
+  }
+
+  return { application, user, member, transaction };
+};
+
 const approveApplication = async (applicationId, adminId) => {
   const application = await db.MembershipApplication.findByPk(applicationId);
 
@@ -124,6 +266,7 @@ module.exports = {
   getAllApplications,
   getApplicationById,
   updateApplication,
+  finalizePaidApplication,
   approveApplication,
   rejectApplication,
 };

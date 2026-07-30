@@ -273,9 +273,6 @@ const loginUser = asyncHandler(async (req, res) => {
     await recordLoginAttempt(req, normalizedEmail, 'LOCKED');
     throw createLockedError();
   }
-  if (!user.isVerified) {
-    throw createInvalidAuthError();
-  }
   const isValid = await verifyPassword(password, user.password);
   if (!isValid) {
     await recordFailedLogin(user);
@@ -327,6 +324,17 @@ const verifyLoginOTP = asyncHandler(async (req, res) => {
   const loginSessionId = req.headers['x-session-id'] || req.body?.sessionId || null;
   logger.info('Login OTP verification requested', { module: 'auth', userId: user.id, requestId: req.id, loginSessionId });
   await otpService.verifyOtp({ userId: user.id, loginSessionId, purpose: 'LOGIN', otp });
+  if (!user.isVerified) {
+    user.isVerified = true;
+    user.role = 'MEMBER';
+    await user.save({ fields: ['isVerified', 'role'] });
+    await ensureMemberRecords(user);
+    logger.info('Pending account activated through login OTP', {
+      module: 'auth',
+      userId: user.id,
+      requestId: req.id,
+    });
+  }
   await clearFailedLogin(user, req);
   const loginSession = await sessionService.activateSession(user, req);
 
@@ -338,10 +346,30 @@ const verifyLoginOTP = asyncHandler(async (req, res) => {
   await recordLoginAttempt(req, normalizedEmail, 'SUCCESS');
   logger.info('Login OTP verified and tokens issued', { module: 'auth', userId: user.id, requestId: req.id, loginSessionId: loginSession.id });
   setAuthCookies(res, tokens, loginSession.id);
+
+  const authenticatedUser = await db.User.findByPk(user.id, {
+    include: [{
+      model: db.Member,
+      attributes: [
+        'id',
+        'userId',
+        'memberNumber',
+        'type',
+        'nationalId',
+        'status',
+        'dateJoined',
+        'applicationId',
+        'paymentReference',
+        'registrationTransactionId',
+        'isVerified',
+      ],
+    }],
+  });
+
   return ResponseHandler.success(
     res,
     {
-      user: serializeUser(user),
+      user: serializeUser(authenticatedUser || user),
       tokens: exposeTokensForEnvironment(tokens),
       sessionId: loginSession.id,
       newDevice: loginSession.isNewDevice
@@ -408,12 +436,25 @@ const registerUser = asyncHandler(async (req, res) => {
   if (!firstName || !lastName || !normalizedEmail || !password) {
     throw new ValidationError('Missing required fields');
   }
-  assertOtpRateLimit('register', normalizedEmail, req);
-
   const existingUser = await User.findOne({ where: { email: normalizedEmail } });
-  if (existingUser) {
+  if (existingUser && (existingUser.isVerified || existingUser.role !== 'PENDING')) {
+    const ownsExistingAccount = existingUser.password
+      && await verifyPassword(password, existingUser.password);
+    if (ownsExistingAccount) {
+      logger.info('Existing account recognized during registration', {
+        module: 'auth',
+        userId: existingUser.id,
+        requestId: req.id,
+      });
+      return ResponseHandler.success(res, {
+        accountExists: true,
+        nextAction: 'LOGIN',
+        email: normalizedEmail,
+      }, 'Your account already exists. Sign in to continue.');
+    }
     throw new ConflictError('Unable to complete registration with the provided details');
   }
+  assertOtpRateLimit('register', normalizedEmail, req);
 
   const application = applicationId
     ? await MembershipApplication.findByPk(applicationId)
@@ -428,7 +469,7 @@ const registerUser = asyncHandler(async (req, res) => {
   // 👇 Generate OTP – change digits by editing generateOTP() in utils
   const otp = generateOTP(); // default 6-digit, can be 8-digit (see note)
 
-  const user = await User.create({
+  const registrationData = {
     firstName: firstName.trim(),
     lastName: lastName.trim(),
     name: name || `${firstName} ${lastName}`,
@@ -437,8 +478,11 @@ const registerUser = asyncHandler(async (req, res) => {
     password: hashedPassword,
     role: 'PENDING',
     isVerified: false,
-    otpAttempts: 0
-  });
+    otpAttempts: 0,
+  };
+  const user = existingUser
+    ? await existingUser.update(registrationData)
+    : await User.create(registrationData);
   await otpService.createOtpSession({ userId: user.id, purpose: 'REGISTRATION', otp });
   const emailJobId = await enqueueEmail(QUEUES.OTP, 'OTP', { to: normalizedEmail, otp });
   logger.info('Registration OTP queued', { module: 'auth', userId: user.id, requestId: req.id, emailJobId });
@@ -546,9 +590,8 @@ const verifyOTP = asyncHandler(async (req, res) => {
   logger.info('Registration OTP verified', { module: 'auth', userId: user.id, requestId: req.id });
 
   user.isVerified = true;
-  user.role = 'MEMBER';
+  user.role = 'PENDING';
   await user.save({ fields: ['isVerified', 'role'] });
-  await ensureMemberRecords(user);
 
   const tokens = jwtUtils.generateTokens(user.id, {
     role: user.role

@@ -5,6 +5,63 @@ const asyncHandler = require('../../../shared/utils/asyncHandler');
 const ResponseHandler = require('../../../shared/utils/response');
 const { ValidationError, NotFoundError } = require('../../../shared/utils/errors');
 const { LoanDTO } = require('../../../shared/utils/dtos');
+const MINIMUM_SHARE_CAPITAL = 25000;
+
+const classifyTransaction = (transaction) => {
+  const source = [
+    transaction.paymentCategory,
+    transaction.kcbEndpoint,
+    transaction.type,
+    transaction.description,
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  if (transaction.type === 'MEMBERSHIP_FEE' || source.includes('registration') || source.includes('membership')) {
+    return { category: 'MEMBER_APPLICATION_FEE', destination: 'Member application fees' };
+  }
+  if (source.includes('share') || source.includes('capital')) {
+    return { category: 'SHARE_CAPITAL', destination: 'Share capital account' };
+  }
+  if (transaction.type === 'LOAN_REPAYMENT' || source.includes('loan_repayment') || source.includes('repayment')) {
+    return { category: 'LOAN_REPAYMENT', destination: 'Loan repayment account' };
+  }
+  if (transaction.type === 'LOAN_DISBURSEMENT' || source.includes('disbursement')) {
+    return { category: 'LOAN_DISBURSEMENT', destination: 'Loan disbursement' };
+  }
+  if (transaction.type === 'DIVIDEND' || source.includes('dividend')) {
+    return { category: 'DIVIDEND', destination: 'Dividend account' };
+  }
+  if (transaction.type === 'WITHDRAWAL' || source.includes('withdraw')) {
+    return { category: 'WITHDRAWAL', destination: 'Member savings withdrawal' };
+  }
+  if (source.includes('wallet')) {
+    return { category: 'WALLET', destination: 'Member wallet' };
+  }
+  return { category: 'SAVINGS', destination: 'Member savings account' };
+};
+
+const formatTransaction = (transaction, member = null, user = null) => {
+  const classification = classifyTransaction(transaction);
+  return {
+    id: transaction.id,
+    type: transaction.type,
+    category: classification.category,
+    destination: classification.destination,
+    amount: transaction.amount,
+    description: buildTransactionDescription(transaction),
+    createdAt: transaction.createdAt,
+    status: transaction.status,
+    method: transaction.method,
+    reference: transaction.reference,
+    paymentCategory: transaction.paymentCategory,
+    kcbEndpoint: transaction.kcbEndpoint,
+    internalReference: transaction.internalReference,
+    promptChannel: transaction.promptChannel,
+    memberId: transaction.memberId,
+    memberNumber: member?.memberNumber || null,
+    memberName: user?.name || [user?.firstName, user?.lastName].filter(Boolean).join(' ') || null,
+    loanId: transaction.loanId,
+  };
+};
 
 const buildTransactionDescription = (transaction) => {
   const pieces = [transaction.type];
@@ -57,23 +114,15 @@ const getAllTransactions = asyncHandler(async (req, res) => {
   if (req.query.status) {
     where.status = req.query.status;
   }
-  const transactions = await db.Transaction.findAll({ where, order: [['createdAt', 'DESC']] });
-  const formatted = transactions.map((transaction) => ({
-    id: transaction.id,
-    type: transaction.type,
-    amount: transaction.amount,
-    description: buildTransactionDescription(transaction),
-    createdAt: transaction.createdAt,
-    status: transaction.status,
-    method: transaction.method,
-    reference: transaction.reference,
-    paymentCategory: transaction.paymentCategory,
-    kcbEndpoint: transaction.kcbEndpoint,
-    internalReference: transaction.internalReference,
-    promptChannel: transaction.promptChannel,
-    memberId: transaction.memberId,
-    loanId: transaction.loanId,
-  }));
+  const [transactions, members] = await Promise.all([
+    db.Transaction.findAll({ where, order: [['createdAt', 'DESC']] }),
+    db.Member.findAll({ include: [{ model: db.User, attributes: ['name', 'firstName', 'lastName'] }] }),
+  ]);
+  const memberMap = new Map(members.map((member) => [member.id, member]));
+  const formatted = transactions.map((transaction) => {
+    const member = memberMap.get(transaction.memberId);
+    return formatTransaction(transaction, member, member?.User);
+  });
   return ResponseHandler.success(res, formatted, 'Transactions retrieved successfully', 200);
 });
 
@@ -303,16 +352,41 @@ const updateDeduction = asyncHandler(async (req, res) => {
 });
 
 const getAllMembers = asyncHandler(async (req, res) => {
-  const members = await db.Member.findAll({
-    include: [{ model: db.User, attributes: ['name', 'firstName', 'lastName', 'email', 'phone', 'employer', 'monthlyIncome'] }],
-    order: [['createdAt', 'DESC']],
-  });
+  const [members, transactions, loans, shareAccounts] = await Promise.all([
+    db.Member.findAll({
+      include: [{ model: db.User, attributes: ['name', 'firstName', 'lastName', 'email', 'phone', 'employer', 'monthlyIncome'] }],
+      order: [['createdAt', 'DESC']],
+    }),
+    db.Transaction.findAll({ where: { status: 'SUCCESS' } }),
+    db.Loan.findAll(),
+    db.ShareAccount.findAll(),
+  ]);
 
   const formatted = members.map((member) => {
     const user = member.User || {};
     const name = user.name || [user.firstName, user.lastName].filter(Boolean).join(' ') || member.memberNumber || member.id;
+    const memberTransactions = transactions.filter((transaction) => transaction.memberId === member.id);
+    const memberLoans = loans.filter((loan) => loan.memberId === member.id);
+    const shareAccount = shareAccounts.find((account) => account.memberId === member.id);
+    const shareContributions = memberTransactions
+      .filter((transaction) => classifyTransaction(transaction).category === 'SHARE_CAPITAL')
+      .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+    const savingsDeposits = memberTransactions
+      .filter((transaction) => classifyTransaction(transaction).category === 'SAVINGS')
+      .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+    const withdrawals = memberTransactions
+      .filter((transaction) => classifyTransaction(transaction).category === 'WITHDRAWAL')
+      .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+    const shareCapital = Math.max(
+      shareContributions,
+      Number((shareAccount?.shares || 0) * (shareAccount?.shareValue || 0)),
+    );
+    const outstandingLoans = memberLoans
+      .filter((loan) => !['COMPLETED', 'REJECTED'].includes(String(loan.status || '').toUpperCase()))
+      .reduce((sum, loan) => sum + Number(loan.balance ?? loan.amount ?? 0), 0);
     return {
-      id: member.memberNumber || member.id,
+      id: member.id,
+      memberNumber: member.memberNumber || null,
       memberId: member.id,
       userId: member.userId,
       name,
@@ -321,16 +395,106 @@ const getAllMembers = asyncHandler(async (req, res) => {
       company: user.employer || null,
       salary: Number(user.monthlyIncome || 0),
       deduction: 0,
-      savings: 0,
-      loans: 0,
-      shares: 0,
-      risk: 'Low',
+      savings: Math.max(savingsDeposits - withdrawals, 0),
+      loans: outstandingLoans,
+      shares: shareCapital,
+      shareCapitalBalance: Math.max(MINIMUM_SHARE_CAPITAL - shareCapital, 0),
+      risk: memberLoans.some((loan) => ['OVERDUE', 'DEFAULTED', 'WRITTEN_OFF'].includes(String(loan.status || '').toUpperCase())) ? 'High' : 'Low',
       status: member.isVerified ? 'Active' : 'Pending',
       createdAt: member.createdAt,
     };
   });
 
   return ResponseHandler.success(res, formatted, 'Members retrieved successfully', 200);
+});
+
+const getMemberFinancialProfile = asyncHandler(async (req, res) => {
+  const identifier = String(req.params.memberId || '').trim();
+  let member = await db.Member.findByPk(identifier);
+  if (!member) member = await db.Member.findOne({ where: { memberNumber: identifier.toUpperCase() } });
+  if (!member) throw new NotFoundError('Member not found');
+
+  const [user, transactions, loans, shareAccount] = await Promise.all([
+    db.User.findByPk(member.userId, { attributes: { exclude: ['password', 'otp', 'refreshToken'] } }),
+    db.Transaction.findAll({ where: { memberId: member.id }, order: [['createdAt', 'DESC']] }),
+    db.Loan.findAll({ where: { memberId: member.id }, order: [['createdAt', 'DESC']] }),
+    db.ShareAccount.findOne({ where: { memberId: member.id } }),
+  ]);
+  const formattedTransactions = transactions.map((transaction) => formatTransaction(transaction, member, user));
+  const successful = formattedTransactions.filter((transaction) => transaction.status === 'SUCCESS');
+  const shareHistory = successful.filter((transaction) => transaction.category === 'SHARE_CAPITAL');
+  const shareCapitalFromTransactions = shareHistory.reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+  const shareCapital = Math.max(
+    shareCapitalFromTransactions,
+    Number((shareAccount?.shares || 0) * (shareAccount?.shareValue || 0)),
+  );
+  const repaymentHistory = formattedTransactions.filter((transaction) => transaction.category === 'LOAN_REPAYMENT');
+  const loanHistory = loans.map((loan) => {
+    const repayments = repaymentHistory.filter((transaction) => !transaction.loanId || transaction.loanId === loan.id);
+    const repaid = repayments.filter((transaction) => transaction.status === 'SUCCESS')
+      .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+    return {
+      id: loan.id,
+      type: loan.type,
+      amount: loan.amount,
+      principal: loan.amount,
+      interestRate: loan.interestRate,
+      duration: loan.duration,
+      status: loan.status,
+      approvalStage: loan.approvalStage,
+      createdAt: loan.createdAt,
+      updatedAt: loan.updatedAt,
+      repaid,
+      balance: Math.max(Number(loan.amount || 0) - repaid, 0),
+    };
+  });
+  const defaultingHistory = loanHistory.filter((loan) =>
+    ['OVERDUE', 'DEFAULTED', 'WRITTEN_OFF'].includes(String(loan.status || '').toUpperCase()));
+
+  return ResponseHandler.success(res, {
+    member: {
+      id: member.id,
+      memberNumber: member.memberNumber,
+      status: member.status || (member.isVerified ? 'ACTIVE' : 'PENDING'),
+      dateJoined: member.dateJoined || member.createdAt,
+      nationalId: member.nationalId,
+      user,
+    },
+    summary: {
+      totalTransactions: formattedTransactions.length,
+      savings: Math.max(
+        successful
+          .filter((transaction) => transaction.category === 'SAVINGS')
+          .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0)
+        - successful
+          .filter((transaction) => transaction.category === 'WITHDRAWAL')
+          .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0),
+        0,
+      ),
+      shareCapital,
+      minimumShareCapital: MINIMUM_SHARE_CAPITAL,
+      shareCapitalBalance: Math.max(MINIMUM_SHARE_CAPITAL - shareCapital, 0),
+      outstandingLoans: loanHistory
+        .filter((loan) => !['COMPLETED', 'REJECTED'].includes(String(loan.status || '').toUpperCase()))
+        .reduce((sum, loan) => sum + Number(loan.balance || 0), 0),
+      totalRepaid: repaymentHistory
+        .filter((transaction) => transaction.status === 'SUCCESS')
+        .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0),
+      defaults: defaultingHistory.length,
+    },
+    transactions: formattedTransactions,
+    loans: loanHistory,
+    repayments: repaymentHistory,
+    defaults: defaultingHistory,
+    shares: {
+      account: shareAccount ? formatShareAccount(shareAccount) : null,
+      contributionHistory: shareHistory,
+      total: shareCapital,
+      minimumRequired: MINIMUM_SHARE_CAPITAL,
+      balanceRemaining: Math.max(MINIMUM_SHARE_CAPITAL - shareCapital, 0),
+      minimumAttained: shareCapital >= MINIMUM_SHARE_CAPITAL,
+    },
+  }, 'Member financial profile retrieved successfully', 200);
 });
 
 const getAllCompanies = asyncHandler(async (req, res) => {
@@ -390,6 +554,7 @@ module.exports = {
   createDeduction,
   updateDeduction,
   getAllMembers,
+  getMemberFinancialProfile,
   getAllCompanies,
   getFinancialReports,
 };

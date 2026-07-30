@@ -1,12 +1,12 @@
 # Ayedos Backend - Railway Production Ready
 
-A modern, secure Node.js backend for the Ayedos SACCO management system built with Express and Sequelize. Features enterprise-grade error handling, JWT authentication, and Railway-optimized deployment.
+A modern, secure Node.js backend for the Ayedos SACCO management system built with Express and Firebase Firestore. Features enterprise-grade error handling, JWT authentication, and Railway-optimized deployment.
 
 ## 🚀 Railway Deployment
 
 ### Prerequisites
 - Railway account
-- PostgreSQL database (Railway provides this)
+- Firebase project with Firestore enabled
 - SMTP service for email (optional but recommended)
 
 ### Environment Variables
@@ -15,7 +15,9 @@ Set these in your Railway project environment:
 
 #### Required
 ```bash
-DATABASE_URL=postgresql://user:password@host:port/database
+FIREBASE_PROJECT_ID=your-project-id
+FIREBASE_CLIENT_EMAIL=your-service-account@your-project-id.iam.gserviceaccount.com
+FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
 JWT_SECRET=your-super-secure-jwt-secret-here
 JWT_REFRESH_SECRET=your-refresh-token-secret-here
 CORS_ORIGIN=https://your-frontend-domain.com
@@ -39,8 +41,8 @@ SMTP_PASS=your-app-password
    - Connect your Railway project to the repository
 
 2. **Database Setup**
-   - Railway automatically provisions PostgreSQL
-   - The app will auto-sync the schema on first deploy
+   - Create a Firebase service account and configure the environment variables
+   - Enable Firestore and Firebase Storage for the project
 
 3. **Environment Configuration**
    - Add environment variables in Railway dashboard
@@ -87,7 +89,7 @@ curl https://your-app.railway.app/health/railway
 
 **Container keeps restarting?**
 - Check Railway logs for unhandled errors
-- Verify DATABASE_URL is correct
+- Verify the Firebase service-account variables are correct
 - Ensure JWT_SECRET is set
 - Check if database is accessible
 
@@ -99,7 +101,7 @@ curl https://your-app.railway.app/health/railway
 **Database connection issues?**
 - Railway may take time to provision database
 - Check `/health/detailed` endpoint for DB status
-- Verify DATABASE_URL format (Railway uses postgres://)
+- Verify Firestore is enabled for the configured Firebase project
 
 ## 🌟 Key Features
 
@@ -163,7 +165,7 @@ features/
 
 ### Prerequisites
 - Node.js 14+ (16+ recommended)
-- PostgreSQL 12+
+- Firebase project with Firestore enabled
 - npm or yarn
 
 ### Installation
@@ -289,7 +291,7 @@ src/
 │       ├── response.js        # Response handler
 │       ├── validation.js      # Input validation
 │       └── asyncHandler.js    # Async error wrapper
-├── models/                     # Sequelize models
+├── models/                     # Firestore-backed domain models
 │   ├── user.model.js
 │   ├── loan.model.js
 │   └── ...
@@ -336,9 +338,9 @@ Custom error types:
 ## 🐛 Troubleshooting
 
 ### Connection Issues
-- Verify DATABASE_URL in .env
-- Check PostgreSQL is running
-- Review database credentials
+- Verify Firebase variables in `.env`
+- Check Firestore is enabled
+- Review service-account permissions
 
 ### Authentication Issues
 - Ensure JWT_SECRET is set in .env
@@ -353,8 +355,8 @@ Custom error types:
 ## 📦 Dependencies
 
 - **Express** 5.2.1 - Web framework
-- **Sequelize** 6.37.8 - ORM
-- **PostgreSQL** - Database
+- **Firebase Admin** - Server-side Firebase integration
+- **Cloud Firestore** - Database
 - **jsonwebtoken** 9.0.3 - JWT handling
 - **bcrypt** 6.0.0 - Password hashing
 - **dotenv** 17.4.2 - Environment configuration

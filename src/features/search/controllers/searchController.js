@@ -15,6 +15,15 @@ const globalSearch = asyncHandler(async (req, res) => {
   );
 });
 
+const memberByNumber = asyncHandler(async (req, res) => {
+  const member = await searchService.findMemberByNumber(req.query.memberNumber);
+  if (!member) {
+    return success(res, null, 'No member found with that registration number', 200);
+  }
+  return success(res, member, 'Member found', 200);
+});
+
 module.exports = {
   globalSearch,
+  memberByNumber,
 };
