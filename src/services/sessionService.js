@@ -75,7 +75,10 @@ const createOtpSession = async (user, req, idempotencyKey = null) => {
   const device = getDeviceInfo(req);
   if (idempotencyKey) {
     const idempotentSession = await db.LoginSession.findOne({ where: { idempotencyKey, userId: user.id } });
-    if (idempotentSession) {
+    const isReusable = idempotentSession
+      && idempotentSession.status === 'OTP_SENT'
+      && Date.now() - new Date(idempotentSession.createdAt).getTime() < 10 * 60_000;
+    if (isReusable) {
       logger.info('Login session reused by idempotency key', { module: 'auth', userId: user.id, loginSessionId: idempotentSession.id });
       return idempotentSession;
     }
@@ -111,8 +114,10 @@ const createOtpSession = async (user, req, idempotencyKey = null) => {
   } catch (error) {
     if (error.name === 'SequelizeUniqueConstraintError' && idempotencyKey) {
       const session = await db.LoginSession.findOne({ where: { idempotencyKey, userId: user.id } });
-      logger.info('Login session recovered after idempotency race', { module: 'auth', userId: user.id, loginSessionId: session?.id });
-      return session;
+      if (session?.status === 'OTP_SENT') {
+        logger.info('Login session recovered after idempotency race', { module: 'auth', userId: user.id, loginSessionId: session.id });
+        return session;
+      }
     }
     throw error;
   }

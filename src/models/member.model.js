@@ -20,6 +20,17 @@ const Member = sequelize.define('Member', {
     type: DataTypes.ENUM('EMPLOYEE', 'NON_EMPLOYEE')
   },
   nationalId: DataTypes.STRING,
+  status: {
+    type: DataTypes.STRING,
+    defaultValue: 'ACTIVE'
+  },
+  dateJoined: {
+    type: DataTypes.DATE,
+    defaultValue: DataTypes.NOW
+  },
+  applicationId: DataTypes.UUID,
+  paymentReference: DataTypes.STRING,
+  registrationTransactionId: DataTypes.UUID,
   isVerified: {
     type: DataTypes.BOOLEAN,
     defaultValue: false

@@ -33,6 +33,10 @@ const Transaction = sequelize.define('Transaction', {
   paymentCategory: DataTypes.STRING,
   kcbEndpoint: DataTypes.STRING,
   internalReference: DataTypes.STRING,
+  checkoutRequestId: DataTypes.STRING,
+  merchantRequestId: DataTypes.STRING,
+  providerTransactionId: DataTypes.STRING,
+  providerInternalReference: DataTypes.STRING,
   promptChannel: DataTypes.STRING
 }, {
   timestamps: true,
@@ -43,6 +47,8 @@ const Transaction = sequelize.define('Transaction', {
     { fields: ['status'] },
     { fields: ['paymentCategory'] },
     { fields: ['internalReference'] },
+    { fields: ['checkoutRequestId'] },
+    { fields: ['providerTransactionId'] },
   ],
 });
 

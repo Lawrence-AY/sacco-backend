@@ -28,6 +28,7 @@ router.post('/deductions', financeController.createDeduction);
 router.put('/deductions/:deductionId', financeController.updateDeduction);
 
 router.get('/members', financeController.getAllMembers);
+router.get('/members/:memberId/profile', financeController.getMemberFinancialProfile);
 router.get('/companies', financeController.getAllCompanies);
 router.get('/reports', financeController.getFinancialReports);
 

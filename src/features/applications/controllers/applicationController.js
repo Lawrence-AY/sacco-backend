@@ -5,24 +5,162 @@ const { NotFoundError, ValidationError } = require('../../../shared/utils/errors
 const { validateRequired, isValidEmail, isValidPhone, validatePagination } = require('../../../shared/utils/validation');
 const { sanitizeModel, sanitizeModels } = require('../../../shared/utils/dtos');
 const logger = require('../../../shared/utils/logger');
+const { getFirebaseDb } = require('../../../shared/config/firebase');
 
-const { createClient } = require('@supabase/supabase-js');
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_KEY;
-const supabase = createClient(supabaseUrl, supabaseKey);
+const SUCCESSFUL_PAYMENT_STATUSES = new Set(['paid', 'completed', 'success', 'successful']);
+const FAILED_PAYMENT_STATUSES = new Set(['failed', 'cancelled', 'canceled']);
+
+const normalizePaymentStatus = (status) => {
+  const normalized = String(status || 'pending').toLowerCase();
+  if (SUCCESSFUL_PAYMENT_STATUSES.has(normalized)) return 'paid';
+  if (FAILED_PAYMENT_STATUSES.has(normalized)) return 'failed';
+  return 'pending';
+};
+
+const normalizePhone = (phone) => String(phone || '').replace(/\D/g, '').replace(/^0/, '254');
+
+const findRegistration = async (fieldValues) => {
+  const registrations = getFirebaseDb().collection('registrations');
+
+  for (const [field, rawValue] of fieldValues) {
+    const value = String(rawValue || '').trim();
+    if (!value) continue;
+
+    const snapshot = await registrations.where(field, '==', value).limit(1).get();
+    if (!snapshot.empty) {
+      const document = snapshot.docs[0];
+      return { id: document.id, ...document.data() };
+    }
+  }
+
+  return null;
+};
+
+const findRegistrationByCheckoutId = (checkoutRequestId) => findRegistration([
+  ['checkout_request_id', checkoutRequestId],
+  ['checkoutRequestId', checkoutRequestId],
+  ['merchant_request_id', checkoutRequestId],
+  ['merchantRequestId', checkoutRequestId],
+  ['request_id', checkoutRequestId],
+]);
+
+const findRegistrationByReceipt = (receipt) => findRegistration([
+  ['mpesa_receipt', receipt],
+  ['mpesaReceipt', receipt],
+  ['transaction_reference', receipt],
+  ['transactionReference', receipt],
+]);
+
+const asDate = (value) => {
+  if (!value) return null;
+  const date = value?.toDate?.() || new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const findLinkedTransaction = async (registration, checkoutRequestId) => {
+  const firestore = getFirebaseDb();
+  const collectionNames = ['Transactions', 'transactions'];
+  const transactionId = registration?.transaction_id || registration?.transactionId;
+
+  for (const collectionName of collectionNames) {
+    const collection = firestore.collection(collectionName);
+    if (transactionId) {
+      const document = await collection.doc(String(transactionId)).get();
+      if (document.exists) return { id: document.id, ref: document.ref, ...document.data() };
+    }
+
+    for (const field of ['reference', 'checkout_request_id', 'checkoutRequestId']) {
+      const snapshot = await collection.where(field, '==', checkoutRequestId).limit(2).get();
+      if (snapshot.size === 1) {
+        const document = snapshot.docs[0];
+        return { id: document.id, ref: document.ref, ...document.data() };
+      }
+    }
+  }
+
+  // Older pending records did not store transaction_id. Recover only when one
+  // transaction unambiguously matches the payment amount and initiation time.
+  const registrationDate = asDate(registration?.created_at || registration?.createdAt);
+  const registrationAmount = Number(registration?.amount);
+  if (!registrationDate || !Number.isFinite(registrationAmount)) return null;
+
+  const candidates = [];
+  for (const collectionName of collectionNames) {
+    const snapshot = await firestore.collection(collectionName)
+      .where('amount', '==', registrationAmount)
+      .get();
+    snapshot.forEach((document) => {
+      const data = document.data();
+      const createdAt = asDate(data.createdAt || data.created_at);
+      if (
+        createdAt
+        && Math.abs(createdAt.getTime() - registrationDate.getTime()) <= 15_000
+      ) {
+        candidates.push({ id: document.id, ref: document.ref, ...data });
+      }
+    });
+  }
+
+  return candidates.length === 1 ? candidates[0] : null;
+};
+
+const syncRegistrationPaymentStatus = async (registration, checkoutRequestId) => {
+  if (!registration) return null;
+  const currentStatus = normalizePaymentStatus(registration.status);
+  const currentReceipt = registration.mpesa_receipt
+    || registration.mpesaReceipt
+    || registration.transaction_reference
+    || registration.transactionReference
+    || null;
+  if (currentStatus !== 'pending' && (currentStatus === 'failed' || currentReceipt)) {
+    return registration;
+  }
+
+  const transaction = await findLinkedTransaction(registration, checkoutRequestId);
+  if (!transaction) return registration;
+
+  const transactionStatus = normalizePaymentStatus(transaction.status);
+  if (transactionStatus === 'pending') return registration;
+
+  const receipt = transactionStatus === 'paid'
+    && transaction.reference
+    && transaction.reference !== checkoutRequestId
+      ? transaction.reference
+      : null;
+  const updates = {
+    transaction_id: transaction.id,
+    status: transactionStatus,
+    mpesa_receipt: receipt,
+    updated_at: new Date(),
+  };
+  await getFirebaseDb().collection('registrations').doc(String(registration.id)).set(updates, { merge: true });
+
+  logger.info('Synchronized STK registration with Firebase transaction', {
+    module: 'applications',
+    checkoutRequestId,
+    registrationId: registration.id,
+    transactionId: transaction.id,
+    status: transactionStatus,
+    hasReceipt: Boolean(receipt),
+  });
+
+  return { ...registration, ...updates };
+};
 
 const submitApplication = asyncHandler(async (req, res) => {
+  const authenticatedEmail = String(req.user?.email || '').trim().toLowerCase();
   const identityNumber = req.body.identityNumber || req.body.nationalId || '';
   const identityType = req.body.identityType || 'national';
 
   const payload = {
     name: req.body.name,
-    email: req.body.email,
+    email: authenticatedEmail,
     phone: req.body.phone,
     nationalId: identityNumber,
     identityType,
     identityNumber,
     idDocument: req.body.idDocument || null,
+    kraPin: req.body.kraPin || null,
     type: req.body.type,
     occupation: req.body.occupation,
     address: req.body.address,
@@ -175,28 +313,54 @@ const rejectApplication = asyncHandler(async (req, res) => {
 
 
 const checkStkStatus = asyncHandler(async (req, res) => {
-  const { checkoutRequestId } = req.query;
+  const checkoutRequestId = String(req.query.checkoutRequestId || '').trim();
   if (!checkoutRequestId) {
     throw new ValidationError('checkoutRequestId is required');
   }
-  const { data, error } = await supabase
-    .from('registrations')
-    .select('status, mpesa_receipt')
-    .eq('checkout_request_id', checkoutRequestId)
-    .maybeSingle();
 
-  if (error) {
-    logger.error('Failed to fetch payment status', { module: 'applications', error: error.message });
+  let registration;
+  try {
+    registration = await findRegistrationByCheckoutId(checkoutRequestId);
+    registration = await syncRegistrationPaymentStatus(registration, checkoutRequestId);
+  } catch (error) {
+    logger.error('Failed to fetch STK payment status from Firebase', {
+      module: 'applications',
+      checkoutRequestId,
+      requestId: req.id,
+      error: error.message,
+      stack: error.stack,
+    });
     throw new Error('Failed to fetch payment status');
   }
-  
-  if (!data) {
+
+  if (!registration) {
+    logger.info('STK payment is not recorded yet', {
+      module: 'applications',
+      checkoutRequestId,
+      requestId: req.id,
+    });
     return ResponseHandler.success(res, { status: 'pending', mpesaReceipt: null }, 'STK status retrieved');
   }
-  
-  return ResponseHandler.success(res, { 
-    status: data.status, 
-    mpesaReceipt: data.mpesa_receipt || null 
+
+  const status = normalizePaymentStatus(registration.status);
+  const mpesaReceipt = registration.mpesa_receipt
+    || registration.mpesaReceipt
+    || registration.transaction_reference
+    || registration.transactionReference
+    || null;
+
+  logger.info('STK payment status retrieved', {
+    module: 'applications',
+    checkoutRequestId,
+    registrationId: registration.id,
+    status,
+    hasReceipt: Boolean(mpesaReceipt),
+    requestId: req.id,
+  });
+
+  return ResponseHandler.success(res, {
+    status,
+    mpesaReceipt,
   }, 'STK status retrieved');
 });
 
@@ -206,36 +370,22 @@ const verifyPayment = asyncHandler(async (req, res) => {
 
   logger.info('Payment verification requested', { module: 'applications', applicationId: id });
 
-  // 1. Resolve missing details using checkoutRequestId if needed
-  if ((!paymentReference || !phone) && checkoutRequestId) {
-    const { data: reg } = await supabase
-      .from('registrations')
-      .select('mpesa_receipt, phone, status')
-      .eq('checkout_request_id', checkoutRequestId)
-      .maybeSingle();
-    
-    if (reg && reg.status === 'paid') {
-      paymentReference = reg.mpesa_receipt;
-      phone = reg.phone;
-    }
+  let registration = null;
+  if (checkoutRequestId) {
+    registration = await findRegistrationByCheckoutId(checkoutRequestId);
+    registration = await syncRegistrationPaymentStatus(registration, checkoutRequestId);
   }
 
-  // 2. Guard Clause
-  let paymentReferenceValue = paymentReference?.trim() || null;
-  let paymentPhoneValue = paymentPhone?.trim() || phone?.trim() || null;
-
-  if ((!paymentReferenceValue || !paymentPhoneValue) && checkoutRequestId) {
-    const { data: reg } = await supabase
-      .from('registrations')
-      .select('mpesa_receipt, phone, status')
-      .eq('checkout_request_id', checkoutRequestId)
-      .maybeSingle();
-
-    if (reg && reg.status === 'paid') {
-      paymentReferenceValue = paymentReferenceValue || reg.mpesa_receipt;
-      paymentPhoneValue = paymentPhoneValue || reg.phone;
-    }
-  }
+  let paymentReferenceValue = paymentReference?.trim()
+    || registration?.mpesa_receipt
+    || registration?.mpesaReceipt
+    || registration?.transaction_reference
+    || registration?.transactionReference
+    || null;
+  let paymentPhoneValue = paymentPhone?.trim()
+    || phone?.trim()
+    || String(registration?.phone || registration?.phone_number || registration?.phoneNumber || '').trim()
+    || null;
 
   if (!paymentReferenceValue || !paymentPhoneValue) {
     return ResponseHandler.validationError(res, {
@@ -248,42 +398,51 @@ const verifyPayment = asyncHandler(async (req, res) => {
     return ResponseHandler.validationError(res, { paymentPhone: 'A valid payment phone number is required' }, 'Invalid payment phone');
   }
 
-  // 3. Verify final status in Supabase
-  let { data: registration } = await supabase
-    .from('registrations')
-    .select('mpesa_receipt, phone, status')
-    .eq('mpesa_receipt', paymentReferenceValue)
-    .eq('phone', paymentPhoneValue)
-    .maybeSingle();
-
   if (!registration) {
-    const { data } = await supabase
-      .from('registrations')
-      .select('transaction_reference, phone, status')
-      .eq('transaction_reference', paymentReferenceValue)
-      .eq('phone', paymentPhoneValue)
-      .maybeSingle();
-    registration = data;
+    registration = await findRegistrationByReceipt(paymentReferenceValue);
   }
 
-  if (!registration || !['paid', 'completed', 'success'].includes(String(registration.status || '').toLowerCase())) {
+  const registrationPhone = registration?.phone
+    || registration?.phone_number
+    || registration?.phoneNumber;
+  const phoneMatches = !registrationPhone
+    || normalizePhone(registrationPhone) === normalizePhone(paymentPhoneValue);
+
+  if (!registration || normalizePaymentStatus(registration.status) !== 'paid' || !phoneMatches) {
+    logger.warn('Payment verification did not find a matching successful Firebase registration', {
+      module: 'applications',
+      applicationId: id,
+      checkoutRequestId: checkoutRequestId || null,
+      paymentReference: paymentReferenceValue,
+      registrationId: registration?.id || null,
+      registrationStatus: registration?.status || null,
+      phoneMatches,
+      requestId: req.id,
+    });
     return ResponseHandler.error(res, 'Payment not confirmed or record not found.', 400);
   }
 
-  const application = await applicationService.updateApplication(id, {
-    feePaid: true,
+  const finalized = await applicationService.finalizePaidApplication({
+    applicationId: id,
+    userId: req.user.id,
     paymentReference: paymentReferenceValue,
     paymentPhone: paymentPhoneValue,
+    checkoutRequestId,
   });
 
-  if (!application) throw new NotFoundError('Application not found');
+  if (!finalized) throw new NotFoundError('Application or authenticated user not found');
 
   return ResponseHandler.success(
     res,
-    sanitizeModel(application, {
-      fields: ['id', 'name', 'email', 'phone', 'status', 'feePaid', 'paymentReference', 'paymentPhone', 'paymentVerifiedAt', 'createdAt', 'updatedAt'],
-    }),
-    'Payment verified successfully'
+    {
+      application: sanitizeModel(finalized.application, {
+        fields: ['id', 'name', 'email', 'phone', 'status', 'feePaid', 'paymentReference', 'paymentPhone', 'paymentVerifiedAt', 'createdAt', 'updatedAt'],
+      }),
+      member: sanitizeModel(finalized.member, {
+        fields: ['id', 'userId', 'memberNumber', 'type', 'nationalId', 'status', 'dateJoined', 'applicationId', 'paymentReference', 'registrationTransactionId', 'isVerified'],
+      }),
+    },
+    'Payment verified and member registration completed'
   );
 });
 

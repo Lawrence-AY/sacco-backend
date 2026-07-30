@@ -81,6 +81,27 @@ const serializeMember = (member) => ({
   } : null,
 });
 
+const findMemberByNumber = async (memberNumber) => {
+  const normalized = String(memberNumber || '').trim().toUpperCase();
+  if (!normalized) throw new ValidationError('Member number is required');
+
+  const member = await db.Member.findOne({
+    where: { memberNumber: normalized },
+    include: [{
+      model: db.User,
+      attributes: ['id', 'firstName', 'lastName', 'name', 'email', 'phone', 'role', 'address', 'occupation'],
+      required: false,
+    }],
+  });
+  return member ? {
+    ...serializeMember(member),
+    status: member.status || (member.isVerified ? 'ACTIVE' : 'PENDING'),
+    dateJoined: member.dateJoined || member.createdAt,
+    applicationId: member.applicationId || null,
+    paymentReference: member.paymentReference || null,
+  } : null;
+};
+
 const serializeTransaction = (transaction) => ({
   id: transaction.id,
   memberId: transaction.memberId,
@@ -297,4 +318,5 @@ const searchAll = async (query, user) => {
 
 module.exports = {
   searchAll,
+  findMemberByNumber,
 };

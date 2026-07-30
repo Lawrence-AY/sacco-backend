@@ -63,7 +63,7 @@ const syncDashboardEvents = async (user) => {
       .forEach((transaction) => {
         const status = String(transaction.status || 'PENDING').toUpperCase();
         const label = transaction.paymentCategory || transaction.description || transaction.type || 'Transaction';
-        tasks.push(upsertNotification({
+        tasks.push({
           userId: user.id,
           eventKey: `transaction:${transaction.id}:${status}`,
           title: status === 'FAILED' ? 'Payment needs attention' : status === 'SUCCESS' ? 'Payment confirmed' : 'Payment is pending',
@@ -74,7 +74,7 @@ const syncDashboardEvents = async (user) => {
           sourceType: 'Transaction',
           sourceId: transaction.id,
           metadata: { status, reference: transaction.reference },
-        }));
+        });
       });
 
     const loans = await db.Loan.findAll({
@@ -87,7 +87,7 @@ const syncDashboardEvents = async (user) => {
       .filter((loan) => IMPORTANT_LOAN_STATUSES.has(String(loan.status || '').toUpperCase()))
       .forEach((loan) => {
         const status = String(loan.status || 'PENDING').toUpperCase();
-        tasks.push(upsertNotification({
+        tasks.push({
           userId: user.id,
           eventKey: `loan:${loan.id}:${status}`,
           title: status === 'APPROVED' || status === 'ACTIVE' ? 'Loan update available' : status === 'REJECTED' ? 'Loan application update' : 'Loan application received',
@@ -98,7 +98,7 @@ const syncDashboardEvents = async (user) => {
           sourceType: 'Loan',
           sourceId: loan.id,
           metadata: { status, approvalStage: loan.approvalStage },
-        }));
+        });
       });
   }
 
@@ -111,7 +111,7 @@ const syncDashboardEvents = async (user) => {
   sessions
     .filter((session) => session.isNewDevice || String(session.status || '').toUpperCase() === 'ACTIVE')
     .forEach((session) => {
-      tasks.push(upsertNotification({
+      tasks.push({
         userId: user.id,
         eventKey: `session:${session.id}:${session.isNewDevice ? 'new' : 'active'}`,
         title: session.isNewDevice ? 'New device sign-in' : 'Active dashboard session',
@@ -122,10 +122,10 @@ const syncDashboardEvents = async (user) => {
         sourceType: 'LoginSession',
         sourceId: session.id,
         metadata: { ip: session.ipAddress, status: session.status },
-      }));
+      });
     });
 
-  await Promise.all(tasks);
+  await Promise.all(tasks.map((payload) => upsertNotification(payload)));
 };
 
 const listForUser = async (user, { unreadOnly = false, limit = 30 } = {}) => {

@@ -10,33 +10,18 @@ const { UserDTO, LoanDTO, TransactionDTO } = require('../../../shared/utils/dtos
 const logger = require('../../../shared/utils/logger');
 const nodemailer = require('nodemailer');
 const bcrypt = require('bcrypt');
-const { createClient } = require('@supabase/supabase-js');
-
-const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_KEY
-  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY)
-  : null;
-const supabaseStorage = process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY)
-  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY)
-  : null;
-const PROFILE_PHOTO_BUCKET = process.env.SUPABASE_PROFILE_PHOTO_BUCKET || 'profile-photos';
+const { getFirebaseDb, getFirebaseStorage } = require('../../../shared/config/firebase');
 const PROFILE_PHOTO_MAX_BYTES = 1.5 * 1024 * 1024;
 const PROFILE_PHOTO_TYPES = {
   'image/jpeg': 'jpg',
   'image/png': 'png',
   'image/webp': 'webp',
 };
-const DEFAULT_KCB_MPESA_BASE_URL = 'https://kcb-mpesa.simrion.workers.dev';
-const LOCAL_KCB_MPESA_BASE_URL = 'https://kcb-mpesa.simrion.workers.dev';
 const DEFAULT_KCB_PAYBILL_NUMBER = '522522';
+const MINIMUM_LOAN_SHARE_CAPITAL = 25000;
+const LOAN_ELIGIBILITY_MESSAGE = 'You are not yet eligible to apply for a loan. Please complete the minimum required share capital purchase before submitting a loan application.';
 
-const getKcbMpesaBaseUrl = () => {
-  if (process.env.KCB_MPESA_BASE_URL) {
-    return process.env.KCB_MPESA_BASE_URL;
-  }
-  return process.env.NODE_ENV === 'production'
-    ? DEFAULT_KCB_MPESA_BASE_URL
-    : LOCAL_KCB_MPESA_BASE_URL;
-};
+const getKcbMpesaBaseUrl = () => process.env.MPESA_URL?.trim().replace(/\/+$/, '') || null;
 
 const findMemberByUserId = async (userId) => {
   return db.Member.findOne({ where: { userId } });
@@ -118,8 +103,6 @@ const getKcbPromptType = (type) => {
 };
 
 const getKcbRegistrationForTransaction = async (transaction) => {
-  if (!supabase) return null;
-
   const refs = [
     transaction.reference,
     transaction.internalReference,
@@ -129,40 +112,79 @@ const getKcbRegistrationForTransaction = async (transaction) => {
 
   if (!refs.length) return null;
 
-  const clauses = refs.flatMap((ref) => [
-    `merchant_request_id.eq.${ref}`,
-    `checkout_request_id.eq.${ref}`,
-    `request_id.eq.${ref}`,
-  ]);
-
-  const { data, error } = await supabase
-    .from('registrations')
-    .select('status, mpesa_receipt, transaction_reference, merchant_request_id, checkout_request_id, request_id')
-    .or(clauses.join(','))
-    .order('updated_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (error) {
-    // Supabase may return HTML on 5xx — truncate and log at warn level
-    const msg = String(error?.message || error || '').slice(0, 200);
-    const isHtmlError = /^\s*<\!DOCTYPE/i.test(msg);
-    if (isHtmlError) {
-      logger.warn('KCB-MPESA registration lookup skipped (Supabase unavailable)', {
-        module: 'member',
-        transactionId: transaction.id,
-      });
-    } else {
-      logger.error('Failed to fetch KCB-MPESA registration', {
-        module: 'member',
-        transactionId: transaction.id,
-        error: msg,
-      });
+  const matches = [];
+  for (const field of ['transaction_reference', 'merchant_request_id', 'checkout_request_id', 'request_id']) {
+    for (const ref of refs) {
+      const snapshot = await getFirebaseDb().collection('registrations').where(field, '==', ref).limit(1).get();
+      snapshot.forEach((document) => matches.push({ id: document.id, ...document.data() }));
     }
-    return null;
   }
 
-  return data;
+  matches.sort((left, right) => {
+    const leftDate = left.updated_at?.toDate?.() || new Date(left.updated_at || 0);
+    const rightDate = right.updated_at?.toDate?.() || new Date(right.updated_at || 0);
+    return rightDate - leftDate;
+  });
+  return matches[0] || null;
+};
+
+const asDate = (value) => {
+  if (!value) return null;
+  const date = value?.toDate?.() || new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const getProviderTransaction = async (transaction) => {
+  const firestore = getFirebaseDb();
+  // Cloudflare owns the uppercase collection; the lowercase collection is
+  // the backend ledger and must never be treated as provider confirmation.
+  const collections = ['Transactions'];
+
+  if (transaction.providerTransactionId) {
+    for (const name of collections) {
+      const document = await firestore.collection(name).doc(String(transaction.providerTransactionId)).get();
+      if (document.exists) return { id: document.id, ...document.data() };
+    }
+  }
+
+  const lookups = [
+    ['reference', transaction.checkoutRequestId],
+    ['internalReference', transaction.providerInternalReference],
+    ['reference', transaction.reference],
+    ['internalReference', transaction.internalReference],
+  ].filter(([, value]) => Boolean(value));
+
+  for (const name of collections) {
+    for (const [field, value] of lookups) {
+      const snapshot = await firestore.collection(name).where(field, '==', value).limit(2).get();
+      if (snapshot.size === 1) {
+        const document = snapshot.docs[0];
+        return { id: document.id, ...document.data() };
+      }
+    }
+  }
+
+  // Legacy contribution records lack provider IDs. Recover only an
+  // unambiguous provider transaction created at the same time and amount.
+  const createdAt = asDate(transaction.createdAt);
+  const amount = Number(transaction.amount);
+  if (!createdAt || !Number.isFinite(amount)) return null;
+
+  const candidates = [];
+  for (const name of collections) {
+    const snapshot = await firestore.collection(name).where('amount', '==', amount).get();
+    snapshot.forEach((document) => {
+      const data = document.data();
+      const providerCreatedAt = asDate(data.createdAt || data.created_at);
+      if (
+        providerCreatedAt
+        && Math.abs(providerCreatedAt.getTime() - createdAt.getTime()) <= 15_000
+      ) {
+        candidates.push({ id: document.id, ...data });
+      }
+    });
+  }
+  return candidates.length === 1 ? candidates[0] : null;
 };
 
 const syncTransactionWithKcbRegistration = async (transaction) => {
@@ -170,14 +192,46 @@ const syncTransactionWithKcbRegistration = async (transaction) => {
     return { transaction, registration: null };
   }
 
-  // Don't sync transactions that are too old (over 5 minutes)
+  // Provider callbacks can be delayed, and users may reopen the dashboard
+  // after polling stopped. Keep same-day pending transactions recoverable.
   const ageMs = Date.now() - new Date(transaction.createdAt).getTime();
-  if (ageMs > 5 * 60 * 1000) {
+  if (ageMs > 24 * 60 * 60 * 1000) {
     return { transaction, registration: null };
   }
 
   let registration = null;
   try {
+    const providerTransaction = await getProviderTransaction(transaction);
+    if (providerTransaction) {
+      const providerStatus = String(providerTransaction.status || '').toUpperCase();
+      const receipt = providerStatus === 'SUCCESS' ? providerTransaction.reference || null : null;
+
+      if (providerStatus === 'SUCCESS' || providerStatus === 'FAILED') {
+        await transaction.update({
+          status: providerStatus,
+          reference: receipt || transaction.reference,
+          providerTransactionId: providerTransaction.id,
+          providerInternalReference: providerTransaction.internalReference
+            || transaction.providerInternalReference,
+        });
+      }
+
+      return {
+        transaction,
+        registration: {
+          status: providerStatus === 'SUCCESS'
+            ? 'paid'
+            : providerStatus === 'FAILED'
+              ? 'failed'
+              : 'pending',
+          mpesa_receipt: receipt,
+          transaction_reference: receipt,
+          checkout_request_id: transaction.checkoutRequestId || null,
+          merchant_request_id: transaction.merchantRequestId || null,
+        },
+      };
+    }
+
     registration = await getKcbRegistrationForTransaction(transaction);
   } catch (error) {
     // Supabase may be down — gracefully skip sync
@@ -235,31 +289,17 @@ const parseProfilePhotoDataUrl = (dataUrl) => {
 };
 
 const uploadProfilePhoto = asyncHandler(async (req, res) => {
-  if (!supabaseStorage) {
-    throw new ValidationError('Profile photo storage is not configured.');
-  }
-
   const { buffer, mimeType, extension } = parseProfilePhotoDataUrl(req.body?.photo);
   const objectPath = `members/${req.user.id}/passport-photo-${Date.now()}.${extension}`;
-
-  const { error: uploadError } = await supabaseStorage.storage
-    .from(PROFILE_PHOTO_BUCKET)
-    .upload(objectPath, buffer, {
-      contentType: mimeType,
-      cacheControl: '3600',
-      upsert: true,
-    });
-
-  if (uploadError) {
-    throw new ValidationError(`Profile photo upload failed: ${uploadError.message}`);
-  }
-
-  const { data } = supabaseStorage.storage
-    .from(PROFILE_PHOTO_BUCKET)
-    .getPublicUrl(objectPath);
+  const file = getFirebaseStorage().bucket().file(objectPath);
+  await file.save(buffer, {
+    contentType: mimeType,
+    metadata: { cacheControl: 'public, max-age=3600' },
+  });
+  const [publicUrl] = await file.getSignedUrl({ action: 'read', expires: '2500-01-01' });
 
   const updated = await userService.updateUser(req.user.id, {
-    passportPhotoUrl: data.publicUrl,
+    passportPhotoUrl: publicUrl,
   });
 
   return ResponseHandler.success(res, UserDTO.private(updated), 'Profile photo updated successfully', 200);
@@ -433,6 +473,11 @@ const getLoans = asyncHandler(async (req, res) => {
 
 const applyForLoan = asyncHandler(async (req, res) => {
   const member = await ensureMemberByUser(req.user);
+  const balances = await getMemberExitBalances(member.id);
+
+  if (balances.shareCapital < MINIMUM_LOAN_SHARE_CAPITAL) {
+    throw new ForbiddenError(LOAN_ELIGIBILITY_MESSAGE);
+  }
 
   if (!req.body.amount || !req.body.type) {
     throw new ValidationError('Loan amount and type are required');
@@ -670,6 +715,13 @@ const initiateContribution = asyncHandler(async (req, res) => {
     throw new ValidationError('Phone number is required for STK push');
   }
 
+  if (promptType.category === 'loan_repayment') {
+    const balances = await getMemberExitBalances(member.id);
+    if (balances.shareCapital < MINIMUM_LOAN_SHARE_CAPITAL) {
+      throw new ForbiddenError(LOAN_ELIGIBILITY_MESSAGE);
+    }
+  }
+
   const transaction = await db.Transaction.create({
     memberId: member.id,
     type: promptType.transactionType,
@@ -717,11 +769,11 @@ const initiateContribution = asyncHandler(async (req, res) => {
   const workerBaseUrl = getKcbMpesaBaseUrl();
   if (!workerBaseUrl) {
     await transaction.update({ status: 'FAILED' });
-    throw new ValidationError('STK push is not configured. Set KCB_MPESA_BASE_URL on the backend or use Paybill.');
+    throw new ValidationError('STK push is not configured. Set MPESA_URL on the backend or use Paybill.');
   }
 
   const endpoint = promptType.endpoint;
-  const workerUrl = `${workerBaseUrl.replace(/\/$/, '')}${endpoint}`;
+  const workerUrl = `${workerBaseUrl}${endpoint}`;
   logger.info('Sending KCB-MPESA STK request', {
     module: 'member',
     workerUrl,
@@ -765,7 +817,7 @@ const initiateContribution = asyncHandler(async (req, res) => {
     throw new ValidationError(friendlyMessage);
   }
 
-  const mpesaRequestReference = workerPayload?.merchantRequestId || workerPayload?.checkoutRequestId || null;
+  const mpesaRequestReference = workerPayload?.checkoutRequestId || workerPayload?.merchantRequestId || null;
   if (!mpesaRequestReference) {
     await transaction.update({ status: 'FAILED' });
     throw new ValidationError(workerPayload?.message || 'KCB-MPESA accepted the request but did not return a request reference. STK push was not confirmed.');
@@ -773,6 +825,12 @@ const initiateContribution = asyncHandler(async (req, res) => {
 
   await transaction.update({
     reference: mpesaRequestReference,
+    checkoutRequestId: workerPayload?.checkoutRequestId || null,
+    merchantRequestId: workerPayload?.merchantRequestId || null,
+    providerTransactionId: workerPayload?.transaction?.id || null,
+    providerInternalReference: workerPayload?.transaction?.internalReference
+      || workerPayload?.accountReference
+      || null,
   });
 
   return ResponseHandler.created(res, {
@@ -805,7 +863,7 @@ const checkContributionStatus = asyncHandler(async (req, res) => {
     throw new NotFoundError('Transaction not found');
   }
 
-  if (!supabase || !transaction.reference) {
+  if (!transaction.reference) {
     return ResponseHandler.success(res, {
       id: transaction.id,
       status: transaction.status,
