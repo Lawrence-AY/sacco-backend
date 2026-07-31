@@ -46,6 +46,7 @@ const adminRoutes = require('./features/admin/routes/adminRoutes');
 const searchRoutes = require('./features/search/routes/searchRoutes');
 const notificationRoutes = require('./features/notifications/routes/notificationRoutes');
 const mpesaRoutes = require('./features/routes/mpesa.routes');
+const walletRoutes = require('./features/wallet/routes/walletRoutes');
 
 const applicationController = require('./features/applications/controllers/applicationController');
 
@@ -125,6 +126,12 @@ const isLocalRequest = (req) => {
   return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
 };
 
+const isLocalDevelopmentOrigin = (req) => {
+  if (process.env.NODE_ENV === 'production') return false;
+  const origin = req.get('origin') || '';
+  return /^http:\/\/(localhost|127\.0\.0\.1):\d+$/i.test(origin);
+};
+
 app.use((req, res, next) => {
   const requestId = req.get('X-Request-ID') || crypto.randomUUID();
   req.id = requestId;
@@ -153,57 +160,6 @@ app.use(helmet({
 }));
 
 app.use(compression());
-
-// ============= RATE LIMITING =============
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
-  message: {
-    success: false,
-    code: 'RATE_LIMITED',
-    message: 'Too many requests from this IP, please try again later.'
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-  skip: (req) => req.method === 'OPTIONS' || isLocalRequest(req) // Skip preflight and localhost
-});
-
-app.use('/api/', limiter);
-
-// Stricter rate limiting for sensitive operations
-const sensitiveLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 10, // limit each IP to 10 sensitive operations per hour
-  message: {
-    success: false,
-    code: 'RATE_LIMITED',
-    message: 'Too many sensitive operations, please try again later.'
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-  skip: (req) => req.method === 'OPTIONS' || isLocalRequest(req),
-});
-
-app.use('/api/loans', sensitiveLimiter);
-app.use('/api/transactions', sensitiveLimiter);
-app.use('/api/finance', sensitiveLimiter);
-
-const searchLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 30,
-  message: {
-    success: false,
-    code: 'RATE_LIMITED',
-    message: 'Too many search requests, please try again later.',
-    errorCode: 'RATE_LIMITED',
-    timestamp: new Date().toISOString(),
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-  skip: (req) => req.method === 'OPTIONS' || isLocalRequest(req),
-});
-
-app.use(['/api/search', '/search'], searchLimiter);
 
 // ============= CORS =============
 const corsOptions = {
@@ -239,6 +195,58 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
+
+// ============= RATE LIMITING =============
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  message: {
+    success: false,
+    code: 'RATE_LIMITED',
+    message: 'Too many requests from this IP, please try again later.'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.method === 'OPTIONS' || isLocalRequest(req) || isLocalDevelopmentOrigin(req)
+});
+
+app.use('/api/', limiter);
+
+// Stricter rate limiting for sensitive operations
+const sensitiveLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 10, // limit each IP to 10 sensitive operations per hour
+  message: {
+    success: false,
+    code: 'RATE_LIMITED',
+    message: 'Too many sensitive operations, please try again later.'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.method === 'OPTIONS' || isLocalRequest(req) || isLocalDevelopmentOrigin(req),
+});
+
+app.use('/api/loans', sensitiveLimiter);
+app.use('/api/transactions', sensitiveLimiter);
+app.use('/api/finance', sensitiveLimiter);
+app.use('/api/v1/wallet', sensitiveLimiter);
+
+const searchLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  message: {
+    success: false,
+    code: 'RATE_LIMITED',
+    message: 'Too many search requests, please try again later.',
+    errorCode: 'RATE_LIMITED',
+    timestamp: new Date().toISOString(),
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.method === 'OPTIONS' || isLocalRequest(req),
+});
+
+app.use(['/api/search', '/search'], searchLimiter);
 
 // Keep the HTTP server reachable while database startup work is still running.
 // This prevents frontend dev proxy calls from failing with ECONNREFUSED/502.
@@ -499,6 +507,7 @@ app.use('/api/search', searchRoutes);
 app.use('/search', searchRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/mpesa', mpesaRoutes);
+app.use('/api/v1/wallet', walletRoutes);
 
 // ============= STK STATUS ROUTE =============
 app.get('/api/stk-status', applicationController.checkStkStatus);

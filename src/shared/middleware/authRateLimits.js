@@ -8,6 +8,11 @@ const fingerprint = (value) => crypto.createHash('sha256').update(String(value |
 const keyGenerator = (req) => `${fingerprint(req.ip)}:${fingerprint(req.body?.email?.trim()?.toLowerCase())}`;
 const redisUrl = process.env.REDIS_URL || process.env.UPSTASH_REDIS_URL;
 const redis = redisUrl ? new Redis(redisUrl, { maxRetriesPerRequest: 1, enableOfflineQueue: false }) : null;
+const isLocalDevelopmentOrigin = (req) => {
+  if (process.env.NODE_ENV === 'production') return false;
+  const origin = req.get('origin') || '';
+  return /^http:\/\/(localhost|127\.0\.0\.1):\d+$/i.test(origin);
+};
 
 const createLimiter = ({ name, windowMs, max }) => rateLimit({
   windowMs,
@@ -21,6 +26,7 @@ const createLimiter = ({ name, windowMs, max }) => rateLimit({
   keyGenerator,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: isLocalDevelopmentOrigin,
   handler: (req, res) => {
     logger.warn('Authentication rate limit hit', {
       module: 'auth',
