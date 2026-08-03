@@ -20,6 +20,9 @@ const PasswordHistory = require('./passwordHistory.model');
 const MemberExitRequest = require('./memberExitRequest.model');
 const ShareCapitalListing = require('./shareCapitalListing.model');
 const Bid = require('./bid.model');
+const Wallet = require('./wallet.model');
+const WalletTransaction = require('./walletTransaction.model');
+const BlockchainBlock = require('./blockchainBlock.model');
 
 const sequelize = require('../shared/config/db');
 
@@ -74,6 +77,12 @@ Bid.belongsTo(ShareCapitalListing, { foreignKey: 'listingId' });
 Member.hasMany(Bid, { foreignKey: 'bidderId' });
 Bid.belongsTo(Member, { foreignKey: 'bidderId' });
 
+Wallet.hasMany(WalletTransaction, { foreignKey: 'walletId' });
+WalletTransaction.belongsTo(Wallet, { foreignKey: 'walletId' });
+
+WalletTransaction.hasOne(BlockchainBlock, { foreignKey: 'transactionId' });
+BlockchainBlock.belongsTo(WalletTransaction, { foreignKey: 'transactionId' });
+
 Loan.hasMany(Transaction, { foreignKey: 'loanId' });
 Transaction.belongsTo(Loan, { foreignKey: 'loanId' });
 
@@ -104,7 +113,10 @@ const db = {
   PasswordHistory,
   MemberExitRequest,
   ShareCapitalListing,
-  Bid
+  Bid,
+  Wallet,
+  WalletTransaction,
+  BlockchainBlock
 };
 
 module.exports = db;

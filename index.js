@@ -190,17 +190,26 @@ async function startServer() {
 
     // Start listening
     await new Promise((resolve, reject) => {
-      server.listen(PORT, HOST, (err) => {
-        if (err) {
-          reject(err);
-        } else {
-          logger.info(`Server listening on ${HOST}:${PORT}`, {
+      const onError = (error) => {
+        if (error.code === 'EADDRINUSE') {
+          logger.error(`Port ${PORT} is already in use`, {
             host: HOST,
             port: PORT,
-            environment: process.env.NODE_ENV
+            hint: `Stop the process using ${HOST}:${PORT} or set PORT to another value in sacco-backend/.env`
           });
-          resolve();
         }
+        reject(error);
+      };
+
+      server.once('error', onError);
+      server.listen(PORT, HOST, () => {
+        server.off('error', onError);
+        logger.info(`Server listening on ${HOST}:${PORT}`, {
+          host: HOST,
+          port: PORT,
+          environment: process.env.NODE_ENV
+        });
+        resolve();
       });
     });
 
