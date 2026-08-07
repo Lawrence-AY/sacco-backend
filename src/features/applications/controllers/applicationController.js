@@ -160,6 +160,7 @@ const submitApplication = asyncHandler(async (req, res) => {
     identityType,
     identityNumber,
     idDocument: req.body.idDocument || null,
+    passportPhoto: req.body.passportPhoto || null,
     kraPin: req.body.kraPin || null,
     type: req.body.type,
     occupation: req.body.occupation,

@@ -12,15 +12,12 @@ const Loan = sequelize.define('Loan', {
   amount: DataTypes.FLOAT,
   interestRate: DataTypes.FLOAT,
   duration: DataTypes.INTEGER,
+  reason: DataTypes.TEXT,
+  rejectionReason: DataTypes.TEXT,
+  decidedAt: DataTypes.DATE,
   multiplier: DataTypes.FLOAT,
   status: {
-    type: DataTypes.ENUM(
-      'PENDING',
-      'APPROVED',
-      'REJECTED',
-      'ACTIVE',
-      'COMPLETED'
-    ),
+    type: DataTypes.STRING,
     defaultValue: 'PENDING'
   },
   type: {

@@ -59,7 +59,13 @@ const updateLoan = asyncHandler(async (req, res) => {
  * @access  Admin/Finance
  */
 const approveLoan = asyncHandler(async (req, res) => {
-  const loan = await loanService.updateLoanStatus(req.params.id, 'APPROVED');
+  const loanId = req.params.loanId || req.params.id;
+  const loan = await loanService.updateLoanStatus(loanId, 'APPROVED', {
+    approvedById: req.user.id,
+    interestRate: req.body.interestRate,
+    duration: req.body.duration,
+    approvedAmount: req.body.approvedAmount,
+  });
   return ResponseHandler.success(res, LoanDTO.basic(loan, req.user), 'Loan approved successfully', 200);
 });
 
@@ -72,8 +78,53 @@ const rejectLoan = asyncHandler(async (req, res) => {
   if (!req.body.reason) {
     throw new ValidationError('Rejection reason is required');
   }
-  const loan = await loanService.updateLoanStatus(req.params.id, 'REJECTED', req.body.reason);
+  const loanId = req.params.loanId || req.params.id;
+  const loan = await loanService.updateLoanStatus(loanId, 'REJECTED', {
+    approvedById: req.user.id,
+    reason: req.body.reason,
+  });
   return ResponseHandler.success(res, LoanDTO.basic(loan, req.user), 'Loan rejected successfully', 200);
+});
+
+const getGuarantorRequest = asyncHandler(async (req, res) => {
+  const request = await loanService.getGuarantorRequest(req.params.token);
+  if (!request) throw new NotFoundError('Guarantor request not found');
+
+  const { guarantor, expired } = request;
+  const loan = guarantor.Loan;
+  const applicant = loan?.Member?.User?.name
+    || [loan?.Member?.User?.firstName, loan?.Member?.User?.lastName].filter(Boolean).join(' ')
+    || loan?.Member?.memberNumber
+    || 'Member';
+
+  return ResponseHandler.success(res, {
+    id: guarantor.id,
+    status: expired ? 'EXPIRED' : guarantor.status,
+    expiresAt: guarantor.tokenExpiresAt,
+    amount: guarantor.amount,
+    guarantor: {
+      name: guarantor.Member?.User?.name
+        || [guarantor.Member?.User?.firstName, guarantor.Member?.User?.lastName].filter(Boolean).join(' ')
+        || guarantor.Member?.memberNumber,
+      memberNumber: guarantor.Member?.memberNumber,
+    },
+    loan: {
+      id: loan?.id,
+      type: loan?.type,
+      amount: loan?.amount,
+      duration: loan?.duration,
+      interestRate: loan?.interestRate,
+      reason: loan?.reason,
+      applicant,
+      createdAt: loan?.createdAt,
+    },
+  }, 'Guarantor request retrieved', 200);
+});
+
+const respondToGuarantorRequest = asyncHandler(async (req, res) => {
+  const loan = await loanService.respondToGuarantorRequest(req.params.token, req.body.decision);
+  if (!loan) throw new NotFoundError('Guarantor request not found');
+  return ResponseHandler.success(res, LoanDTO.basic(loan, req.user), 'Guarantor response recorded', 200);
 });
 
 /**
@@ -96,5 +147,7 @@ module.exports = {
   updateLoan,
   approveLoan,
   rejectLoan,
+  getGuarantorRequest,
+  respondToGuarantorRequest,
   deleteLoan,
 };

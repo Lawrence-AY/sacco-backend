@@ -14,5 +14,12 @@ router.put('/users/:userId/status', validate(schemas.statusUpdate), adminControl
 router.get('/applications', adminController.getAllApplications);
 router.post('/applications/:applicationId/review', adminController.reviewApplication);
 router.get('/stats', adminController.getSystemStats);
+router.post('/members/import/preview', adminController.previewMemberCsvImport);
+router.post('/members/import/commit', adminController.commitMemberCsvImport);
+router.post('/financial-import/preview', adminController.previewFinancialCsvImport);
+router.post('/financial-import/commit', adminController.commitFinancialCsvImport);
+router.get('/notifications', adminController.listNotifications);
+router.post('/notifications/read-all', adminController.markAllNotificationsRead);
+router.post('/notifications/:notificationId/read', adminController.markNotificationRead);
 
 module.exports = router;

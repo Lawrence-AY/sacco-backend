@@ -1,6 +1,30 @@
 // services/applicationService.js
 const db = require('../../../models');
-const { getFirebaseDb } = require('../../../shared/config/firebase');
+const { getFirebaseDb, getFirebaseStorage } = require('../../../shared/config/firebase');
+
+const parseDataUrl = (value) => {
+  const match = /^data:([^;]+);base64,(.+)$/i.exec(String(value || ''));
+  if (!match) return null;
+  const extension = match[1].split('/').pop().replace('jpeg', 'jpg');
+  return {
+    buffer: Buffer.from(match[2], 'base64'),
+    contentType: match[1],
+    extension,
+  };
+};
+
+const uploadMemberDocument = async (memberNumber, label, dataUrl) => {
+  const parsed = parseDataUrl(dataUrl);
+  if (!parsed) return null;
+  const objectPath = `members/${memberNumber}/documents/${label}.${parsed.extension}`;
+  const file = getFirebaseStorage().bucket().file(objectPath);
+  await file.save(parsed.buffer, {
+    contentType: parsed.contentType,
+    metadata: { cacheControl: 'private, max-age=3600' },
+  });
+  const [url] = await file.getSignedUrl({ action: 'read', expires: '2500-01-01' });
+  return url;
+};
 
 const createApplication = async (data) => {
   return await db.MembershipApplication.create({
@@ -11,6 +35,7 @@ const createApplication = async (data) => {
     identityType: data.identityType || 'national',
     identityNumber: data.identityNumber || data.nationalId,
     idDocument: data.idDocument || null,
+    passportPhoto: data.passportPhoto || null,
     kraPin: data.kraPin,
     occupation: data.occupation ?? null,
     address: data.address ?? null,
@@ -141,6 +166,18 @@ const finalizePaidApplication = async ({
       paymentCategory: 'registration',
     });
     await member.update({ registrationTransactionId: transaction.id });
+  }
+
+  const [nationalIdUrl, passportUrl] = await Promise.all([
+    uploadMemberDocument(member.memberNumber, 'national-id', application.idDocument),
+    uploadMemberDocument(member.memberNumber, 'passport', application.passportPhoto),
+  ]);
+
+  if (nationalIdUrl || passportUrl) {
+    await member.update({
+      nationalIdUrl: nationalIdUrl || member.nationalIdUrl,
+      passportUrl: passportUrl || member.passportUrl,
+    });
   }
 
   if (!transaction && references.length) {

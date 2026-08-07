@@ -20,6 +20,32 @@ const Member = sequelize.define('Member', {
     type: DataTypes.ENUM('EMPLOYEE', 'NON_EMPLOYEE')
   },
   nationalId: DataTypes.STRING,
+  nationalIdUrl: DataTypes.TEXT,
+  passportUrl: DataTypes.TEXT,
+  shareCapital: {
+    type: DataTypes.FLOAT,
+    defaultValue: 0
+  },
+  savings: {
+    type: DataTypes.FLOAT,
+    defaultValue: 0
+  },
+  loans: {
+    type: DataTypes.FLOAT,
+    defaultValue: 0
+  },
+  loanRepayment: {
+    type: DataTypes.FLOAT,
+    defaultValue: 0
+  },
+  interest: {
+    type: DataTypes.FLOAT,
+    defaultValue: 0
+  },
+  employerContribution: {
+    type: DataTypes.FLOAT,
+    defaultValue: 0
+  },
   status: {
     type: DataTypes.STRING,
     defaultValue: 'ACTIVE'

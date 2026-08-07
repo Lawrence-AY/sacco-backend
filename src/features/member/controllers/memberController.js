@@ -620,6 +620,72 @@ const getGuarantees = asyncHandler(async (req, res) => {
   return ResponseHandler.success(res, formatted, 'Guarantees retrieved successfully', 200);
 });
 
+const searchGuarantors = asyncHandler(async (req, res) => {
+  const term = String(req.query.q || '').trim();
+  if (term.length < 2) {
+    return ResponseHandler.success(res, [], 'Enter at least 2 characters to search guarantors', 200);
+  }
+
+  const currentMember = await findMemberByUserId(req.user.id);
+  const members = await db.Member.findAll({
+    where: {
+      id: { [Op.ne]: currentMember?.id || null },
+      [Op.or]: [
+        { memberNumber: { [Op.iLike]: `%${term}%` } },
+        { '$User.name$': { [Op.iLike]: `%${term}%` } },
+        { '$User.firstName$': { [Op.iLike]: `%${term}%` } },
+        { '$User.lastName$': { [Op.iLike]: `%${term}%` } },
+      ],
+    },
+    include: [{
+      model: db.User,
+      attributes: ['id', 'name', 'firstName', 'lastName', 'email', 'phone'],
+    }],
+    limit: 10,
+    order: [['memberNumber', 'ASC']],
+  });
+
+  const guaranteeCounts = await Promise.all(members.map(async (member) => {
+    const [count, balances] = await Promise.all([
+      db.Guarantor.count({
+        where: {
+          memberId: member.id,
+          status: { [Op.in]: ['PENDING', 'ACCEPTED'] },
+        },
+      }),
+      getMemberExitBalances(member.id),
+    ]);
+    return [member.id, { count, balances }];
+  }));
+  const countMap = new Map(guaranteeCounts);
+
+  const results = members
+    .filter((member) => {
+      const balances = countMap.get(member.id)?.balances || {};
+      return (
+        (member.isVerified || String(member.status || '').toUpperCase() === 'ACTIVE')
+        && Number(balances.shareCapital || 0) >= MINIMUM_LOAN_SHARE_CAPITAL
+      );
+    })
+    .map((member) => {
+      const user = member.User || {};
+      const fullName = user.name || [user.firstName, user.lastName].filter(Boolean).join(' ') || member.memberNumber;
+      const entry = countMap.get(member.id) || {};
+      const activeGuarantees = entry.count || 0;
+      return {
+        memberId: member.id,
+        memberNumber: member.memberNumber,
+        name: fullName,
+        phone: user.phone || null,
+        shareCapital: entry.balances?.shareCapital || 0,
+        status: activeGuarantees > 0 ? `${activeGuarantees} active guarantee${activeGuarantees === 1 ? '' : 's'}` : 'Available',
+        activeGuarantees,
+      };
+    });
+
+  return ResponseHandler.success(res, results, 'Guarantors retrieved successfully', 200);
+});
+
 const repayLoan = asyncHandler(async (req, res) => {
   const member = await findMemberByUserId(req.user.id);
   if (!member) {
@@ -1020,6 +1086,7 @@ module.exports = {
   getShares,
   buyShares,
   getTransactions,
+  searchGuarantors,
   getGuarantees,
   emailReport,
 };

@@ -95,6 +95,64 @@ const formatDividend = (dividend) => ({
   status: dividend.status ?? 'DECLARED',
 });
 
+const formatLoan = (loan) => {
+  const member = loan.Member;
+  const user = member?.User;
+  const applicantName = user?.name || [user?.firstName, user?.lastName].filter(Boolean).join(' ') || member?.memberNumber || null;
+  const amount = Number(loan.amount || 0);
+  const interestRate = Number(loan.interestRate || 0);
+  const duration = Number(loan.duration || 0);
+  const rawStatus = String(loan.status || '').toUpperCase();
+  const financeStatus = ['PENDING', 'UNDER_REVIEW'].includes(rawStatus)
+    ? 'PENDING_FINANCE'
+    : ['ACTIVE', 'DISBURSED'].includes(rawStatus)
+      ? 'DISBURSED'
+      : rawStatus || 'PENDING_FINANCE';
+  return {
+    id: loan.id,
+    memberId: loan.memberId,
+    memberNumber: member?.memberNumber || null,
+    member: applicantName,
+    memberName: applicantName,
+    accountInfo: {
+      memberNumber: member?.memberNumber || null,
+      memberStatus: member?.status || null,
+      phone: user?.phone || null,
+      email: user?.email || null,
+      employer: user?.employer || null,
+      payrollNumber: user?.payrollNumber || null,
+    },
+    applicant: {
+      id: member?.id || loan.memberId,
+      memberId: loan.memberId,
+      memberNumber: member?.memberNumber || null,
+      fullName: applicantName,
+      email: user?.email || null,
+      phone: user?.phone || null,
+    },
+    type: loan.type,
+    loanType: loan.type,
+    principal: loan.amount,
+    amount: loan.amount,
+    requestedAmount: loan.amount,
+    balance: loan.amount,
+    reason: loan.reason || null,
+    duration: loan.duration,
+    interest: loan.interestRate,
+    interestRate: loan.interestRate,
+    interestGenerated: amount * (interestRate / 100) * duration,
+    status: loan.status,
+    financeStatus,
+    rejectionReason: loan.rejectionReason,
+    decidedAt: loan.decidedAt,
+    approvedAt: loan.status === 'APPROVED' ? loan.decidedAt || loan.updatedAt : null,
+    disbursedDate: ['ACTIVE', 'DISBURSED'].includes(String(loan.status || '').toUpperCase()) ? loan.updatedAt : null,
+    createdAt: loan.createdAt,
+    updatedAt: loan.updatedAt,
+    guarantors: loan.Guarantors || [],
+  };
+};
+
 const formatDeduction = (deduction, member = null) => ({
   id: deduction.id,
   memberId: deduction.memberId,
@@ -204,18 +262,12 @@ const verifyTransaction = asyncHandler(async (req, res) => {
 const getAllLoans = asyncHandler(async (req, res) => {
   const where = {};
   if (req.query.status) where.status = req.query.status;
-  const loans = await db.Loan.findAll({ where, include: [db.Guarantor], order: [['createdAt', 'DESC']] });
-  const formatted = loans.map((loan) => ({
-    id: loan.id,
-    memberId: loan.memberId,
-    type: loan.type,
-    principal: loan.amount,
-    balance: loan.amount,
-    status: loan.status,
-    approvedAt: loan.updatedAt,
-    createdAt: loan.createdAt,
-    guarantors: loan.Guarantors || [],
-  }));
+  const loans = await db.Loan.findAll({
+    where,
+    include: [db.Guarantor, { model: db.Member, include: [{ model: db.User, attributes: { exclude: ['password', 'otp', 'refreshToken'] } }] }],
+    order: [['createdAt', 'DESC']],
+  });
+  const formatted = loans.map(formatLoan);
   return ResponseHandler.success(res, formatted, 'Loans retrieved successfully', 200);
 });
 
@@ -224,32 +276,30 @@ const getLoanById = asyncHandler(async (req, res) => {
   if (!loan) {
     throw new NotFoundError('Loan not found');
   }
-  return ResponseHandler.success(res, {
-    id: loan.id,
-    memberId: loan.memberId,
-    type: loan.type,
-    principal: loan.amount,
-    balance: loan.amount,
-    status: loan.status,
-    approvedAt: loan.updatedAt,
-    createdAt: loan.createdAt,
-    guarantors: loan.Guarantors || [],
-  }, 'Loan retrieved successfully', 200);
+  return ResponseHandler.success(res, formatLoan(loan), 'Loan retrieved successfully', 200);
 });
 
 const approveLoan = asyncHandler(async (req, res) => {
-  const loan = await loanService.updateLoanStatus(req.params.loanId, 'APPROVED');
+  const loan = await loanService.updateLoanStatus(req.params.loanId, 'APPROVED', {
+    approvedById: req.user.id,
+    approvedAmount: req.body.approvedAmount,
+    interestRate: req.body.interestRate,
+    duration: req.body.duration,
+  });
   if (!loan) throw new NotFoundError('Loan not found');
-  return ResponseHandler.success(res, LoanDTO.basic(loan, req.user), 'Loan approved successfully', 200);
+  return ResponseHandler.success(res, formatLoan(loan), 'Loan approved successfully', 200);
 });
 
 const rejectLoan = asyncHandler(async (req, res) => {
   if (!req.body.reason) {
     throw new ValidationError('Rejection reason is required');
   }
-  const loan = await loanService.updateLoanStatus(req.params.loanId, 'REJECTED');
+  const loan = await loanService.updateLoanStatus(req.params.loanId, 'REJECTED', {
+    approvedById: req.user.id,
+    reason: req.body.reason,
+  });
   if (!loan) throw new NotFoundError('Loan not found');
-  return ResponseHandler.success(res, LoanDTO.basic(loan, req.user), 'Loan rejected successfully', 200);
+  return ResponseHandler.success(res, formatLoan(loan), 'Loan rejected successfully', 200);
 });
 
 const disburseLoan = asyncHandler(async (req, res) => {
@@ -354,7 +404,7 @@ const updateDeduction = asyncHandler(async (req, res) => {
 const getAllMembers = asyncHandler(async (req, res) => {
   const [members, transactions, loans, shareAccounts] = await Promise.all([
     db.Member.findAll({
-      include: [{ model: db.User, attributes: ['name', 'firstName', 'lastName', 'email', 'phone', 'employer', 'monthlyIncome'] }],
+      include: [{ model: db.User, attributes: ['name', 'firstName', 'lastName', 'email', 'phone', 'employer', 'monthlyIncome', 'staffId', 'isWhitelisted', 'employerContribution'] }],
       order: [['createdAt', 'DESC']],
     }),
     db.Transaction.findAll({ where: { status: 'SUCCESS' } }),
@@ -395,9 +445,14 @@ const getAllMembers = asyncHandler(async (req, res) => {
       company: user.employer || null,
       salary: Number(user.monthlyIncome || 0),
       deduction: 0,
-      savings: Math.max(savingsDeposits - withdrawals, 0),
+      staffId: user.staffId || null,
+      isWhitelisted: Boolean(user.isWhitelisted),
+      savings: Math.max(Number(member.savings || 0), Math.max(savingsDeposits - withdrawals, 0)),
       loans: outstandingLoans,
-      shares: shareCapital,
+      shares: Math.max(Number(member.shareCapital || 0), shareCapital),
+      loanRepayment: Number(member.loanRepayment || 0),
+      interest: Number(member.interest || 0),
+      employerContribution: Number(member.employerContribution || user.employerContribution || 0),
       shareCapitalBalance: Math.max(MINIMUM_SHARE_CAPITAL - shareCapital, 0),
       risk: memberLoans.some((loan) => ['OVERDUE', 'DEFAULTED', 'WRITTEN_OFF'].includes(String(loan.status || '').toUpperCase())) ? 'High' : 'Low',
       status: member.isVerified ? 'Active' : 'Pending',
@@ -458,6 +513,10 @@ const getMemberFinancialProfile = asyncHandler(async (req, res) => {
       status: member.status || (member.isVerified ? 'ACTIVE' : 'PENDING'),
       dateJoined: member.dateJoined || member.createdAt,
       nationalId: member.nationalId,
+      staffId: user?.staffId || null,
+      isWhitelisted: Boolean(user?.isWhitelisted),
+      company: user?.employer || null,
+      employerContribution: Number(member.employerContribution || user?.employerContribution || 0),
       user,
     },
     summary: {
@@ -472,6 +531,7 @@ const getMemberFinancialProfile = asyncHandler(async (req, res) => {
         0,
       ),
       shareCapital,
+      employerContribution: Number(member.employerContribution || user?.employerContribution || 0),
       minimumShareCapital: MINIMUM_SHARE_CAPITAL,
       shareCapitalBalance: Math.max(MINIMUM_SHARE_CAPITAL - shareCapital, 0),
       outstandingLoans: loanHistory

@@ -11,7 +11,17 @@ const Guarantor = sequelize.define('Guarantor', {
   },
   loanId: DataTypes.UUID,
   memberId: DataTypes.UUID,
-  amount: DataTypes.FLOAT
+  amount: DataTypes.FLOAT,
+  status: {
+    type: DataTypes.STRING,
+    defaultValue: 'PENDING'
+  },
+  requestToken: {
+    type: DataTypes.STRING,
+    unique: true
+  },
+  tokenExpiresAt: DataTypes.DATE,
+  respondedAt: DataTypes.DATE
 }, {
   timestamps: true
 });
