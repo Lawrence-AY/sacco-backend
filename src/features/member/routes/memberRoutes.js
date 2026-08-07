@@ -9,6 +9,7 @@ router.use(protect, authorize(['MEMBER', 'ADMIN']));
 router.get('/profile', memberController.getProfile);
 router.post('/profile/photo', validate(schemas.profilePhotoUpload), memberController.uploadProfilePhoto);
 router.put('/profile', validate(schemas.profileUpdate), memberController.updateProfile);
+router.post('/share-capital/transfers', validate(schemas.shareCapitalTransfer), memberController.transferShareCapital);
 router.post('/opt-out', validate(schemas.memberOptOutRequest), memberController.requestOptOut);
 router.get('/loans', memberController.getLoans);
 router.post('/loans', validate(schemas.loanRequest), memberController.applyForLoan);

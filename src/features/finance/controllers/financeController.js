@@ -172,15 +172,37 @@ const getAllTransactions = asyncHandler(async (req, res) => {
   if (req.query.status) {
     where.status = req.query.status;
   }
-  const [transactions, members] = await Promise.all([
+  const [transactions, members, transfers] = await Promise.all([
     db.Transaction.findAll({ where, order: [['createdAt', 'DESC']] }),
     db.Member.findAll({ include: [{ model: db.User, attributes: ['name', 'firstName', 'lastName'] }] }),
+    db.ShareCapitalTransfer.findAll({
+      include: [
+        { model: db.Member, as: 'sender', attributes: ['memberNumber'] },
+        { model: db.Member, as: 'recipient', attributes: ['memberNumber'] },
+      ], order: [['createdAt', 'DESC']],
+    }),
   ]);
   const memberMap = new Map(members.map((member) => [member.id, member]));
   const formatted = transactions.map((transaction) => {
     const member = memberMap.get(transaction.memberId);
     return formatTransaction(transaction, member, member?.User);
   });
+  formatted.push(...transfers.map((transfer) => ({
+    id: transfer.id,
+    type: 'SHARE_CAPITAL_TRANSFER',
+    category: transfer.transferType === 'OPT_OUT' ? 'OPT_OUT_SHARE_TRANSFER' : 'SHARE_CAPITAL_TRANSFER',
+    destination: 'Member share capital / SACCO revenue',
+    amount: Number(transfer.grossAmount),
+    feeAmount: Number(transfer.feeAmount),
+    netAmount: Number(transfer.netAmount),
+    description: `${transfer.sender?.memberNumber} to ${transfer.recipient?.memberNumber} (5% fee: KES ${Number(transfer.feeAmount).toFixed(2)})`,
+    createdAt: transfer.createdAt,
+    status: transfer.status,
+    reference: transfer.reference,
+    memberNumber: transfer.sender?.memberNumber,
+    recipientMemberNumber: transfer.recipient?.memberNumber,
+  })));
+  formatted.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   return ResponseHandler.success(res, formatted, 'Transactions retrieved successfully', 200);
 });
 
@@ -577,11 +599,28 @@ const getAllCompanies = asyncHandler(async (req, res) => {
 });
 
 const getFinancialReports = asyncHandler(async (req, res) => {
-  const [transactions, loans, dividends] = await Promise.all([
+  const [transactions, loans, dividends, transfers] = await Promise.all([
     db.Transaction.findAll({ order: [['createdAt', 'DESC']], limit: 500 }),
     db.Loan.findAll({ order: [['createdAt', 'DESC']], limit: 500 }),
     db.Dividend.findAll({ order: [['createdAt', 'DESC']], limit: 100 }),
+    db.ShareCapitalTransfer.findAll({ where: { status: 'SUCCESS' } }),
   ]);
+
+  const repaymentsByLoan = transactions.reduce((map, transaction) => {
+    if (transaction.type === 'LOAN_REPAYMENT' && transaction.status === 'SUCCESS' && transaction.loanId) {
+      map.set(transaction.loanId, (map.get(transaction.loanId) || 0) + Number(transaction.amount || 0));
+    }
+    return map;
+  }, new Map());
+  const loanRepaymentInterest = loans.reduce((sum, loan) => {
+    const principal = Number(loan.amount || 0);
+    const scheduledInterest = principal * Number(loan.interestRate || 0) / 100 * Number(loan.duration || 1);
+    const totalDue = principal + scheduledInterest;
+    const repaid = Math.min(repaymentsByLoan.get(loan.id) || 0, totalDue);
+    const realizedInterest = totalDue > 0 ? repaid * (scheduledInterest / totalDue) : 0;
+    return sum + realizedInterest;
+  }, 0);
+  const shareCapitalTransferFees = transfers.reduce((sum, transfer) => sum + Number(transfer.feeAmount || 0), 0);
 
   return ResponseHandler.success(res, {
     totals: {
@@ -591,6 +630,11 @@ const getFinancialReports = asyncHandler(async (req, res) => {
       transactionAmount: transactions.reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0),
       loanPrincipal: loans.reduce((sum, loan) => sum + Number(loan.amount || 0), 0),
       dividendsDeclared: dividends.reduce((sum, dividend) => sum + Number(dividend.amount || 0), 0),
+      interests: {
+        total: loanRepaymentInterest + shareCapitalTransferFees,
+        loanRepaymentInterest,
+        shareCapitalTransferFees,
+      },
     },
   }, 'Financial reports retrieved successfully', 200);
 });

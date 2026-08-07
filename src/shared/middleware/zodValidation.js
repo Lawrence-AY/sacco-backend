@@ -81,6 +81,15 @@ const schemas = {
     consentGiven: z.boolean().optional(),
     consentGivenAt: z.string().trim().max(64).optional(),
     currentPassword: z.string().min(1).max(128).optional(),
+    nominees: z.array(strictObject({
+      fullName: z.string().trim().min(2).max(120),
+      relationship: z.string().trim().min(2).max(80),
+      phone: z.string().trim().min(7).max(30),
+      nationalId: z.string().trim().max(30).optional().or(z.literal('')),
+      allocationPercentage: z.coerce.number().positive().max(100),
+    })).max(3).optional().refine((items) => !items || Math.abs(items.reduce((sum, item) => sum + item.allocationPercentage, 0) - 100) < 0.001, {
+      message: 'Nominee allocation percentages must total 100%',
+    }),
   }),
   profilePhotoUpload: strictObject({
     photo: profilePhotoDataUrl,
@@ -156,6 +165,23 @@ const schemas = {
     acknowledgedTerms: z.boolean().refine((value) => value === true, {
       message: 'You must acknowledge the opt-out terms',
     }),
+  }),
+  shareCapitalTransfer: strictObject({
+    recipientMemberNumber: z.string().trim().min(1).max(60),
+    amount: z.coerce.number().positive().max(100000000),
+    optOut: z.boolean().optional().default(false),
+    confirmed: z.boolean().refine((value) => value === true, { message: 'Transfer confirmation is required' }),
+  }),
+  groupCreate: strictObject({
+    name: z.string().trim().min(3).max(120),
+    description: z.string().trim().max(500).optional().or(z.literal('')),
+  }),
+  groupInvitation: strictObject({ memberNumber: z.string().trim().min(1).max(60) }),
+  groupInvitationResponse: strictObject({ accept: z.boolean() }),
+  groupLoan: strictObject({
+    amount: z.coerce.number().positive().max(100000000),
+    paymentPeriodMonths: z.coerce.number().int().positive().max(120),
+    interestRate: z.coerce.number().min(0).max(100).optional(),
   }),
 };
 

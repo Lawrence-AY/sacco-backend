@@ -1,0 +1,16 @@
+const express = require('express');
+const { protect, authorize } = require('../../../shared/middleware/authMiddleware');
+const { validate, schemas } = require('../../../shared/middleware/zodValidation');
+const controller = require('../controllers/groupController');
+const router = express.Router();
+router.use(protect, authorize(['MEMBER', 'ADMIN']));
+router.get('/', controller.listGroups);
+router.post('/', validate(schemas.groupCreate), controller.createGroup);
+router.get('/member-search', controller.searchEligibleMembers);
+router.post('/:groupId/invitations', validate(schemas.groupInvitation), controller.inviteMember);
+router.post('/:groupId/invitations/:membershipId/respond', validate(schemas.groupInvitationResponse), controller.respondInvitation);
+router.delete('/:groupId/members/:membershipId', controller.removeMember);
+router.post('/:groupId/leave', controller.leaveGroup);
+router.post('/:groupId/loans', validate(schemas.groupLoan), controller.borrow);
+router.post('/:groupId/loans/:loanId/repay', validate(schemas.moneyAction), controller.repay);
+module.exports = router;
