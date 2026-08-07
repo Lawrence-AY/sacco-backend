@@ -16,6 +16,7 @@ const MembershipApplication = sequelize.define('MembershipApplication', {
   },
   identityNumber: DataTypes.STRING,
   idDocument: DataTypes.TEXT,
+  passportPhoto: DataTypes.TEXT,
   kraPin: DataTypes.STRING,
   phone: DataTypes.STRING,
   email: DataTypes.STRING,

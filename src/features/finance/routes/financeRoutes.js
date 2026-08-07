@@ -1,12 +1,15 @@
 const express = require('express');
 const { protect, authorize } = require('../../../shared/middleware/authMiddleware');
 const financeController = require('../controllers/financeController');
+const adminController = require('../../admin/controllers/adminController');
 
 const router = express.Router();
 router.use(protect, authorize(['ADMIN', 'FINANCE']));
 
 router.get('/transactions', financeController.getAllTransactions);
 router.post('/transactions', financeController.createTransaction);
+router.post('/financial-import/preview', adminController.previewFinancialCsvImport);
+router.post('/financial-import/commit', adminController.commitFinancialCsvImport);
 router.post('/transactions/:transactionId/verify', financeController.verifyTransaction);
 router.post('/transactions/:transactionId/void', financeController.voidTransaction);
 

@@ -26,6 +26,15 @@ const User = sequelize.define('User', {
   employer: DataTypes.STRING,
   monthlyIncome: DataTypes.DECIMAL(14, 2),
   payrollNumber: DataTypes.STRING,
+  staffId: DataTypes.STRING,
+  isWhitelisted: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false
+  },
+  employerContribution: {
+    type: DataTypes.DECIMAL(14, 2),
+    defaultValue: 0
+  },
   nextOfKinName: DataTypes.STRING,
   nextOfKinRelationship: DataTypes.STRING,
   nextOfKinPhone: DataTypes.STRING,

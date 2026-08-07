@@ -7,6 +7,9 @@ const userColumns = {
   employer: { type: DataTypes.STRING, allowNull: true },
   monthlyIncome: { type: DataTypes.DECIMAL(14, 2), allowNull: true },
   payrollNumber: { type: DataTypes.STRING, allowNull: true },
+  staffId: { type: DataTypes.STRING, allowNull: true },
+  isWhitelisted: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+  employerContribution: { type: DataTypes.DECIMAL(14, 2), allowNull: false, defaultValue: 0 },
   nextOfKinName: { type: DataTypes.STRING, allowNull: true },
   nextOfKinRelationship: { type: DataTypes.STRING, allowNull: true },
   nextOfKinPhone: { type: DataTypes.STRING, allowNull: true },
@@ -180,11 +183,48 @@ const ensureMemberExitRequestTable = async (sequelize) => {
   }
 };
 
+const memberDocumentColumns = {
+  nationalIdUrl: { type: DataTypes.TEXT, allowNull: true },
+  passportUrl: { type: DataTypes.TEXT, allowNull: true },
+  shareCapital: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
+  savings: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
+  loans: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
+  loanRepayment: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
+  interest: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
+  employerContribution: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
+};
+
+const applicationDocumentColumns = {
+  passportPhoto: { type: DataTypes.TEXT, allowNull: true },
+};
+
+const guarantorWorkflowColumns = {
+  status: { type: DataTypes.STRING, allowNull: false, defaultValue: 'PENDING' },
+  requestToken: { type: DataTypes.STRING, allowNull: true, unique: true },
+  tokenExpiresAt: { type: DataTypes.DATE, allowNull: true },
+  respondedAt: { type: DataTypes.DATE, allowNull: true },
+};
+
+const ensureTableColumns = async (sequelize, tableName, columns) => {
+  const queryInterface = sequelize.getQueryInterface();
+  const table = await queryInterface.describeTable(tableName);
+
+  for (const [column, definition] of Object.entries(columns)) {
+    if (!table[column]) {
+      await queryInterface.addColumn(tableName, column, definition);
+      logger.info('Added missing table column', { tableName, column });
+    }
+  }
+};
+
 const runSchemaMigrations = async (sequelize) => {
   await ensureNotificationTable(sequelize);
   await ensureMemberExitRequestTable(sequelize);
   await ensureUserProfileColumns(sequelize);
   await ensureTransactionTrackingColumns(sequelize);
+  await ensureTableColumns(sequelize, 'Members', memberDocumentColumns);
+  await ensureTableColumns(sequelize, 'MembershipApplications', applicationDocumentColumns);
+  await ensureTableColumns(sequelize, 'Guarantors', guarantorWorkflowColumns);
   await ensureLoginSessionColumns(sequelize);
   await ensureSearchIndexes(sequelize);
 };
