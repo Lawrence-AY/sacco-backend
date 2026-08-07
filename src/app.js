@@ -47,6 +47,7 @@ const searchRoutes = require('./features/search/routes/searchRoutes');
 const notificationRoutes = require('./features/notifications/routes/notificationRoutes');
 const mpesaRoutes = require('./features/routes/mpesa.routes');
 const walletRoutes = require('./features/wallet/routes/walletRoutes');
+const groupRoutes = require('./features/groups/routes/groupRoutes');
 
 const applicationController = require('./features/applications/controllers/applicationController');
 
@@ -508,6 +509,7 @@ app.use('/search', searchRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/mpesa', mpesaRoutes);
 app.use('/api/v1/wallet', walletRoutes);
+app.use('/api/member/groups', groupRoutes);
 
 // ============= STK STATUS ROUTE =============
 app.get('/api/stk-status', applicationController.checkStkStatus);

@@ -23,6 +23,11 @@ const Bid = require('./bid.model');
 const Wallet = require('./wallet.model');
 const WalletTransaction = require('./walletTransaction.model');
 const BlockchainBlock = require('./blockchainBlock.model');
+const ShareCapitalTransfer = require('./shareCapitalTransfer.model');
+const BorrowingGroup = require('./borrowingGroup.model');
+const GroupMembership = require('./groupMembership.model');
+const GroupLoan = require('./groupLoan.model');
+const GroupTransaction = require('./groupTransaction.model');
 
 const sequelize = require('../shared/config/db');
 
@@ -89,6 +94,24 @@ Transaction.belongsTo(Loan, { foreignKey: 'loanId' });
 Loan.hasMany(Guarantor, { foreignKey: 'loanId' });
 Guarantor.belongsTo(Loan, { foreignKey: 'loanId' });
 
+Member.hasMany(ShareCapitalTransfer, { foreignKey: 'senderMemberId', as: 'sentShareCapitalTransfers' });
+Member.hasMany(ShareCapitalTransfer, { foreignKey: 'recipientMemberId', as: 'receivedShareCapitalTransfers' });
+ShareCapitalTransfer.belongsTo(Member, { foreignKey: 'senderMemberId', as: 'sender' });
+ShareCapitalTransfer.belongsTo(Member, { foreignKey: 'recipientMemberId', as: 'recipient' });
+
+Member.hasMany(BorrowingGroup, { foreignKey: 'creatorMemberId', as: 'createdBorrowingGroups' });
+BorrowingGroup.belongsTo(Member, { foreignKey: 'creatorMemberId', as: 'creator' });
+BorrowingGroup.hasMany(GroupMembership, { foreignKey: 'groupId', as: 'memberships' });
+GroupMembership.belongsTo(BorrowingGroup, { foreignKey: 'groupId', as: 'group' });
+Member.hasMany(GroupMembership, { foreignKey: 'memberId', as: 'groupMemberships' });
+GroupMembership.belongsTo(Member, { foreignKey: 'memberId', as: 'member' });
+BorrowingGroup.hasMany(GroupLoan, { foreignKey: 'groupId', as: 'loans' });
+GroupLoan.belongsTo(BorrowingGroup, { foreignKey: 'groupId', as: 'group' });
+BorrowingGroup.hasMany(GroupTransaction, { foreignKey: 'groupId', as: 'transactions' });
+GroupTransaction.belongsTo(BorrowingGroup, { foreignKey: 'groupId', as: 'group' });
+GroupLoan.hasMany(GroupTransaction, { foreignKey: 'loanId', as: 'transactions' });
+GroupTransaction.belongsTo(GroupLoan, { foreignKey: 'loanId', as: 'loan' });
+
 const db = {
   sequelize,
   Sequelize: require('sequelize').Sequelize,
@@ -116,7 +139,12 @@ const db = {
   Bid,
   Wallet,
   WalletTransaction,
-  BlockchainBlock
+  BlockchainBlock,
+  ShareCapitalTransfer,
+  BorrowingGroup,
+  GroupMembership,
+  GroupLoan,
+  GroupTransaction
 };
 
 module.exports = db;

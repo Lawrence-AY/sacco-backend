@@ -22,6 +22,7 @@ const { enqueueEmail, QUEUES } = require('../../services/email/emailQueue');
 const User = require('../../models/user.model');
 const MembershipApplication = require('../../models/membershipApplication.model');
 const db = require('../../models');
+const memberNumberService = require('../../features/member/services/memberNumberService');
 
 const OTP_REQUEST_WINDOW_MS = Number(process.env.OTP_RATE_LIMIT_WINDOW_MS || 60 * 1000);
 const OTP_REQUEST_MAX = Number(process.env.OTP_RATE_LIMIT_MAX || 3);
@@ -147,9 +148,8 @@ const recordLoginAttempt = (req, email, status) => db.LoginAttempt.create({
 const ensureMemberRecords = async (user, source = {}) => {
   let member = await db.Member.findOne({ where: { userId: user.id } });
   if (!member) {
-    member = await db.Member.create({
+    member = await memberNumberService.createMember({
       userId: user.id,
-      memberNumber: `M-${Date.now()}`,
       type: source.type || 'NON_EMPLOYEE',
       nationalId: source.nationalId || user.nationalId || null,
       isVerified: true,

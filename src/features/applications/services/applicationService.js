@@ -121,9 +121,8 @@ const finalizePaidApplication = async ({
 
   let member = await db.Member.findOne({ where: { userId: user.id } });
   if (!member) {
-    member = await db.Member.create({
+    member = await memberNumberService.createMember({
       userId: user.id,
-      memberNumber: `M-${Date.now()}-${String(user.id).slice(0, 6).toUpperCase()}`,
       type: application.type || 'NON_EMPLOYEE',
       nationalId: application.nationalId || application.identityNumber || user.nationalId || null,
       status: 'ACTIVE',
@@ -267,9 +266,8 @@ const approveApplication = async (applicationId, adminId) => {
     consentGivenAt: application.consentGivenAt ?? new Date(),
   });
 
-  const member = await db.Member.create({
+  const member = await memberNumberService.createMember({
     userId: user.id,
-    memberNumber: `M-${Date.now()}`,
     type: application.type,
     nationalId: application.nationalId,
     isVerified: true,

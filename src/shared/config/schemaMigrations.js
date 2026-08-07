@@ -183,43 +183,77 @@ const ensureMemberExitRequestTable = async (sequelize) => {
   }
 };
 
-const memberDocumentColumns = {
-  nationalIdUrl: { type: DataTypes.TEXT, allowNull: true },
-  passportUrl: { type: DataTypes.TEXT, allowNull: true },
-  shareCapital: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
-  savings: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
-  loans: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
-  loanRepayment: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
-  interest: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
-  employerContribution: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
-};
-
-const applicationDocumentColumns = {
-  passportPhoto: { type: DataTypes.TEXT, allowNull: true },
-};
-
-const guarantorWorkflowColumns = {
-  status: { type: DataTypes.STRING, allowNull: false, defaultValue: 'PENDING' },
-  requestToken: { type: DataTypes.STRING, allowNull: true, unique: true },
-  tokenExpiresAt: { type: DataTypes.DATE, allowNull: true },
-  respondedAt: { type: DataTypes.DATE, allowNull: true },
-};
-
-const ensureTableColumns = async (sequelize, tableName, columns) => {
+const ensureShareCapitalFeatures = async (sequelize) => {
   const queryInterface = sequelize.getQueryInterface();
-  const table = await queryInterface.describeTable(tableName);
+  const memberTable = await queryInterface.describeTable('Members');
+  if (!memberTable.nominees) {
+    await queryInterface.addColumn('Members', 'nominees', { type: DataTypes.JSONB, allowNull: false, defaultValue: [] });
+  }
+  const tables = await queryInterface.showAllTables();
+  const names = tables.map((table) => String(typeof table === 'object' ? table.tableName || table.name : table));
+  if (!names.includes('ShareCapitalTransfers')) {
+    await queryInterface.createTable('ShareCapitalTransfers', {
+      id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
+      senderMemberId: { type: DataTypes.UUID, allowNull: false },
+      recipientMemberId: { type: DataTypes.UUID, allowNull: false },
+      grossAmount: { type: DataTypes.DECIMAL(14, 2), allowNull: false },
+      feeAmount: { type: DataTypes.DECIMAL(14, 2), allowNull: false },
+      netAmount: { type: DataTypes.DECIMAL(14, 2), allowNull: false },
+      transferType: { type: DataTypes.ENUM('STANDARD', 'OPT_OUT'), allowNull: false },
+      status: { type: DataTypes.ENUM('SUCCESS', 'FAILED'), allowNull: false, defaultValue: 'SUCCESS' },
+      reference: { type: DataTypes.STRING, allowNull: false, unique: true },
+      metadata: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} },
+      createdAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+      updatedAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+    });
+  }
+};
 
-  for (const [column, definition] of Object.entries(columns)) {
-    if (!table[column]) {
-      await queryInterface.addColumn(tableName, column, definition);
-      logger.info('Added missing table column', { tableName, column });
-    }
+const ensureBorrowingGroupTables = async (sequelize) => {
+  const queryInterface = sequelize.getQueryInterface();
+  const tables = await queryInterface.showAllTables();
+  const names = new Set(tables.map((table) => String(typeof table === 'object' ? table.tableName || table.name : table)));
+  if (!names.has('BorrowingGroups')) await queryInterface.createTable('BorrowingGroups', {
+    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true }, name: { type: DataTypes.STRING(120), allowNull: false },
+    description: { type: DataTypes.STRING(500), allowNull: true }, creatorMemberId: { type: DataTypes.UUID, allowNull: false },
+    status: { type: DataTypes.ENUM('ACTIVE', 'CLOSED'), allowNull: false, defaultValue: 'ACTIVE' },
+    createdAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW }, updatedAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+  });
+  if (!names.has('GroupMemberships')) await queryInterface.createTable('GroupMemberships', {
+    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true }, groupId: { type: DataTypes.UUID, allowNull: false }, memberId: { type: DataTypes.UUID, allowNull: false },
+    role: { type: DataTypes.ENUM('CREATOR', 'MEMBER'), allowNull: false, defaultValue: 'MEMBER' }, status: { type: DataTypes.ENUM('PENDING', 'ACCEPTED', 'REJECTED', 'LEFT', 'REMOVED'), allowNull: false, defaultValue: 'PENDING' },
+    invitedByMemberId: { type: DataTypes.UUID, allowNull: false }, respondedAt: { type: DataTypes.DATE, allowNull: true },
+    createdAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW }, updatedAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+  });
+  if (!names.has('GroupLoans')) await queryInterface.createTable('GroupLoans', {
+    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true }, groupId: { type: DataTypes.UUID, allowNull: false }, requestedByMemberId: { type: DataTypes.UUID, allowNull: false },
+    amount: { type: DataTypes.DECIMAL(14, 2), allowNull: false }, interestRate: { type: DataTypes.DECIMAL(6, 3), allowNull: false, defaultValue: 1 }, paymentPeriodMonths: { type: DataTypes.INTEGER, allowNull: false },
+    totalDue: { type: DataTypes.DECIMAL(14, 2), allowNull: false }, balance: { type: DataTypes.DECIMAL(14, 2), allowNull: false }, status: { type: DataTypes.ENUM('ACTIVE', 'REPAID'), allowNull: false, defaultValue: 'ACTIVE' },
+    createdAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW }, updatedAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+  });
+  if (!names.has('GroupTransactions')) await queryInterface.createTable('GroupTransactions', {
+    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true }, groupId: { type: DataTypes.UUID, allowNull: false }, loanId: { type: DataTypes.UUID, allowNull: true }, memberId: { type: DataTypes.UUID, allowNull: false },
+    type: { type: DataTypes.ENUM('LOAN_DISBURSEMENT', 'LOAN_REPAYMENT'), allowNull: false }, amount: { type: DataTypes.DECIMAL(14, 2), allowNull: false }, reference: { type: DataTypes.STRING, allowNull: false, unique: true },
+    status: { type: DataTypes.ENUM('SUCCESS'), allowNull: false, defaultValue: 'SUCCESS' }, createdAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW }, updatedAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+  });
+  const groupIndexes = [
+    ['GroupMemberships', ['groupId', 'memberId'], 'uniq_group_membership', true],
+    ['GroupMemberships', ['memberId', 'status'], 'idx_group_membership_status', false],
+    ['BorrowingGroups', ['creatorMemberId'], 'idx_borrowing_group_creator', false],
+    ['GroupLoans', ['groupId', 'status'], 'idx_group_loan_status', false],
+    ['GroupTransactions', ['groupId', 'createdAt'], 'idx_group_transaction_history', false],
+  ];
+  for (const [table, fields, name, unique] of groupIndexes) {
+    const indexes = await queryInterface.showIndex(table).catch(() => []);
+    if (!indexes.some((index) => index.name === name)) await queryInterface.addIndex(table, fields, { name, unique }).catch((error) => logger.warn('Unable to add group index', { name, error: error.message }));
   }
 };
 
 const runSchemaMigrations = async (sequelize) => {
   await ensureNotificationTable(sequelize);
   await ensureMemberExitRequestTable(sequelize);
+  await ensureShareCapitalFeatures(sequelize);
+  await ensureBorrowingGroupTables(sequelize);
   await ensureUserProfileColumns(sequelize);
   await ensureTransactionTrackingColumns(sequelize);
   await ensureTableColumns(sequelize, 'Members', memberDocumentColumns);

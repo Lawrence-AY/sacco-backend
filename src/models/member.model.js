@@ -60,6 +60,11 @@ const Member = sequelize.define('Member', {
   isVerified: {
     type: DataTypes.BOOLEAN,
     defaultValue: false
+  },
+  nominees: {
+    type: DataTypes.JSONB,
+    allowNull: false,
+    defaultValue: []
   }
 }, {
   timestamps: true,

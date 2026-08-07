@@ -10,6 +10,8 @@ const { UserDTO, LoanDTO, TransactionDTO } = require('../../../shared/utils/dtos
 const logger = require('../../../shared/utils/logger');
 const nodemailer = require('nodemailer');
 const bcrypt = require('bcrypt');
+const shareCapitalTransferService = require('../../shares/services/shareCapitalTransferService');
+const memberNumberService = require('../services/memberNumberService');
 const { getFirebaseDb, getFirebaseStorage } = require('../../../shared/config/firebase');
 const PROFILE_PHOTO_MAX_BYTES = 1.5 * 1024 * 1024;
 const PROFILE_PHOTO_TYPES = {
@@ -30,9 +32,8 @@ const findMemberByUserId = async (userId) => {
 const ensureMemberByUser = async (user) => {
   let member = await findMemberByUserId(user.id);
   if (!member) {
-    member = await db.Member.create({
+    member = await memberNumberService.createMember({
       userId: user.id,
-      memberNumber: `M-${Date.now()}`,
       nationalId: user.nationalId || null,
       type: 'NON_EMPLOYEE',
       isVerified: true,
@@ -265,7 +266,8 @@ const getProfile = asyncHandler(async (req, res) => {
   if (!user) {
     throw new NotFoundError('User not found');
   }
-  return ResponseHandler.success(res, UserDTO.private(user), 'Profile retrieved successfully');
+  const member = await findMemberByUserId(req.user.id);
+  return ResponseHandler.success(res, { ...UserDTO.private(user), nominees: member?.nominees || [] }, 'Profile retrieved successfully');
 });
 
 const parseProfilePhotoDataUrl = (dataUrl) => {
@@ -307,6 +309,8 @@ const uploadProfilePhoto = asyncHandler(async (req, res) => {
 
 const updateProfile = asyncHandler(async (req, res) => {
   const body = { ...req.body };
+  const nominees = body.nominees;
+  delete body.nominees;
   if (body.nextOfKin) {
     body.nextOfKinName = body.nextOfKin.name ?? body.nextOfKinName;
     body.nextOfKinRelationship = body.nextOfKin.relationship ?? body.nextOfKinRelationship;
@@ -357,7 +361,21 @@ const updateProfile = asyncHandler(async (req, res) => {
   if (!updated) {
     throw new NotFoundError('User not found');
   }
-  return ResponseHandler.success(res, UserDTO.private(updated), 'Profile updated successfully', 200);
+  const member = await findMemberByUserId(req.user.id);
+  if (nominees !== undefined && member) await member.update({ nominees });
+  return ResponseHandler.success(res, { ...UserDTO.private(updated), nominees: member?.nominees || [] }, 'Profile updated successfully', 200);
+});
+
+const transferShareCapital = asyncHandler(async (req, res) => {
+  const member = await findMemberByUserId(req.user.id);
+  if (!member) throw new NotFoundError('Member profile not found');
+  const result = await shareCapitalTransferService.transfer({
+    senderMemberId: member.id,
+    recipientMemberNumber: req.body.recipientMemberNumber,
+    amount: req.body.amount,
+    optOut: req.body.optOut === true,
+  });
+  return ResponseHandler.success(res, result, 'Share capital transferred successfully', 201);
 });
 
 const getMemberExitBalances = async (memberId) => {
@@ -391,7 +409,7 @@ const getMemberExitBalances = async (memberId) => {
     shareAccountCapital,
     categoryTotal(['share_capital', 'sharecapital', 'share capital'])
   );
-  const saccoFee = shareCapital * 0.01;
+  const saccoFee = shareCapital * 0.05;
 
   return {
     savings,
@@ -586,6 +604,24 @@ const getTransactions = asyncHandler(async (req, res) => {
     internalReference: transaction.internalReference,
     promptChannel: transaction.promptChannel,
   }));
+  const transfers = await shareCapitalTransferService.historyForMember(member.id);
+  formatted.push(...transfers.map((transfer) => ({
+    id: transfer.id,
+    type: 'SHARE_CAPITAL_TRANSFER',
+    amount: Number(transfer.grossAmount),
+    netAmount: Number(transfer.netAmount),
+    feeAmount: Number(transfer.feeAmount),
+    direction: transfer.senderMemberId === member.id ? 'OUT' : 'IN',
+    description: transfer.senderMemberId === member.id
+      ? `Share capital transfer to ${transfer.recipient?.memberNumber}`
+      : `Share capital transfer from ${transfer.sender?.memberNumber}`,
+    createdAt: transfer.createdAt,
+    status: transfer.status,
+    reference: transfer.reference,
+    paymentCategory: 'share_capital_transfer',
+    transferType: transfer.transferType,
+  })));
+  formatted.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
   return ResponseHandler.success(res, formatted, 'Transactions retrieved successfully', 200);
 });
@@ -1075,6 +1111,7 @@ module.exports = {
   getProfile,
   uploadProfilePhoto,
   updateProfile,
+  transferShareCapital,
   requestOptOut,
   getLoans,
   applyForLoan,
