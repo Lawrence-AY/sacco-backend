@@ -476,6 +476,28 @@ const listForUser = async (user, { unreadOnly = false, limit = 30 } = {}) => {
   return notifications.map(serialize);
 };
 
+const listSentByUser = async (user, { limit = 100 } = {}) => {
+  const notifications = await db.Notification.findAll({
+    where: { sourceType: 'ManualNotification' },
+    include: [{ model: db.User, attributes: ['id', 'name', 'email'] }],
+    order: [['createdAt', 'DESC']],
+    limit: 2000,
+  });
+  const groups = new Map();
+  notifications.filter((notification) => notification.metadata?.sentBy === user.id).forEach((notification) => {
+    const metadata = notification.metadata || {};
+    const key = metadata.dispatchId || `${notification.title}:${notification.body}:${new Date(notification.createdAt).toISOString().slice(0, 19)}`;
+    const group = groups.get(key) || { id: key, title: notification.title, body: notification.body,
+      category: notification.category, severity: notification.severity, audience: metadata.audience || 'MEMBER',
+      createdAt: notification.createdAt, sentAt: notification.createdAt, recipientCount: 0, readCount: 0, recipients: [] };
+    group.recipientCount += 1;
+    if (notification.readAt) group.readCount += 1;
+    if (notification.User) group.recipients.push({ id: notification.User.id, name: notification.User.name, email: notification.User.email });
+    groups.set(key, group);
+  });
+  return Array.from(groups.values()).sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt)).slice(0, Math.min(Number(limit) || 100, 200));
+};
+
 const markRead = async (user, id) => {
   const notification = await db.Notification.findOne({ where: { id, userId: user.id } });
   if (!notification) return null;
@@ -540,6 +562,7 @@ const createManualNotification = async (sender, payload = {}) => {
   }
 
   const now = Date.now();
+  const dispatchId = `manual:${sender.id}:${now}`;
   const notifications = await Promise.all(users.map((recipient, index) => upsertNotification({
     userId: recipient.id,
     eventKey: `manual:${sender.id}:${now}:${index}`,
@@ -554,6 +577,7 @@ const createManualNotification = async (sender, payload = {}) => {
       audience,
       recipientUserId,
       sentBy: sender.id,
+      dispatchId,
     },
   })));
 
@@ -563,8 +587,24 @@ const createManualNotification = async (sender, payload = {}) => {
   };
 };
 
+const createOptOutReviewNotifications = async (requestId) => {
+  const request = await db.MemberExitRequest.findByPk(requestId, { include: [{ model: db.Member, include: [db.User] }] });
+  if (!request) return [];
+  const member = request.Member; const applicant = formatApplicantName(member?.User, member);
+  const reviewers = await db.User.findAll({ where: { role: { [Op.in]: ['ADMIN', 'SUPERADMIN', 'FINANCE'] } }, attributes: ['id', 'email', 'role'] });
+  return Promise.all(reviewers.map(async (reviewer) => {
+    const notification = await upsertNotification({ userId: reviewer.id, eventKey: `opt-out:${request.id}:${reviewer.id}`, title: 'Opt-out approval required',
+      body: `${applicant} submitted an opt-out request. ${reviewer.role === 'FINANCE' ? 'Finance approval and payout review are required.' : 'Admin approval is required.'}`,
+      category: 'opt_out', severity: 'warning', actionUrl: reviewer.role === 'FINANCE' ? '/dashboard/finance/notifications' : '/dashboard/admin/notifications', sourceType: 'MemberExitRequest', sourceId: request.id,
+      metadata: { requestId: request.id, adminApproval: false, financeApproval: false, status: 'PENDING' } });
+    await queueLoanEmail({ to: reviewer.email, subject: 'Opt-out approval required', title: 'New member opt-out request', lines: [`${applicant} submitted an opt-out request.`, 'Sign in to review and approve or reject it.'] });
+    return notification;
+  }));
+};
+
 module.exports = {
   listForUser,
+  listSentByUser,
   markRead,
   markAllRead,
   createManualNotification,
@@ -573,4 +613,5 @@ module.exports = {
   createMemberLoanDecisionNotification,
   createGuarantorRequestNotifications,
   createApplicantGuarantorDecisionNotification,
+  createOptOutReviewNotifications,
 };

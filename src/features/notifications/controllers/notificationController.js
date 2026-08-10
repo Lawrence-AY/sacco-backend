@@ -10,6 +10,11 @@ const listNotifications = asyncHandler(async (req, res) => {
   return ResponseHandler.success(res, notifications, 'Notifications retrieved successfully');
 });
 
+const listSentNotifications = asyncHandler(async (req, res) => {
+  const notifications = await notificationService.listSentByUser(req.user, { limit: req.query.limit });
+  return ResponseHandler.success(res, notifications, 'Sent notifications retrieved successfully');
+});
+
 const markNotificationRead = asyncHandler(async (req, res) => {
   const notification = await notificationService.markRead(req.user, req.params.notificationId);
   return ResponseHandler.success(res, notification, 'Notification marked as read');
@@ -27,6 +32,7 @@ const sendNotification = asyncHandler(async (req, res) => {
 
 module.exports = {
   listNotifications,
+  listSentNotifications,
   markNotificationRead,
   markAllNotificationsRead,
   sendNotification,

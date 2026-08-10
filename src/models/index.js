@@ -28,6 +28,7 @@ const BorrowingGroup = require('./borrowingGroup.model');
 const GroupMembership = require('./groupMembership.model');
 const GroupLoan = require('./groupLoan.model');
 const GroupTransaction = require('./groupTransaction.model');
+const LoanTransaction = require('./loanTransaction.model');
 
 const sequelize = require('../shared/config/db');
 
@@ -111,6 +112,10 @@ BorrowingGroup.hasMany(GroupTransaction, { foreignKey: 'groupId', as: 'transacti
 GroupTransaction.belongsTo(BorrowingGroup, { foreignKey: 'groupId', as: 'group' });
 GroupLoan.hasMany(GroupTransaction, { foreignKey: 'loanId', as: 'transactions' });
 GroupTransaction.belongsTo(GroupLoan, { foreignKey: 'loanId', as: 'loan' });
+Loan.hasMany(LoanTransaction, { foreignKey: 'loanId', as: 'loanTransactions' });
+LoanTransaction.belongsTo(Loan, { foreignKey: 'loanId' });
+Member.hasMany(LoanTransaction, { foreignKey: 'memberId' });
+LoanTransaction.belongsTo(Member, { foreignKey: 'memberId' });
 
 const db = {
   sequelize,
@@ -144,7 +149,8 @@ const db = {
   BorrowingGroup,
   GroupMembership,
   GroupLoan,
-  GroupTransaction
+  GroupTransaction,
+  LoanTransaction
 };
 
 module.exports = db;

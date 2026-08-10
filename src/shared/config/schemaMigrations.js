@@ -221,6 +221,29 @@ const ensureMemberExitRequestTable = async (sequelize) => {
   }
 };
 
+const ensureOptOutAndReducingBalanceSchema = async (sequelize) => {
+  const queryInterface = sequelize.getQueryInterface();
+  await ensureTableColumns(sequelize, 'MemberExitRequests', {
+    adminApproval: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false }, financeApproval: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+    adminApprovedAt: { type: DataTypes.DATE, allowNull: true }, financeApprovedAt: { type: DataTypes.DATE, allowNull: true },
+    adminReviewedById: { type: DataTypes.UUID, allowNull: true }, financeReviewedById: { type: DataTypes.UUID, allowNull: true }, rejectionReason: { type: DataTypes.TEXT, allowNull: true },
+    disbursedAmount: { type: DataTypes.DECIMAL(14, 2), allowNull: false, defaultValue: 0 }, disbursedAt: { type: DataTypes.DATE, allowNull: true },
+    disbursedById: { type: DataTypes.UUID, allowNull: true }, disbursementTransactionId: { type: DataTypes.UUID, allowNull: true },
+  });
+  await ensureTableColumns(sequelize, 'Loans', {
+    principalBalance: { type: DataTypes.DECIMAL(14, 2), allowNull: true }, accruedInterest: { type: DataTypes.DECIMAL(14, 2), allowNull: false, defaultValue: 0 },
+    lastInterestAccrualAt: { type: DataTypes.DATE, allowNull: true }, nextPaymentDueAt: { type: DataTypes.DATE, allowNull: true },
+  });
+  if (sequelize.getDialect() === 'postgres') await sequelize.query('ALTER TYPE "enum_MemberExitRequests_status" ADD VALUE IF NOT EXISTS \'DISBURSED\'').catch((error) => logger.warn('Unable to extend opt-out status enum', { error: error.message }));
+  const tables = await queryInterface.showAllTables();
+  const names = tables.map((table) => String(typeof table === 'object' ? table.tableName || table.name : table));
+  if (!names.includes('LoanTransactions')) await queryInterface.createTable('LoanTransactions', {
+    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true }, loanId: { type: DataTypes.UUID, allowNull: false }, memberId: { type: DataTypes.UUID, allowNull: false }, ledgerTransactionId: { type: DataTypes.UUID, allowNull: false, unique: true },
+    transactionType: { type: DataTypes.ENUM('INTERIM_PAYMENT', 'SCHEDULED_PAYMENT'), allowNull: false, defaultValue: 'INTERIM_PAYMENT' }, amount: { type: DataTypes.DECIMAL(14, 2), allowNull: false }, principalPaid: { type: DataTypes.DECIMAL(14, 2), allowNull: false }, interestPaid: { type: DataTypes.DECIMAL(14, 2), allowNull: false }, remainingPrincipal: { type: DataTypes.DECIMAL(14, 2), allowNull: false }, accruedDays: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 }, metadata: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} },
+    createdAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW }, updatedAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+  });
+};
+
 const ensureShareCapitalFeatures = async (sequelize) => {
   const queryInterface = sequelize.getQueryInterface();
   const memberTable = await queryInterface.describeTable('Members');
@@ -290,6 +313,7 @@ const ensureBorrowingGroupTables = async (sequelize) => {
 const runSchemaMigrations = async (sequelize) => {
   await ensureNotificationTable(sequelize);
   await ensureMemberExitRequestTable(sequelize);
+  await ensureOptOutAndReducingBalanceSchema(sequelize);
   await ensureShareCapitalFeatures(sequelize);
   await ensureBorrowingGroupTables(sequelize);
   await ensureUserProfileColumns(sequelize);

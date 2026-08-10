@@ -8,10 +8,12 @@ const ResponseHandler = require('../../../shared/utils/response');
 const { NotFoundError, ValidationError, ForbiddenError } = require('../../../shared/utils/errors');
 const { UserDTO, LoanDTO, TransactionDTO } = require('../../../shared/utils/dtos');
 const logger = require('../../../shared/utils/logger');
+const notificationService = require('../../notifications/services/notificationService');
 const nodemailer = require('nodemailer');
 const bcrypt = require('bcrypt');
 const shareCapitalTransferService = require('../../shares/services/shareCapitalTransferService');
 const memberNumberService = require('../services/memberNumberService');
+const { formatEAT } = require('../../../shared/utils/eatDateTime');
 const { getFirebaseDb, getFirebaseStorage } = require('../../../shared/config/firebase');
 const PROFILE_PHOTO_MAX_BYTES = 1.5 * 1024 * 1024;
 const PROFILE_PHOTO_TYPES = {
@@ -535,7 +537,11 @@ const requestOptOut = asyncHandler(async (req, res) => {
     reason: req.body.reason || null,
     acknowledgedTerms: req.body.acknowledgedTerms,
     requestedAt: new Date(),
+    adminApproval: false,
+    financeApproval: false,
+    status: 'PENDING',
   });
+  await notificationService.createOptOutReviewNotifications(request.id);
 
   return ResponseHandler.success(res, {
     id: request.id,
@@ -849,38 +855,61 @@ const repayLoan = asyncHandler(async (req, res) => {
     throw new ValidationError('Repayment amount is required');
   }
 
-  const loan = await loanService.getLoanById(req.params.loanId);
-  if (!loan) {
-    throw new NotFoundError('Loan not found');
-  }
-  if (loan.memberId !== member.id) {
-    throw new ForbiddenError('You do not own this loan');
-  }
-  if (!['ACTIVE', 'APPROVED'].includes(loan.status)) {
-    throw new ValidationError('Loan is not eligible for repayment');
-  }
+  const result = await db.sequelize.transaction(async (dbTransaction) => {
+    const loan = await db.Loan.findByPk(req.params.loanId, {
+      transaction: dbTransaction,
+      lock: dbTransaction.LOCK.UPDATE,
+    });
+    if (!loan) throw new NotFoundError('Loan not found');
+    if (loan.memberId !== member.id) throw new ForbiddenError('You do not own this loan');
+    if (!['ACTIVE', 'APPROVED', 'DISBURSED'].includes(String(loan.status).toUpperCase())) {
+      throw new ValidationError('Loan is not eligible for repayment');
+    }
 
-  const transaction = await db.Transaction.create({
-    memberId: member.id,
-    loanId: loan.id,
-    type: 'LOAN_REPAYMENT',
-    amount,
-    method: req.body.method || 'MANUAL',
-    status: 'SUCCESS',
-    reference: req.body.reference || `REPAY-${Date.now()}`
+    const previousPrincipalPayments = loan.principalBalance == null
+      ? Number(await db.LoanTransaction.sum('principalPaid', { where: { loanId: loan.id }, transaction: dbTransaction }) || 0)
+      : 0;
+    const principal = Number(loan.principalBalance == null ? loan.amount - previousPrincipalPayments : loan.principalBalance);
+    const accrualStart = new Date(loan.lastInterestAccrualAt || loan.decidedAt || loan.updatedAt || loan.createdAt);
+    const paymentDate = new Date();
+    const accruedDays = Math.max(0, Math.floor((paymentDate.getTime() - accrualStart.getTime()) / 86400000));
+    const dailyRate = (Number(loan.interestRate || 0) / 100) / 30;
+    const accruedInterest = Math.round((Number(loan.accruedInterest || 0) + principal * dailyRate * accruedDays) * 100) / 100;
+    const outstanding = Math.round((principal + accruedInterest) * 100) / 100;
+    if (amount > outstanding) throw new ValidationError(`Payment exceeds the outstanding loan balance of KES ${outstanding.toFixed(2)}`);
+
+    const interestPaid = Math.min(amount, accruedInterest);
+    const principalPaid = Math.min(amount - interestPaid, principal);
+    const remainingPrincipal = Math.round((principal - principalPaid) * 100) / 100;
+    const remainingInterest = Math.round((accruedInterest - interestPaid) * 100) / 100;
+    const reference = req.body.reference || `REPAY-${Date.now()}`;
+    const ledger = await db.Transaction.create({
+      memberId: member.id, loanId: loan.id, type: 'LOAN_REPAYMENT', amount,
+      method: req.body.method || 'MANUAL', status: 'SUCCESS', reference,
+      description: 'Interim reducing-balance loan payment', paymentCategory: 'loan_interim_payment',
+    }, { transaction: dbTransaction });
+    const repayment = await db.LoanTransaction.create({
+      loanId: loan.id, memberId: member.id, ledgerTransactionId: ledger.id,
+      transactionType: 'INTERIM_PAYMENT', amount, principalPaid, interestPaid,
+      remainingPrincipal, accruedDays,
+      metadata: { rateBasis: 'MONTHLY_REDUCING_BALANCE', monthlyRate: Number(loan.interestRate || 0), reference },
+    }, { transaction: dbTransaction });
+    await loan.update({
+      principalBalance: remainingPrincipal, accruedInterest: remainingInterest,
+      lastInterestAccrualAt: paymentDate,
+      status: remainingPrincipal === 0 && remainingInterest === 0 ? 'COMPLETED' : loan.status,
+    }, { transaction: dbTransaction });
+    return { ledger, repayment, paymentDate };
   });
 
-  return ResponseHandler.created(res, TransactionDTO.basic({
-    id: transaction.id,
-    type: transaction.type,
-    amount: transaction.amount,
-    description: buildTransactionDescription(transaction),
-    createdAt: transaction.createdAt,
-    status: transaction.status,
-    method: transaction.method,
-    reference: transaction.reference,
-    mpesaReference: transaction.method === 'MPESA' ? transaction.reference : null,
-  }, 'Loan repayment recorded successfully'));  
+  return ResponseHandler.created(res, {
+    id: result.ledger.id, type: result.ledger.type, amount: Number(result.ledger.amount),
+    transactionType: result.repayment.transactionType,
+    principalPaid: Number(result.repayment.principalPaid), interestPaid: Number(result.repayment.interestPaid),
+    remainingPrincipal: Number(result.repayment.remainingPrincipal), accruedDays: result.repayment.accruedDays,
+    status: result.ledger.status, method: result.ledger.method, reference: result.ledger.reference,
+    createdAt: result.paymentDate, createdAtEAT: formatEAT(result.paymentDate),
+  }, 'Interim loan payment allocated and schedule recalculated successfully');
 });
 
 const depositSavings = asyncHandler(async (req, res) => {
