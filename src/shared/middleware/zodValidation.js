@@ -108,6 +108,8 @@ const schemas = {
     interestRate: z.coerce.number().min(0).max(100).optional(),
     reason: z.string().trim().max(500).optional(),
     purpose: z.string().trim().max(500).optional(),
+    selfGuarantee: z.boolean().optional().default(false),
+    selfGuaranteedAmount: z.coerce.number().positive().max(10000000).optional(),
     guarantors: z.array(strictObject({
       memberId: z.string().uuid(),
       amount: z.coerce.number().positive(),

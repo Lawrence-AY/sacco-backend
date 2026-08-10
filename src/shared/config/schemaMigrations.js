@@ -63,6 +63,44 @@ const ensureTransactionTrackingColumns = async (sequelize) => {
   }
 };
 
+const ensureTableColumns = async (sequelize, tableName, columns) => {
+  const queryInterface = sequelize.getQueryInterface();
+  const table = await queryInterface.describeTable(tableName).catch(() => null);
+  if (!table) return;
+
+  for (const [column, definition] of Object.entries(columns)) {
+    if (!table[column]) {
+      await queryInterface.addColumn(tableName, column, definition);
+      logger.info(`Added missing ${tableName} column`, { column });
+    }
+  }
+};
+
+const memberDocumentColumns = {
+  nationalIdUrl: { type: DataTypes.TEXT, allowNull: true },
+  passportUrl: { type: DataTypes.TEXT, allowNull: true },
+};
+
+const applicationDocumentColumns = {
+  identityType: { type: DataTypes.STRING, allowNull: true },
+  identityNumber: { type: DataTypes.STRING, allowNull: true },
+  idDocument: { type: DataTypes.TEXT, allowNull: true },
+  passportPhoto: { type: DataTypes.TEXT, allowNull: true },
+  kraPin: { type: DataTypes.STRING, allowNull: true },
+  paymentVerifiedAt: { type: DataTypes.DATE, allowNull: true },
+};
+
+const guarantorWorkflowColumns = {
+  requestToken: { type: DataTypes.STRING, allowNull: true },
+  tokenExpiresAt: { type: DataTypes.DATE, allowNull: true },
+  respondedAt: { type: DataTypes.DATE, allowNull: true },
+};
+
+const loanSelfGuaranteeColumns = {
+  selfGuaranteed: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+  selfGuaranteedAmount: { type: DataTypes.FLOAT, allowNull: false, defaultValue: 0 },
+};
+
 const loginSessionColumns = {
   idempotencyKey: { type: DataTypes.STRING, allowNull: true },
   refreshTokenHash: { type: DataTypes.STRING(64), allowNull: true },
@@ -259,6 +297,7 @@ const runSchemaMigrations = async (sequelize) => {
   await ensureTableColumns(sequelize, 'Members', memberDocumentColumns);
   await ensureTableColumns(sequelize, 'MembershipApplications', applicationDocumentColumns);
   await ensureTableColumns(sequelize, 'Guarantors', guarantorWorkflowColumns);
+  await ensureTableColumns(sequelize, 'Loans', loanSelfGuaranteeColumns);
   await ensureLoginSessionColumns(sequelize);
   await ensureSearchIndexes(sequelize);
 };

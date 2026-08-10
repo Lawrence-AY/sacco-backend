@@ -228,6 +228,8 @@ const LoanDTO = {
       decidedAt: loan.decidedAt,
       type: loan.type,
       approvalStage: loan.approvalStage,
+      selfGuaranteed: loan.selfGuaranteed,
+      selfGuaranteedAmount: loan.selfGuaranteedAmount,
       createdAt: loan.createdAt,
       updatedAt: loan.updatedAt
     });

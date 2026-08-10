@@ -123,7 +123,8 @@ const createLoan = async (data) => {
   const result = await db.sequelize.transaction(async (transaction) => {
     const emergency = isEmergencyLoan(data.type);
     const risk = emergency ? await runEmergencyEligibilityChecks(data.memberId) : null;
-    const requiresGuarantors = !emergency && Array.isArray(data.guarantors) && data.guarantors.length > 0;
+    const selfGuaranteed = data.selfGuarantee === true || data.selfGuaranteed === true;
+    const requiresGuarantors = !selfGuaranteed && !emergency && Array.isArray(data.guarantors) && data.guarantors.length > 0;
     const loan = await db.Loan.create({
       memberId: data.memberId,
       amount: data.amount,
@@ -133,6 +134,8 @@ const createLoan = async (data) => {
       status: emergency && risk.eligible ? 'APPROVED' : requiresGuarantors ? 'PENDING_GUARANTORS' : data.status || 'UNDER_REVIEW',
       type: data.type,
       multiplier: data.multiplier,
+      selfGuaranteed,
+      selfGuaranteedAmount: selfGuaranteed ? Number(data.selfGuaranteedAmount || data.amount || 0) : 0,
       approvedById: data.approvedById,
       approvalStage: emergency && risk.eligible ? 'FINANCE' : requiresGuarantors ? 'INITIAL' : data.approvalStage || 'FINANCE',
       decidedAt: emergency && risk.eligible ? new Date() : null,

@@ -17,6 +17,7 @@ const { generateOTP } = require('../utils/generateOTP');  // default 6-digit
 const sessionService = require('../../services/sessionService');
 const otpService = require('../../services/otpService');
 const { enqueueEmail, QUEUES } = require('../../services/email/emailQueue');
+const { sendOtpSms } = require('../../services/sms/smsService');
 
 // Models
 const User = require('../../models/user.model');
@@ -135,6 +136,19 @@ const clearFailedLogin = async (user, req) => {
   user.lastLoginIp = getClientIp(req);
   user.lastLoginAt = new Date();
   await user.save({ fields: ['failedLoginAttempts', 'lockedUntil', 'lastLoginIp', 'lastLoginAt'] });
+};
+
+const queueOtpDelivery = async ({ user, email, phone, otp, purpose, req, logContext = {} }) => {
+  const emailJobId = await enqueueEmail(QUEUES.OTP, 'OTP', { to: email, otp }, { immediate: true });
+  sendOtpSms({ to: phone || user?.phone, otp, purpose })
+    .catch((error) => logger.error('OTP SMS delivery failed', {
+      module: 'auth',
+      userId: user?.id,
+      requestId: req?.id,
+      purpose,
+      error: error.message,
+    }));
+  return emailJobId;
 };
 
 const recordLoginAttempt = (req, email, status) => db.LoginAttempt.create({
@@ -286,7 +300,7 @@ const loginUser = asyncHandler(async (req, res) => {
   if (!otpSession) {
     const otp = generateOTP();
     otpSession = await otpService.createOtpSession({ userId: user.id, loginSessionId: loginSession.id, purpose: 'LOGIN', otp });
-    const emailJobId = await enqueueEmail(QUEUES.OTP, 'OTP', { to: user.email, otp });
+    const emailJobId = await queueOtpDelivery({ user, email: user.email, phone: user.phone, otp, purpose: 'LOGIN', req });
     logger.info('Login OTP queued', { module: 'auth', userId: user.id, requestId: req.id, loginSessionId: loginSession.id, otpSessionId: otpSession.id, emailJobId });
   } else {
     logger.info('Active login OTP session reused', { module: 'auth', userId: user.id, requestId: req.id, loginSessionId: loginSession.id, otpSessionId: otpSession.id });
@@ -484,7 +498,7 @@ const registerUser = asyncHandler(async (req, res) => {
     ? await existingUser.update(registrationData)
     : await User.create(registrationData);
   await otpService.createOtpSession({ userId: user.id, purpose: 'REGISTRATION', otp });
-  const emailJobId = await enqueueEmail(QUEUES.OTP, 'OTP', { to: normalizedEmail, otp });
+  const emailJobId = await queueOtpDelivery({ user, email: normalizedEmail, phone, otp, purpose: 'REGISTRATION', req });
   logger.info('Registration OTP queued', { module: 'auth', userId: user.id, requestId: req.id, emailJobId });
 
   return ResponseHandler.created(
@@ -645,7 +659,7 @@ const resendOTP = asyncHandler(async (req, res) => {
   otpService.assertResendAllowed(activeOtpSession);
   const otp = generateOTP();
   const otpSession = await otpService.createOtpSession({ userId: user.id, loginSessionId: user.isVerified ? pendingLogin?.id : null, purpose, otp });
-  const emailJobId = await enqueueEmail(QUEUES.OTP, 'OTP', { to: normalizedEmail, otp });
+  const emailJobId = await queueOtpDelivery({ user, email: normalizedEmail, phone: user.phone, otp, purpose, req });
   logger.info('OTP resend queued', { module: 'auth', userId: user.id, requestId: req.id, purpose, otpSessionId: otpSession.id, emailJobId });
 
   return ResponseHandler.success(res, { resendAvailableIn: 60 }, 'OTP resent');
