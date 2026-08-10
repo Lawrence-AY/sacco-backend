@@ -5,6 +5,7 @@ const asyncHandler = require('../../../shared/utils/asyncHandler');
 const ResponseHandler = require('../../../shared/utils/response');
 const { ValidationError, NotFoundError } = require('../../../shared/utils/errors');
 const { LoanDTO } = require('../../../shared/utils/dtos');
+const { formatEAT } = require('../../../shared/utils/eatDateTime');
 const MINIMUM_SHARE_CAPITAL = 25000;
 
 const classifyTransaction = (transaction) => {
@@ -49,6 +50,7 @@ const formatTransaction = (transaction, member = null, user = null) => {
     amount: transaction.amount,
     description: buildTransactionDescription(transaction),
     createdAt: transaction.createdAt,
+    createdAtEAT: formatEAT(transaction.createdAt),
     status: transaction.status,
     method: transaction.method,
     reference: transaction.reference,
@@ -165,6 +167,9 @@ const formatDeduction = (deduction, member = null) => ({
 });
 
 const getAllTransactions = asyncHandler(async (req, res) => {
+  const page = Math.max(Number(req.query.page) || 1, 1);
+  const limit = [10, 25].includes(Number(req.query.limit)) ? Number(req.query.limit) : 25;
+  const offset = (page - 1) * limit;
   const where = {};
   if (req.query.type) {
     where.type = req.query.type;
@@ -172,22 +177,28 @@ const getAllTransactions = asyncHandler(async (req, res) => {
   if (req.query.status) {
     where.status = req.query.status;
   }
-  const [transactions, members, transfers] = await Promise.all([
-    db.Transaction.findAll({ where, order: [['createdAt', 'DESC']] }),
+  const [transactionResult, members, transferResult, loanTransactions] = await Promise.all([
+    db.Transaction.findAndCountAll({ where, order: [['createdAt', 'DESC']], limit: page * limit }),
     db.Member.findAll({ include: [{ model: db.User, attributes: ['name', 'firstName', 'lastName'] }] }),
-    db.ShareCapitalTransfer.findAll({
+    db.ShareCapitalTransfer.findAndCountAll({
       include: [
         { model: db.Member, as: 'sender', attributes: ['memberNumber'] },
         { model: db.Member, as: 'recipient', attributes: ['memberNumber'] },
-      ], order: [['createdAt', 'DESC']],
+      ], order: [['createdAt', 'DESC']], limit: page * limit,
     }),
+    db.LoanTransaction.findAll({ order: [['createdAt', 'DESC']], limit: page * limit }),
   ]);
   const memberMap = new Map(members.map((member) => [member.id, member]));
-  const formatted = transactions.map((transaction) => {
+  const repaymentMap = new Map(loanTransactions.map((entry) => [entry.ledgerTransactionId, entry]));
+  const formatted = transactionResult.rows.map((transaction) => {
     const member = memberMap.get(transaction.memberId);
-    return formatTransaction(transaction, member, member?.User);
+    const row = formatTransaction(transaction, member, member?.User);
+    const repayment = repaymentMap.get(transaction.id);
+    return repayment ? { ...row, transactionType: repayment.transactionType,
+      principalPaid: Number(repayment.principalPaid), interestPaid: Number(repayment.interestPaid),
+      remainingPrincipal: Number(repayment.remainingPrincipal), accruedDays: repayment.accruedDays } : row;
   });
-  formatted.push(...transfers.map((transfer) => ({
+  formatted.push(...transferResult.rows.map((transfer) => ({
     id: transfer.id,
     type: 'SHARE_CAPITAL_TRANSFER',
     category: transfer.transferType === 'OPT_OUT' ? 'OPT_OUT_SHARE_TRANSFER' : 'SHARE_CAPITAL_TRANSFER',
@@ -197,13 +208,17 @@ const getAllTransactions = asyncHandler(async (req, res) => {
     netAmount: Number(transfer.netAmount),
     description: `${transfer.sender?.memberNumber} to ${transfer.recipient?.memberNumber} (5% fee: KES ${Number(transfer.feeAmount).toFixed(2)})`,
     createdAt: transfer.createdAt,
+    createdAtEAT: formatEAT(transfer.createdAt),
     status: transfer.status,
     reference: transfer.reference,
     memberNumber: transfer.sender?.memberNumber,
     recipientMemberNumber: transfer.recipient?.memberNumber,
   })));
   formatted.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  return ResponseHandler.success(res, formatted, 'Transactions retrieved successfully', 200);
+  const total = transactionResult.count + transferResult.count;
+  return ResponseHandler.paginated(res, formatted.slice(offset, offset + limit), {
+    page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)),
+  }, 'Transactions retrieved successfully');
 });
 
 const createTransaction = asyncHandler(async (req, res) => {
@@ -599,11 +614,13 @@ const getAllCompanies = asyncHandler(async (req, res) => {
 });
 
 const getFinancialReports = asyncHandler(async (req, res) => {
-  const [transactions, loans, dividends, transfers] = await Promise.all([
-    db.Transaction.findAll({ order: [['createdAt', 'DESC']], limit: 500 }),
-    db.Loan.findAll({ order: [['createdAt', 'DESC']], limit: 500 }),
-    db.Dividend.findAll({ order: [['createdAt', 'DESC']], limit: 100 }),
+  const [transactions, loans, dividends, transfers, loanTransactions, members] = await Promise.all([
+    db.Transaction.findAll({ where: { status: 'SUCCESS' }, order: [['createdAt', 'ASC']] }),
+    db.Loan.findAll({ order: [['createdAt', 'ASC']] }),
+    db.Dividend.findAll({ order: [['createdAt', 'ASC']] }),
     db.ShareCapitalTransfer.findAll({ where: { status: 'SUCCESS' } }),
+    db.LoanTransaction.findAll({ attributes: ['interestPaid'] }),
+    db.Member.findAll({ attributes: ['id', 'memberNumber'], include: [{ model: db.User, attributes: ['name', 'firstName', 'lastName'] }] }),
   ]);
 
   const repaymentsByLoan = transactions.reduce((map, transaction) => {
@@ -612,7 +629,7 @@ const getFinancialReports = asyncHandler(async (req, res) => {
     }
     return map;
   }, new Map());
-  const loanRepaymentInterest = loans.reduce((sum, loan) => {
+  const calculatedLoanInterest = loans.reduce((sum, loan) => {
     const principal = Number(loan.amount || 0);
     const scheduledInterest = principal * Number(loan.interestRate || 0) / 100 * Number(loan.duration || 1);
     const totalDue = principal + scheduledInterest;
@@ -620,14 +637,56 @@ const getFinancialReports = asyncHandler(async (req, res) => {
     const realizedInterest = totalDue > 0 ? repaid * (scheduledInterest / totalDue) : 0;
     return sum + realizedInterest;
   }, 0);
+  const allocatedLoanInterest = loanTransactions.reduce((sum, entry) => sum + Number(entry.interestPaid || 0), 0);
+  const loanRepaymentInterest = loanTransactions.length ? allocatedLoanInterest : calculatedLoanInterest;
   const shareCapitalTransferFees = transfers.reduce((sum, transfer) => sum + Number(transfer.feeAmount || 0), 0);
+  const loanMap = new Map(loans.map((loan) => [loan.id, loan]));
+  const products = ['EMERGENCY', 'EDUCATION', 'DEVELOPMENT', 'WELFARE'];
+  const byProduct = Object.fromEntries(products.map((product) => [product, { repayments: 0, disbursements: 0 }]));
+  const flowTotals = { deposits: 0, shareCapitalDeposits: 0, savingsDeposits: 0, withdrawals: 0, repayments: 0, disbursements: 0 };
+  const memberMap = new Map(members.map((member) => [member.id, {
+    memberId: member.id, memberNumber: member.memberNumber,
+    memberName: member.User?.name || [member.User?.firstName, member.User?.lastName].filter(Boolean).join(' ') || member.memberNumber,
+  }]));
+  const breakdownKeys = [...Object.keys(flowTotals), ...products.flatMap((product) => [`repayments_${product}`, `disbursements_${product}`])];
+  const breakdownMaps = Object.fromEntries(breakdownKeys.map((key) => [key, new Map()]));
+  const addMemberAmount = (key, memberId, amount) => {
+    const identity = memberMap.get(memberId) || { memberId, memberNumber: 'Unknown', memberName: 'Unknown member' };
+    const current = breakdownMaps[key].get(memberId) || { ...identity, amount: 0 };
+    current.amount += amount; breakdownMaps[key].set(memberId, current);
+  };
+  const timeSeries = { daily: {}, monthly: {}, yearly: {} };
+  const ensurePeriod = (bucket, key) => (bucket[key] ||= { label: key, deposits: 0, withdrawals: 0, repayments: 0, disbursements: 0, count: 0 });
+  transactions.forEach((transaction) => {
+    const amount = Number(transaction.amount || 0); const type = String(transaction.type || '').toUpperCase();
+    const classification = classifyTransaction(transaction); const createdAt = new Date(transaction.createdAt);
+    const eatDate = new Date(createdAt.getTime() + (3 * 60 * 60 * 1000));
+    const day = eatDate.toISOString().slice(0, 10); const month = day.slice(0, 7); const year = day.slice(0, 4);
+    let metric = null;
+    if (type === 'DEPOSIT') { metric = 'deposits'; flowTotals.deposits += amount; addMemberAmount('deposits', transaction.memberId, amount);
+      if (classification.category === 'SHARE_CAPITAL') { flowTotals.shareCapitalDeposits += amount; addMemberAmount('shareCapitalDeposits', transaction.memberId, amount); }
+      else { flowTotals.savingsDeposits += amount; addMemberAmount('savingsDeposits', transaction.memberId, amount); }
+    } else if (type === 'WITHDRAWAL') { metric = 'withdrawals'; flowTotals.withdrawals += amount; addMemberAmount('withdrawals', transaction.memberId, amount);
+    } else if (type === 'LOAN_REPAYMENT') { metric = 'repayments'; flowTotals.repayments += amount; addMemberAmount('repayments', transaction.memberId, amount);
+      const product = String(loanMap.get(transaction.loanId)?.type || '').toUpperCase(); if (byProduct[product]) { byProduct[product].repayments += amount; addMemberAmount(`repayments_${product}`, transaction.memberId, amount); }
+    } else if (type === 'LOAN_DISBURSEMENT') { metric = 'disbursements'; flowTotals.disbursements += amount; addMemberAmount('disbursements', transaction.memberId, amount);
+      const product = String(loanMap.get(transaction.loanId)?.type || '').toUpperCase(); if (byProduct[product]) { byProduct[product].disbursements += amount; addMemberAmount(`disbursements_${product}`, transaction.memberId, amount); }
+    }
+    [['daily', day], ['monthly', month], ['yearly', year]].forEach(([period, key]) => {
+      const row = ensurePeriod(timeSeries[period], key); row.count += 1; if (metric) row[metric] += amount;
+    });
+  });
+  const serializedSeries = Object.fromEntries(Object.entries(timeSeries).map(([period, rows]) => [period, Object.values(rows).sort((a, b) => a.label.localeCompare(b.label))]));
+  const memberBreakdowns = Object.fromEntries(Object.entries(breakdownMaps).map(([key, rows]) => [key,
+    Array.from(rows.values()).sort((a, b) => b.amount - a.amount).map((row) => ({ ...row, amount: Math.round(row.amount * 100) / 100 })),
+  ]));
 
   return ResponseHandler.success(res, {
     totals: {
-      transactions: transactions.length,
+      transactions: transactions.length + transfers.length,
       loans: loans.length,
       dividends: dividends.length,
-      transactionAmount: transactions.reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0),
+      transactionAmount: transactions.reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0) + transfers.reduce((sum, transfer) => sum + Number(transfer.grossAmount || 0), 0),
       loanPrincipal: loans.reduce((sum, loan) => sum + Number(loan.amount || 0), 0),
       dividendsDeclared: dividends.reduce((sum, dividend) => sum + Number(dividend.amount || 0), 0),
       interests: {
@@ -635,7 +694,13 @@ const getFinancialReports = asyncHandler(async (req, res) => {
         loanRepaymentInterest,
         shareCapitalTransferFees,
       },
+      ...flowTotals,
     },
+    byProduct,
+    memberBreakdowns,
+    timeSeries: serializedSeries,
+    generatedAt: new Date(),
+    generatedAtEAT: formatEAT(new Date()),
   }, 'Financial reports retrieved successfully', 200);
 });
 

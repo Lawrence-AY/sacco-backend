@@ -12,7 +12,7 @@ const MemberExitRequest = sequelize.define('MemberExitRequest', {
     allowNull: false
   },
   status: {
-    type: DataTypes.ENUM('PENDING', 'APPROVED', 'REJECTED', 'COMPLETED', 'CANCELLED'),
+    type: DataTypes.ENUM('PENDING', 'APPROVED', 'REJECTED', 'DISBURSED', 'COMPLETED', 'CANCELLED'),
     defaultValue: 'PENDING'
   },
   savingsWithdrawalAmount: {
@@ -43,7 +43,18 @@ const MemberExitRequest = sequelize.define('MemberExitRequest', {
   },
   reviewedAt: DataTypes.DATE,
   reviewedById: DataTypes.UUID,
-  notes: DataTypes.TEXT
+  notes: DataTypes.TEXT,
+  adminApproval: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+  financeApproval: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+  adminApprovedAt: DataTypes.DATE,
+  financeApprovedAt: DataTypes.DATE,
+  adminReviewedById: DataTypes.UUID,
+  financeReviewedById: DataTypes.UUID,
+  rejectionReason: DataTypes.TEXT,
+  disbursedAmount: { type: DataTypes.DECIMAL(14, 2), allowNull: false, defaultValue: 0 },
+  disbursedAt: DataTypes.DATE,
+  disbursedById: DataTypes.UUID,
+  disbursementTransactionId: DataTypes.UUID
 }, {
   timestamps: true,
   indexes: [

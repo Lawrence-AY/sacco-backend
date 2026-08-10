@@ -6,7 +6,8 @@ const router = express.Router();
 
 router.use(protect);
 router.get('/', notificationController.listNotifications);
-router.post('/send', authorize(['ADMIN', 'FINANCE']), notificationController.sendNotification);
+router.get('/sent', authorize(['ADMIN', 'SUPERADMIN', 'FINANCE']), notificationController.listSentNotifications);
+router.post('/send', authorize(['ADMIN', 'SUPERADMIN', 'FINANCE']), notificationController.sendNotification);
 router.post('/read-all', notificationController.markAllNotificationsRead);
 router.post('/:notificationId/read', notificationController.markNotificationRead);
 
