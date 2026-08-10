@@ -1,6 +1,7 @@
 // services/applicationService.js
 const db = require('../../../models');
 const { getFirebaseDb, getFirebaseStorage } = require('../../../shared/config/firebase');
+const memberNumberService = require('../../member/services/memberNumberService');
 
 const parseDataUrl = (value) => {
   const match = /^data:([^;]+);base64,(.+)$/i.exec(String(value || ''));

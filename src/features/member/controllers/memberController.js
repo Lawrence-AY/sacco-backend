@@ -22,6 +22,7 @@ const PROFILE_PHOTO_TYPES = {
 const DEFAULT_KCB_PAYBILL_NUMBER = '522522';
 const MINIMUM_LOAN_SHARE_CAPITAL = 25000;
 const LOAN_ELIGIBILITY_MESSAGE = 'You are not yet eligible to apply for a loan. Please complete the minimum required share capital purchase before submitting a loan application.';
+const SELF_GUARANTEE_MULTIPLIER = Number(process.env.SELF_GUARANTEE_SAVINGS_MULTIPLIER || 1);
 
 const getKcbMpesaBaseUrl = () => process.env.MPESA_URL?.trim().replace(/\/+$/, '') || null;
 
@@ -135,6 +136,66 @@ const asDate = (value) => {
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
+const getLoanRepaymentTotals = async (memberId) => {
+  const repayments = await db.Transaction.findAll({
+    where: {
+      memberId,
+      type: 'LOAN_REPAYMENT',
+      status: 'SUCCESS',
+      loanId: { [Op.ne]: null },
+    },
+    attributes: ['loanId', 'amount'],
+  });
+
+  return repayments.reduce((map, repayment) => {
+    const loanId = String(repayment.loanId || '');
+    if (!loanId) return map;
+    map.set(loanId, (map.get(loanId) || 0) + Number(repayment.amount || 0));
+    return map;
+  }, new Map());
+};
+
+const findLoanForRepayment = async (memberId) => {
+  const loans = await db.Loan.findAll({
+    where: {
+      memberId,
+      status: { [Op.in]: ['APPROVED', 'ACTIVE'] },
+    },
+    order: [['createdAt', 'ASC']],
+  });
+  if (!loans.length) return null;
+
+  const repaymentTotals = await getLoanRepaymentTotals(memberId);
+  return loans.find((loan) => {
+    const paid = repaymentTotals.get(String(loan.id)) || 0;
+    return Number(loan.amount || 0) - paid > 0;
+  }) || null;
+};
+
+const applyLoanRepaymentLink = async (transaction) => {
+  if (
+    !transaction
+    || transaction.loanId
+    || String(transaction.type || '').toUpperCase() !== 'LOAN_REPAYMENT'
+    || String(transaction.status || '').toUpperCase() !== 'SUCCESS'
+  ) {
+    return transaction;
+  }
+
+  const loan = await findLoanForRepayment(transaction.memberId);
+  if (!loan) {
+    logger.warn('Successful loan repayment has no active loan to apply to', {
+      module: 'member',
+      transactionId: transaction.id,
+      memberId: transaction.memberId,
+    });
+    return transaction;
+  }
+
+  await transaction.update({ loanId: loan.id });
+  return transaction;
+};
+
 const getProviderTransaction = async (transaction) => {
   const firestore = getFirebaseDb();
   // Cloudflare owns the uppercase collection; the lowercase collection is
@@ -215,6 +276,9 @@ const syncTransactionWithKcbRegistration = async (transaction) => {
           providerInternalReference: providerTransaction.internalReference
             || transaction.providerInternalReference,
         });
+        if (providerStatus === 'SUCCESS') {
+          await applyLoanRepaymentLink(transaction);
+        }
       }
 
       return {
@@ -254,6 +318,7 @@ const syncTransactionWithKcbRegistration = async (transaction) => {
       status: 'SUCCESS',
       reference: receipt || transaction.reference,
     });
+    await applyLoanRepaymentLink(transaction);
   } else if (normalizedStatus === 'failed') {
     await transaction.update({ status: 'FAILED' });
   }
@@ -419,6 +484,28 @@ const getMemberExitBalances = async (memberId) => {
   };
 };
 
+const getAvailableSelfGuaranteeSavings = async (memberId) => {
+  const balances = await getMemberExitBalances(memberId);
+  const [activeGuarantees, activeSelfGuaranteedLoans] = await Promise.all([
+    db.Guarantor.sum('amount', {
+      where: {
+        memberId,
+        status: { [Op.in]: ['PENDING', 'ACCEPTED'] },
+      },
+    }),
+    db.Loan.sum('selfGuaranteedAmount', {
+      where: {
+        memberId,
+        selfGuaranteed: true,
+        status: { [Op.in]: ['PENDING', 'PENDING_GUARANTORS', 'UNDER_REVIEW', 'APPROVED', 'ACTIVE'] },
+      },
+    }),
+  ]);
+
+  const encumbered = Number(activeGuarantees || 0) + Number(activeSelfGuaranteedLoans || 0);
+  return Math.max((Number(balances.savings || 0) * SELF_GUARANTEE_MULTIPLIER) - encumbered, 0);
+};
+
 const requestOptOut = asyncHandler(async (req, res) => {
   const member = await findMemberByUserId(req.user.id);
   if (!member) {
@@ -473,16 +560,20 @@ const getLoans = asyncHandler(async (req, res) => {
     include: [db.Guarantor],
     order: [['createdAt', 'DESC']],
   });
+  const repaymentTotals = await getLoanRepaymentTotals(member.id);
 
   const formatted = loans.map((loan) => ({
     id: loan.id,
     memberId: loan.memberId,
     type: loan.type,
     principal: loan.amount,
-    balance: loan.amount,
+    balance: Math.max(Number(loan.amount || 0) - Number(repaymentTotals.get(String(loan.id)) || 0), 0),
+    repaid: Number(repaymentTotals.get(String(loan.id)) || 0),
     status: loan.status,
     approvedAt: loan.updatedAt,
     createdAt: loan.createdAt,
+    selfGuaranteed: loan.selfGuaranteed,
+    selfGuaranteedAmount: loan.selfGuaranteedAmount,
     guarantors: loan.Guarantors || [],
   }));
 
@@ -501,10 +592,28 @@ const applyForLoan = asyncHandler(async (req, res) => {
     throw new ValidationError('Loan amount and type are required');
   }
 
+  const selfGuarantee = req.body.selfGuarantee === true;
+  const requestedAmount = Number(req.body.amount || 0);
+  if (selfGuarantee) {
+    const requestedGuaranteeAmount = Number(req.body.selfGuaranteedAmount || requestedAmount);
+    const availableSavings = await getAvailableSelfGuaranteeSavings(member.id);
+
+    if (requestedGuaranteeAmount < requestedAmount) {
+      throw new ValidationError('Self-guarantee amount must cover the requested loan amount');
+    }
+
+    if (requestedGuaranteeAmount > availableSavings) {
+      throw new ValidationError(`Self-guarantee exceeds available savings. Available self-guarantee limit is KES ${availableSavings.toLocaleString()}.`);
+    }
+  }
+
   const loan = await loanService.createLoan({
     ...req.body,
     memberId: member.id,
     status: 'PENDING',
+    selfGuarantee,
+    selfGuaranteedAmount: selfGuarantee ? Number(req.body.selfGuaranteedAmount || requestedAmount) : 0,
+    guarantors: selfGuarantee ? [] : req.body.guarantors,
   });
 
   return ResponseHandler.created(res, LoanDTO.basic(loan, req.user), 'Loan application submitted successfully');
@@ -589,7 +698,14 @@ const getTransactions = asyncHandler(async (req, res) => {
       .map((transaction) => syncTransactionWithKcbRegistration(transaction))
   );
 
-  const formatted = transactions.map((transaction) => ({
+  const visibleTransactions = transactions.filter((transaction) => {
+    const status = String(transaction.status || '').toUpperCase();
+    if (status !== 'FAILED') return true;
+    const category = String(transaction.paymentCategory || transaction.kcbEndpoint || transaction.description || transaction.type || '').toLowerCase();
+    return !['deposit', 'savings', 'share_capital', 'sharecapital', 'wallet', 'monthly_contribution', 'loan_repayment'].some((token) => category.includes(token));
+  });
+
+  const formatted = visibleTransactions.map((transaction) => ({
     id: transaction.id,
     type: transaction.type,
     amount: transaction.amount,
@@ -812,9 +928,16 @@ const initiateContribution = asyncHandler(async (req, res) => {
   const promptType = getKcbPromptType(contributionType);
   const reference = `CONTRIB-${Date.now()}`;
   const memberNumber = member.memberNumber || reference;
+  const memberPaymentAccount = /^29903-\d+$/i.test(String(memberNumber || ''))
+    ? memberNumber
+    : String(memberNumber || '').trim();
 
   if (paymentMode === 'STK' && !phone) {
     throw new ValidationError('Phone number is required for STK push');
+  }
+
+  if (!memberPaymentAccount || /^AYEDOSSACCO/i.test(memberPaymentAccount)) {
+    throw new ValidationError('Your member number is not available yet. Please refresh your profile before making this payment.');
   }
 
   if (promptType.category === 'loan_repayment') {
@@ -890,8 +1013,15 @@ const initiateContribution = asyncHandler(async (req, res) => {
     body: JSON.stringify({
       phone,
       amount: Math.round(amount),
-      invoiceNumber: memberNumber,
-      member_number: memberNumber,
+      invoiceNumber: memberPaymentAccount,
+      accountReference: memberPaymentAccount,
+      member_number: memberPaymentAccount,
+      memberId: member.id,
+      type: promptType.transactionType,
+      method: 'MPESA',
+      paymentCategory: promptType.category,
+      kcbEndpoint: endpoint,
+      internalReference: reference,
       internal_reference: reference,
       payment_category: promptType.category,
       kcb_endpoint: endpoint,

@@ -116,9 +116,13 @@ const scheduleQueueDelivery = (record) => {
   }));
 };
 
-const enqueueEmail = async (queueName, type, payload) => {
+const enqueueEmail = async (queueName, type, payload, options = {}) => {
   const record = await db.EmailJob.create({ queueName, type, encryptedPayload: encrypt(payload) });
-  scheduleQueueDelivery(record);
+  if (options.immediate) {
+    processEmailJob(record.id).catch(() => {});
+  } else {
+    scheduleQueueDelivery(record);
+  }
   logger.info('Email queued', { module: 'email', queueName, type, emailJobId: record.id });
   return record.id;
 };
@@ -160,4 +164,4 @@ const startEmailWorkers = () => {
   pollOutbox().catch(() => {});
 };
 
-module.exports = { QUEUES, enqueueEmail, startEmailWorkers };
+module.exports = { QUEUES, enqueueEmail, processEmailJob, startEmailWorkers };

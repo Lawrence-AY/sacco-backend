@@ -16,6 +16,14 @@ const Loan = sequelize.define('Loan', {
   rejectionReason: DataTypes.TEXT,
   decidedAt: DataTypes.DATE,
   multiplier: DataTypes.FLOAT,
+  selfGuaranteed: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false
+  },
+  selfGuaranteedAmount: {
+    type: DataTypes.FLOAT,
+    defaultValue: 0
+  },
   status: {
     type: DataTypes.STRING,
     defaultValue: 'PENDING'
