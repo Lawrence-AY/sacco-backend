@@ -7,6 +7,38 @@ const GUARANTOR_TOKEN_TTL_MS = 72 * 60 * 60 * 1000;
 
 const isEmergencyLoan = (type) => String(type || '').toUpperCase() === 'EMERGENCY';
 
+const getAvailableGuaranteeSavings = async (memberId, excludeGuarantorId = null) => {
+  const [savingsAccount, successfulTransactions, activeGuarantees] = await Promise.all([
+    db.SavingsAccount.findOne({ where: { memberId } }),
+    db.Transaction.findAll({
+      where: {
+        memberId,
+        status: 'SUCCESS',
+      },
+    }),
+    db.Guarantor.sum('amount', {
+      where: {
+        memberId,
+        ...(excludeGuarantorId ? { id: { [db.Sequelize.Op.ne]: excludeGuarantorId } } : {}),
+        status: { [db.Sequelize.Op.in]: ['PENDING', 'ACCEPTED'] },
+      },
+    }),
+  ]);
+
+  const savingsFromTransactions = successfulTransactions.reduce((sum, transaction) => {
+    const category = String(
+      transaction.paymentCategory ||
+      transaction.kcbEndpoint ||
+      transaction.description ||
+      transaction.type ||
+      ''
+    ).toLowerCase();
+    return category.includes('savings') ? sum + Number(transaction.amount || 0) : sum;
+  }, 0);
+  const savings = Math.max(Number(savingsAccount?.balance || 0), savingsFromTransactions);
+  return Math.max(savings - Number(activeGuarantees || 0), 0);
+};
+
 const makeWalletTransactionId = () => {
   const date = new Date().toISOString().slice(0, 10).replaceAll('-', '');
   const suffix = Math.floor(Math.random() * 1000000).toString().padStart(6, '0');
@@ -288,7 +320,7 @@ const getGuarantorRequest = async (token) => {
   return { guarantor, expired };
 };
 
-const respondToGuarantorRequest = async (token, decision) => {
+const respondToGuarantorRequest = async (token, decision, amount) => {
   const normalized = String(decision || '').toUpperCase();
   if (!['ACCEPTED', 'REJECTED'].includes(normalized)) {
     const error = new Error('Decision must be ACCEPTED or REJECTED');
@@ -316,22 +348,47 @@ const respondToGuarantorRequest = async (token, decision) => {
       return { loanId: guarantor.loanId, guarantorId: guarantor.id, status: guarantor.status };
     }
 
-    await guarantor.update({ status: normalized, respondedAt: new Date() }, { transaction });
+    const acceptedAmount = Number(amount || guarantor.amount || 0);
+    if (normalized === 'ACCEPTED' && (!Number.isFinite(acceptedAmount) || acceptedAmount <= 0)) {
+      const error = new Error('Guarantee amount is required');
+      error.statusCode = 400;
+      throw error;
+    }
+    if (normalized === 'ACCEPTED') {
+      const availableSavings = await getAvailableGuaranteeSavings(guarantor.memberId, guarantor.id);
+      if (acceptedAmount > availableSavings) {
+        const error = new Error(`Guarantee amount exceeds available savings. Available guarantee limit is KES ${availableSavings.toLocaleString()}.`);
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
+    await guarantor.update({
+      status: normalized,
+      amount: normalized === 'ACCEPTED' ? acceptedAmount : guarantor.amount,
+      respondedAt: new Date(),
+    }, { transaction });
 
     const allGuarantors = await db.Guarantor.findAll({
       where: { loanId: guarantor.loanId },
       transaction,
     });
-    const allAccepted = allGuarantors.every((item) => item.id === guarantor.id ? normalized === 'ACCEPTED' : item.status === 'ACCEPTED');
+    const loan = await db.Loan.findByPk(guarantor.loanId, { transaction });
+    const acceptedTotal = allGuarantors.reduce((sum, item) => {
+      const status = item.id === guarantor.id ? normalized : item.status;
+      const nextAmount = item.id === guarantor.id && normalized === 'ACCEPTED' ? acceptedAmount : item.amount;
+      return status === 'ACCEPTED' ? sum + Number(nextAmount || 0) : sum;
+    }, 0);
+    const fullyGuaranteed = acceptedTotal >= Number(loan?.amount || 0);
 
-    if (allAccepted) {
+    if (fullyGuaranteed) {
       await db.Loan.update(
         { status: 'UNDER_REVIEW', approvalStage: 'FINANCE' },
         { where: { id: guarantor.loanId }, transaction },
       );
     }
 
-    return { loanId: guarantor.loanId, guarantorId: guarantor.id, status: normalized, allAccepted };
+    return { loanId: guarantor.loanId, guarantorId: guarantor.id, status: normalized, allAccepted: fullyGuaranteed };
   });
 
   if (!result) return null;

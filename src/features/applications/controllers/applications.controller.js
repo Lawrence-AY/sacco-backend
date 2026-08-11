@@ -50,6 +50,9 @@ exports.createApplication = asyncHandler(async (req, res) => {
     type,
     occupation,
     address,
+    poBox,
+    county,
+    subCounty,
     consentGiven,
   } = req.body; // Removed idDocumentName, passportPhotoName
 
@@ -92,6 +95,9 @@ exports.createApplication = asyncHandler(async (req, res) => {
     applicationData.type = occupation === 'Employed' ? 'EMPLOYEE' : 'NON_EMPLOYEE';
   }
   if (address) applicationData.address = address;
+  if (poBox) applicationData.poBox = poBox;
+  if (county) applicationData.county = county;
+  if (subCounty) applicationData.subCounty = subCounty;
   if (consentGiven) {
     applicationData.consentGiven = consentGiven;
     applicationData.consentGivenAt = new Date();

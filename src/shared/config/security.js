@@ -131,10 +131,10 @@ const sessionConfig = {
 
 // Input Validation Limits
 const inputLimits = {
-  json: '3mb',
+  json: process.env.JSON_BODY_LIMIT || '20mb',
   urlencoded: '10kb',
   text: '1mb',
-  file: '1.5mb',
+  file: '5mb',
   maxArraySize: 100,
   maxObjectDepth: 5,
   maxStringLength: 10000

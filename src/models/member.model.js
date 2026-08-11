@@ -21,7 +21,9 @@ const Member = sequelize.define('Member', {
   },
   nationalId: DataTypes.STRING,
   nationalIdUrl: DataTypes.TEXT,
+  nationalIdBackUrl: DataTypes.TEXT,
   passportUrl: DataTypes.TEXT,
+  passportBackUrl: DataTypes.TEXT,
   shareCapital: {
     type: DataTypes.FLOAT,
     defaultValue: 0

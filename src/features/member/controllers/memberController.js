@@ -21,6 +21,12 @@ const PROFILE_PHOTO_TYPES = {
   'image/png': 'png',
   'image/webp': 'webp',
 };
+const KYC_DOCUMENT_MAX_BYTES = 5 * 1024 * 1024;
+const KYC_DOCUMENT_TYPES = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'application/pdf': 'pdf',
+};
 const DEFAULT_KCB_PAYBILL_NUMBER = '522522';
 const MINIMUM_LOAN_SHARE_CAPITAL = 25000;
 const LOAN_ELIGIBILITY_MESSAGE = 'You are not yet eligible to apply for a loan. Please complete the minimum required share capital purchase before submitting a loan application.';
@@ -174,27 +180,51 @@ const findLoanForRepayment = async (memberId) => {
   }) || null;
 };
 
+const releaseCoveredGuarantors = async (loanId) => {
+  const totalRepaid = await db.Transaction.sum('amount', {
+    where: {
+      loanId,
+      type: 'LOAN_REPAYMENT',
+      status: 'SUCCESS',
+    },
+  });
+  const repaid = Number(totalRepaid || 0);
+  const guarantors = await db.Guarantor.findAll({
+    where: { loanId, status: 'ACCEPTED' },
+    order: [['respondedAt', 'ASC']],
+  });
+
+  await Promise.all(guarantors
+    .filter((guarantor) => repaid >= Number(guarantor.amount || 0))
+    .map((guarantor) => guarantor.update({ status: 'RELEASED', releasedAt: new Date() })));
+};
+
 const applyLoanRepaymentLink = async (transaction) => {
   if (
     !transaction
-    || transaction.loanId
     || String(transaction.type || '').toUpperCase() !== 'LOAN_REPAYMENT'
     || String(transaction.status || '').toUpperCase() !== 'SUCCESS'
   ) {
     return transaction;
   }
 
-  const loan = await findLoanForRepayment(transaction.memberId);
-  if (!loan) {
-    logger.warn('Successful loan repayment has no active loan to apply to', {
-      module: 'member',
-      transactionId: transaction.id,
-      memberId: transaction.memberId,
-    });
-    return transaction;
+  let loanId = transaction.loanId;
+  if (!loanId) {
+    const loan = await findLoanForRepayment(transaction.memberId);
+    if (!loan) {
+      logger.warn('Successful loan repayment has no active loan to apply to', {
+        module: 'member',
+        transactionId: transaction.id,
+        memberId: transaction.memberId,
+      });
+      return transaction;
+    }
+
+    await transaction.update({ loanId: loan.id });
+    loanId = loan.id;
   }
 
-  await transaction.update({ loanId: loan.id });
+  await releaseCoveredGuarantors(loanId);
   return transaction;
 };
 
@@ -357,6 +387,22 @@ const parseProfilePhotoDataUrl = (dataUrl) => {
   return { buffer, mimeType, extension };
 };
 
+const parseKycDocumentDataUrl = (dataUrl) => {
+  const match = /^data:(image\/(?:png|jpe?g)|application\/pdf);base64,([A-Za-z0-9+/=]+)$/i.exec(String(dataUrl || '').trim());
+  if (!match) {
+    throw new ValidationError('KYC document must be a PNG, JPG, JPEG, or PDF file.');
+  }
+
+  const mimeType = match[1].toLowerCase() === 'image/jpg' ? 'image/jpeg' : match[1].toLowerCase();
+  const extension = KYC_DOCUMENT_TYPES[mimeType];
+  const buffer = Buffer.from(match[2], 'base64');
+  if (!buffer.length || buffer.length > KYC_DOCUMENT_MAX_BYTES) {
+    throw new ValidationError('KYC document must be 5 MB or smaller.');
+  }
+
+  return { buffer, mimeType, extension };
+};
+
 const uploadProfilePhoto = asyncHandler(async (req, res) => {
   const { buffer, mimeType, extension } = parseProfilePhotoDataUrl(req.body?.photo);
   const objectPath = `members/${req.user.id}/passport-photo-${Date.now()}.${extension}`;
@@ -374,16 +420,46 @@ const uploadProfilePhoto = asyncHandler(async (req, res) => {
   return ResponseHandler.success(res, UserDTO.private(updated), 'Profile photo updated successfully', 200);
 });
 
+const uploadKycDocuments = asyncHandler(async (req, res) => {
+  const member = await ensureMemberByUser(req.user);
+  const front = parseKycDocumentDataUrl(req.body?.front);
+  const identityType = String(req.body?.identityType || 'national').toLowerCase();
+  const isPassport = identityType === 'passport';
+  const back = isPassport ? null : parseKycDocumentDataUrl(req.body?.back);
+  const bucket = getFirebaseStorage().bucket();
+
+  const saveDocument = async (side, parsed) => {
+    const label = isPassport ? `passport-${side}` : `national-id-${side}`;
+    const objectPath = `members/${member.memberNumber || member.id}/documents/${label}-${Date.now()}.${parsed.extension}`;
+    const file = bucket.file(objectPath);
+    await file.save(parsed.buffer, {
+      contentType: parsed.mimeType,
+      metadata: { cacheControl: 'private, max-age=3600' },
+    });
+    const [url] = await file.getSignedUrl({ action: 'read', expires: '2500-01-01' });
+    return url;
+  };
+
+  const [frontUrl, backUrl] = await Promise.all([
+    saveDocument('front', front),
+    back ? saveDocument('back', back) : Promise.resolve(null),
+  ]);
+
+  await member.update({
+    nationalIdUrl: isPassport ? member.nationalIdUrl : frontUrl,
+    nationalIdBackUrl: isPassport ? member.nationalIdBackUrl : backUrl,
+    passportUrl: isPassport ? frontUrl : member.passportUrl,
+    passportBackUrl: member.passportBackUrl,
+  });
+
+  const updated = await userService.getUserById(req.user.id);
+  return ResponseHandler.success(res, { ...UserDTO.private(updated), Member: member }, 'KYC documents updated successfully', 200);
+});
+
 const updateProfile = asyncHandler(async (req, res) => {
   const body = { ...req.body };
   const nominees = body.nominees;
   delete body.nominees;
-  if (body.nextOfKin) {
-    body.nextOfKinName = body.nextOfKin.name ?? body.nextOfKinName;
-    body.nextOfKinRelationship = body.nextOfKin.relationship ?? body.nextOfKinRelationship;
-    body.nextOfKinPhone = body.nextOfKin.phone ?? body.nextOfKinPhone;
-    delete body.nextOfKin;
-  }
   const allowed = [
     'firstName',
     'lastName',
@@ -394,14 +470,14 @@ const updateProfile = asyncHandler(async (req, res) => {
     'kraPin',
     'occupation',
     'address',
+    'poBox',
+    'county',
+    'subCounty',
     'dateOfBirth',
     'gender',
     'employer',
     'monthlyIncome',
     'payrollNumber',
-    'nextOfKinName',
-    'nextOfKinRelationship',
-    'nextOfKinPhone',
     'passportPhotoUrl',
     'consentGiven',
     'consentGivenAt',
@@ -600,6 +676,8 @@ const applyForLoan = asyncHandler(async (req, res) => {
 
   const selfGuarantee = req.body.selfGuarantee === true;
   const requestedAmount = Number(req.body.amount || 0);
+  const isEmergencyLoan = String(req.body.type || '').toUpperCase() === 'EMERGENCY';
+  const guarantors = Array.isArray(req.body.guarantors) ? req.body.guarantors : [];
   if (selfGuarantee) {
     const requestedGuaranteeAmount = Number(req.body.selfGuaranteedAmount || requestedAmount);
     const availableSavings = await getAvailableSelfGuaranteeSavings(member.id);
@@ -612,6 +690,9 @@ const applyForLoan = asyncHandler(async (req, res) => {
       throw new ValidationError(`Self-guarantee exceeds available savings. Available self-guarantee limit is KES ${availableSavings.toLocaleString()}.`);
     }
   }
+  if (!selfGuarantee && !isEmergencyLoan && guarantors.length < 1) {
+    throw new ValidationError('Select at least one guarantor, or use self-guarantee if your savings cover the loan.');
+  }
 
   const loan = await loanService.createLoan({
     ...req.body,
@@ -619,7 +700,7 @@ const applyForLoan = asyncHandler(async (req, res) => {
     status: 'PENDING',
     selfGuarantee,
     selfGuaranteedAmount: selfGuarantee ? Number(req.body.selfGuaranteedAmount || requestedAmount) : 0,
-    guarantors: selfGuarantee ? [] : req.body.guarantors,
+    guarantors: selfGuarantee || isEmergencyLoan ? [] : guarantors,
   });
 
   return ResponseHandler.created(res, LoanDTO.basic(loan, req.user), 'Loan application submitted successfully');
@@ -766,7 +847,10 @@ const getGuarantees = asyncHandler(async (req, res) => {
     id: guarantee.id,
     loanId: guarantee.loanId,
     amount: guarantee.amount,
+    status: guarantee.status,
     createdAt: guarantee.createdAt,
+    respondedAt: guarantee.respondedAt,
+    releasedAt: guarantee.releasedAt,
     loan: guarantee.Loan ? {
       id: guarantee.Loan.id,
       type: guarantee.Loan.type,
@@ -797,7 +881,7 @@ const searchGuarantors = asyncHandler(async (req, res) => {
     },
     include: [{
       model: db.User,
-      attributes: ['id', 'name', 'firstName', 'lastName', 'email', 'phone'],
+      attributes: ['id', 'name', 'firstName', 'lastName'],
     }],
     limit: 10,
     order: [['memberNumber', 'ASC']],
@@ -834,8 +918,6 @@ const searchGuarantors = asyncHandler(async (req, res) => {
         memberId: member.id,
         memberNumber: member.memberNumber,
         name: fullName,
-        phone: user.phone || null,
-        shareCapital: entry.balances?.shareCapital || 0,
         status: activeGuarantees > 0 ? `${activeGuarantees} active guarantee${activeGuarantees === 1 ? '' : 's'}` : 'Available',
         activeGuarantees,
       };
@@ -901,6 +983,7 @@ const repayLoan = asyncHandler(async (req, res) => {
     }, { transaction: dbTransaction });
     return { ledger, repayment, paymentDate };
   });
+  await releaseCoveredGuarantors(loan.id);
 
   return ResponseHandler.created(res, {
     id: result.ledger.id, type: result.ledger.type, amount: Number(result.ledger.amount),
@@ -1269,6 +1352,7 @@ const emailReport = asyncHandler(async (req, res) => {
 module.exports = {
   getProfile,
   uploadProfilePhoto,
+  uploadKycDocuments,
   updateProfile,
   transferShareCapital,
   requestOptOut,

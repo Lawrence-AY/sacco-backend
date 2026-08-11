@@ -59,9 +59,6 @@ const updateUser = asyncHandler(async (req, res) => {
     'employer',
     'monthlyIncome',
     'payrollNumber',
-    'nextOfKinName',
-    'nextOfKinRelationship',
-    'nextOfKinPhone',
     'passportPhotoUrl',
     'consentGiven',
   ];

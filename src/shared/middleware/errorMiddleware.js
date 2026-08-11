@@ -85,6 +85,14 @@ const normalizeError = (err) => {
     return { statusCode: 429, errorCode: 'RATE_LIMITED', message: 'Too many requests, please try again later' };
   }
 
+  if (err.type === 'entity.too.large' || err.name === 'PayloadTooLargeError' || err.status === 413 || err.statusCode === 413) {
+    return {
+      statusCode: 413,
+      errorCode: 'PAYLOAD_TOO_LARGE',
+      message: 'The uploaded documents are too large. Please upload compressed images or PDF files under 5 MB each.',
+    };
+  }
+
   if (err instanceof AppError || err.isOperational) {
     return {
       statusCode: err.statusCode || err.status || 500,
@@ -189,8 +197,8 @@ const notFoundHandler = (req, res, next) => {
  * Request timeout middleware
  */
 const timeoutMiddleware = (req, res, next) => {
-  // Set timeout for requests (30 seconds)
-  req.setTimeout(30000, () => {
+  // Allow document-heavy onboarding requests enough time on tunneled/dev URLs.
+  req.setTimeout(Number(process.env.REQUEST_TIMEOUT_MS || 130000), () => {
     logger.warn('Request timeout:', {
       method: req.method,
       url: req.originalUrl,

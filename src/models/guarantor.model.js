@@ -21,7 +21,8 @@ const Guarantor = sequelize.define('Guarantor', {
     unique: true
   },
   tokenExpiresAt: DataTypes.DATE,
-  respondedAt: DataTypes.DATE
+  respondedAt: DataTypes.DATE,
+  releasedAt: DataTypes.DATE
 }, {
   timestamps: true
 });

@@ -21,6 +21,9 @@ const User = sequelize.define('User', {
   kraPin: DataTypes.STRING,
   occupation: DataTypes.STRING,
   address: DataTypes.TEXT,
+  poBox: DataTypes.STRING,
+  county: DataTypes.STRING,
+  subCounty: DataTypes.STRING,
   dateOfBirth: DataTypes.DATEONLY,
   gender: DataTypes.STRING,
   employer: DataTypes.STRING,
@@ -35,9 +38,6 @@ const User = sequelize.define('User', {
     type: DataTypes.DECIMAL(14, 2),
     defaultValue: 0
   },
-  nextOfKinName: DataTypes.STRING,
-  nextOfKinRelationship: DataTypes.STRING,
-  nextOfKinPhone: DataTypes.STRING,
   idDocumentUrl: DataTypes.TEXT,
   passportPhotoUrl: DataTypes.TEXT,
   role: {

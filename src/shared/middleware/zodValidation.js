@@ -64,19 +64,14 @@ const schemas = {
     kraPin: optionalNullableString(20),
     occupation: z.string().trim().max(100).optional(),
     address: z.string().trim().max(255).optional(),
+    poBox: optionalNullableString(100),
+    county: optionalNullableString(100),
+    subCounty: optionalNullableString(100),
     dateOfBirth: optionalEmptyableString(20),
     gender: optionalEmptyableString(40),
     employer: optionalEmptyableString(120),
     monthlyIncome: z.coerce.number().nonnegative().max(100000000).optional().or(z.literal('')),
     payrollNumber: optionalEmptyableString(60),
-    nextOfKinName: optionalEmptyableString(120),
-    nextOfKinRelationship: optionalEmptyableString(80),
-    nextOfKinPhone: optionalEmptyableString(30),
-    nextOfKin: strictObject({
-      name: optionalEmptyableString(120),
-      relationship: optionalEmptyableString(80),
-      phone: optionalEmptyableString(30),
-    }).optional(),
     passportPhotoUrl: z.string().trim().url().max(2048).optional().or(dataImageUrl.max(2200000)).or(z.literal('')),
     consentGiven: z.boolean().optional(),
     consentGivenAt: z.string().trim().max(64).optional(),
@@ -93,6 +88,14 @@ const schemas = {
   }),
   profilePhotoUpload: strictObject({
     photo: profilePhotoDataUrl,
+  }),
+  kycDocumentsUpload: strictObject({
+    identityType: z.enum(['national', 'passport']).optional(),
+    front: z.string().trim().startsWith('data:').max(7000000),
+    back: z.string().trim().startsWith('data:').max(7000000).optional(),
+  }).refine((data) => data.identityType === 'passport' || Boolean(data.back), {
+    message: 'Document back is required for National ID uploads',
+    path: ['back'],
   }),
   roleUpdate: strictObject({
     role: z.enum(['MEMBER', 'FINANCE', 'ADMIN', 'SUPERADMIN', 'member', 'finance', 'admin', 'superadmin'])
