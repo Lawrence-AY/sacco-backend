@@ -122,7 +122,7 @@ const getGuarantorRequest = asyncHandler(async (req, res) => {
 });
 
 const respondToGuarantorRequest = asyncHandler(async (req, res) => {
-  const loan = await loanService.respondToGuarantorRequest(req.params.token, req.body.decision);
+  const loan = await loanService.respondToGuarantorRequest(req.params.token, req.body.decision, req.body.amount);
   if (!loan) throw new NotFoundError('Guarantor request not found');
   return ResponseHandler.success(res, LoanDTO.basic(loan, req.user), 'Guarantor response recorded', 200);
 });

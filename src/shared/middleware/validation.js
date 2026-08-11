@@ -243,7 +243,7 @@ const validateObject = (data, schema) => {
     }
 
     // Skip validation if field is not required and not provided
-    if (!required && (finalValue === null || finalValue === undefined)) {
+    if (!required && (finalValue === null || finalValue === undefined || finalValue === '')) {
       continue;
     }
 
@@ -310,9 +310,12 @@ const schemas = {
     phone: { rules: ['required', 'phone'], sanitize: 'phone' },
     password: { rules: ['required', 'strongPassword'], sanitize: 'string' },
     nationalId: { rules: ['required', 'nationalId'], sanitize: 'string' },
-    kraPin: { rules: ['required', 'kraPin'], sanitize: 'string' },
+    kraPin: { rules: ['kraPin'], sanitize: 'string' },
     occupation: { rules: [{ name: 'maxLength', params: [100] }], sanitize: 'string' },
-    address: { rules: [{ name: 'maxLength', params: [255] }], sanitize: 'string' }
+    address: { rules: [{ name: 'maxLength', params: [255] }], sanitize: 'string' },
+    poBox: { rules: [{ name: 'maxLength', params: [100] }], sanitize: 'string' },
+    county: { rules: [{ name: 'maxLength', params: [100] }], sanitize: 'string' },
+    subCounty: { rules: [{ name: 'maxLength', params: [100] }], sanitize: 'string' }
   },
 
   userLogin: {

@@ -96,7 +96,8 @@ const isOriginAllowed = (origin) => {
   if (!origin) return true;
   const allowAllOrigins = process.env.NODE_ENV !== 'production' && allowedOrigins.includes('*');
   const allowVercelPreview = process.env.NODE_ENV !== 'production' && /^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(origin);
-  return allowAllOrigins || allowVercelPreview || allowedOrigins.includes(origin);
+  const allowNgrokPreview = process.env.NODE_ENV !== 'production' && /^https:\/\/[a-z0-9-]+\.ngrok-free\.(app|dev)$/i.test(origin);
+  return allowAllOrigins || allowVercelPreview || allowNgrokPreview || allowedOrigins.includes(origin);
 };
 
 const getEnvironmentDiagnostics = () => {

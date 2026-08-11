@@ -4,6 +4,7 @@ const logger = require('../../shared/utils/logger');
 const { getFirebaseDb } = require('../../shared/config/firebase');
 
 const router = express.Router();
+const MPESA_PROXY_TIMEOUT_MS = Number(process.env.MPESA_TIMEOUT_MS || 115000);
 
 router.post('/stk', async (req, res, next) => {
   const mpesaUrl = process.env.MPESA_URL?.trim().replace(/\/+$/, '');
@@ -24,11 +25,21 @@ router.post('/stk', async (req, res, next) => {
   }
 
   try {
+    const upstreamBody = {
+      phone,
+      amount: String(amount),
+      applicationId: req.body?.applicationId || null,
+      accountReference: req.body?.accountReference || null,
+      paymentCategory: req.body?.paymentCategory || req.body?.category || null,
+      category: req.body?.category || req.body?.paymentCategory || null,
+      type: req.body?.type || null,
+      internalReference: req.body?.internalReference || req.body?.internal_reference || null,
+    };
     const upstream = await fetch(mpesaUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone, amount: String(amount) }),
-      signal: AbortSignal.timeout(Number(process.env.MPESA_TIMEOUT_MS || 30000)),
+      body: JSON.stringify(upstreamBody),
+      signal: AbortSignal.timeout(MPESA_PROXY_TIMEOUT_MS),
     });
     const text = await upstream.text();
     let payload;
@@ -37,7 +48,17 @@ router.post('/stk', async (req, res, next) => {
     } catch {
       payload = { success: false, message: 'M-Pesa service returned an invalid response' };
     }
-    if (upstream.ok && payload?.success && payload?.checkoutRequestId) {
+    if (!upstream.ok || !payload?.success) {
+      const upstreamMessage = payload?.message || payload?.error || payload?.mpesa?.errorMessage || payload?.mpesa?.ResponseDescription || 'M-Pesa prompt could not be started.';
+      return res.status(upstream.status >= 500 ? 502 : upstream.status).json({
+        success: false,
+        message: upstreamMessage,
+        errorCode: 'MPESA_STK_FAILED',
+        mpesa: payload?.mpesa || null,
+      });
+    }
+
+    if (payload?.checkoutRequestId) {
       const checkoutRequestId = String(payload.checkoutRequestId);
       try {
         await getFirebaseDb().collection('registrations').doc(checkoutRequestId).set({
@@ -47,6 +68,8 @@ router.post('/stk', async (req, res, next) => {
           amount,
           transaction_id: payload.transaction?.id || null,
           internal_reference: payload.transaction?.internalReference || payload.accountReference || null,
+          application_id: req.body?.applicationId || null,
+          account_reference: payload.accountReference || req.body?.accountReference || null,
           status: 'pending',
           created_at: new Date(),
           updated_at: new Date(),
@@ -64,7 +87,7 @@ router.post('/stk', async (req, res, next) => {
       }
     }
 
-    return res.status(upstream.ok ? 200 : upstream.status).json(payload);
+    return res.status(200).json(payload);
   } catch (error) {
     const timedOut = error.name === 'TimeoutError' || error.name === 'AbortError';
     logger.error('M-Pesa STK request failed', {
@@ -75,7 +98,7 @@ router.post('/stk', async (req, res, next) => {
     return res.status(timedOut ? 504 : 502).json({
       success: false,
       message: timedOut
-        ? 'M-Pesa took too long to respond. Please try again.'
+        ? 'M-Pesa took too long to start the phone prompt. Please wait one minute before retrying.'
         : 'Unable to connect to M-Pesa. Please try again.',
     });
   }

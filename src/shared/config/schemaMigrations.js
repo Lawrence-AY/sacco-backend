@@ -10,9 +10,11 @@ const userColumns = {
   staffId: { type: DataTypes.STRING, allowNull: true },
   isWhitelisted: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
   employerContribution: { type: DataTypes.DECIMAL(14, 2), allowNull: false, defaultValue: 0 },
-  nextOfKinName: { type: DataTypes.STRING, allowNull: true },
-  nextOfKinRelationship: { type: DataTypes.STRING, allowNull: true },
-  nextOfKinPhone: { type: DataTypes.STRING, allowNull: true },
+  kraPin: { type: DataTypes.STRING, allowNull: true },
+  address: { type: DataTypes.TEXT, allowNull: true },
+  poBox: { type: DataTypes.STRING, allowNull: true },
+  county: { type: DataTypes.STRING, allowNull: true },
+  subCounty: { type: DataTypes.STRING, allowNull: true },
   otpAttempts: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
   otpLastSentAt: { type: DataTypes.DATE, allowNull: true },
   failedLoginAttempts: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
@@ -40,6 +42,20 @@ const ensureUserProfileColumns = async (sequelize) => {
   if (table.passportPhotoUrl?.type && !String(table.passportPhotoUrl.type).toUpperCase().includes('TEXT')) {
     await queryInterface.changeColumn('Users', 'passportPhotoUrl', { type: DataTypes.TEXT, allowNull: true });
     logger.info('Expanded Users.passportPhotoUrl to TEXT');
+  }
+
+  const optionalColumns = {
+    kraPin: { type: DataTypes.STRING, allowNull: true },
+    address: { type: DataTypes.TEXT, allowNull: true },
+    poBox: { type: DataTypes.STRING, allowNull: true },
+    county: { type: DataTypes.STRING, allowNull: true },
+    subCounty: { type: DataTypes.STRING, allowNull: true },
+  };
+  for (const [column, definition] of Object.entries(optionalColumns)) {
+    if (table[column]?.allowNull === false) {
+      await queryInterface.changeColumn('Users', column, definition);
+      logger.info('Relaxed Users optional profile column', { column });
+    }
   }
 };
 
@@ -78,7 +94,9 @@ const ensureTableColumns = async (sequelize, tableName, columns) => {
 
 const memberDocumentColumns = {
   nationalIdUrl: { type: DataTypes.TEXT, allowNull: true },
+  nationalIdBackUrl: { type: DataTypes.TEXT, allowNull: true },
   passportUrl: { type: DataTypes.TEXT, allowNull: true },
+  passportBackUrl: { type: DataTypes.TEXT, allowNull: true },
 };
 
 const applicationDocumentColumns = {
@@ -87,13 +105,36 @@ const applicationDocumentColumns = {
   idDocument: { type: DataTypes.TEXT, allowNull: true },
   passportPhoto: { type: DataTypes.TEXT, allowNull: true },
   kraPin: { type: DataTypes.STRING, allowNull: true },
+  address: { type: DataTypes.STRING, allowNull: true },
+  poBox: { type: DataTypes.STRING, allowNull: true },
+  county: { type: DataTypes.STRING, allowNull: true },
+  subCounty: { type: DataTypes.STRING, allowNull: true },
   paymentVerifiedAt: { type: DataTypes.DATE, allowNull: true },
+};
+
+const ensureOptionalApplicationColumns = async (sequelize) => {
+  const queryInterface = sequelize.getQueryInterface();
+  const table = await queryInterface.describeTable('MembershipApplications');
+  const optionalColumns = {
+    kraPin: { type: DataTypes.STRING, allowNull: true },
+    address: { type: DataTypes.STRING, allowNull: true },
+    poBox: { type: DataTypes.STRING, allowNull: true },
+    county: { type: DataTypes.STRING, allowNull: true },
+    subCounty: { type: DataTypes.STRING, allowNull: true },
+  };
+  for (const [column, definition] of Object.entries(optionalColumns)) {
+    if (table[column]?.allowNull === false) {
+      await queryInterface.changeColumn('MembershipApplications', column, definition);
+      logger.info('Relaxed MembershipApplications optional column', { column });
+    }
+  }
 };
 
 const guarantorWorkflowColumns = {
   requestToken: { type: DataTypes.STRING, allowNull: true },
   tokenExpiresAt: { type: DataTypes.DATE, allowNull: true },
   respondedAt: { type: DataTypes.DATE, allowNull: true },
+  releasedAt: { type: DataTypes.DATE, allowNull: true },
 };
 
 const loanSelfGuaranteeColumns = {
@@ -320,6 +361,7 @@ const runSchemaMigrations = async (sequelize) => {
   await ensureTransactionTrackingColumns(sequelize);
   await ensureTableColumns(sequelize, 'Members', memberDocumentColumns);
   await ensureTableColumns(sequelize, 'MembershipApplications', applicationDocumentColumns);
+  await ensureOptionalApplicationColumns(sequelize);
   await ensureTableColumns(sequelize, 'Guarantors', guarantorWorkflowColumns);
   await ensureTableColumns(sequelize, 'Loans', loanSelfGuaranteeColumns);
   await ensureLoginSessionColumns(sequelize);

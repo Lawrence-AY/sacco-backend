@@ -6,6 +6,7 @@ const { validateRequired, isValidEmail, isValidPhone, validatePagination } = req
 const { sanitizeModel, sanitizeModels } = require('../../../shared/utils/dtos');
 const logger = require('../../../shared/utils/logger');
 const { getFirebaseDb } = require('../../../shared/config/firebase');
+const db = require('../../../models');
 
 const SUCCESSFUL_PAYMENT_STATUSES = new Set(['paid', 'completed', 'success', 'successful']);
 const FAILED_PAYMENT_STATUSES = new Set(['failed', 'cancelled', 'canceled']);
@@ -18,6 +19,23 @@ const normalizePaymentStatus = (status) => {
 };
 
 const normalizePhone = (phone) => String(phone || '').replace(/\D/g, '').replace(/^0/, '254');
+
+const normalizeApplicationType = (type, occupation) => {
+  const normalizedType = String(type || '').trim().toUpperCase();
+  if (normalizedType === 'EMPLOYEE' || String(occupation || '').trim().toLowerCase() === 'employed') {
+    return 'EMPLOYEE';
+  }
+  return 'NON_EMPLOYEE';
+};
+
+const normalizeIdentityType = (identityType) => {
+  const normalized = String(identityType || 'national').trim().toLowerCase();
+  if (normalized === 'passport') return 'passport';
+  if (['drivers_license', 'driver_license', 'driverlicense', 'driverslicense'].includes(normalized)) {
+    return 'drivers_license';
+  }
+  return 'national';
+};
 
 const findRegistration = async (fieldValues) => {
   const registrations = getFirebaseDb().collection('registrations');
@@ -150,7 +168,7 @@ const syncRegistrationPaymentStatus = async (registration, checkoutRequestId) =>
 const submitApplication = asyncHandler(async (req, res) => {
   const authenticatedEmail = String(req.user?.email || '').trim().toLowerCase();
   const identityNumber = req.body.identityNumber || req.body.nationalId || '';
-  const identityType = req.body.identityType || 'national';
+  const identityType = normalizeIdentityType(req.body.identityType);
 
   const payload = {
     name: req.body.name,
@@ -162,9 +180,12 @@ const submitApplication = asyncHandler(async (req, res) => {
     idDocument: req.body.idDocument || null,
     passportPhoto: req.body.passportPhoto || null,
     kraPin: req.body.kraPin || null,
-    type: req.body.type,
+    type: normalizeApplicationType(req.body.type, req.body.occupation),
     occupation: req.body.occupation,
-    address: req.body.address,
+    address: req.body.address || null,
+    poBox: req.body.poBox || null,
+    county: req.body.county || null,
+    subCounty: req.body.subCounty || null,
     consentGiven: Boolean(req.body.consentGiven),
   };
 
@@ -178,7 +199,20 @@ const submitApplication = asyncHandler(async (req, res) => {
     throw new ValidationError('A valid phone number is required');
   }
 
-  const application = await applicationService.createApplication(payload);
+  let application = await db.MembershipApplication.findOne({
+    where: {
+      email: authenticatedEmail,
+      status: { [db.Sequelize.Op.in]: ['PENDING_PAYMENT', 'PENDING_APPROVAL'] },
+    },
+    order: [['createdAt', 'DESC']],
+  });
+
+  if (application) {
+    await application.update(payload);
+  } else {
+    application = await applicationService.createApplication(payload);
+  }
+
   return ResponseHandler.created(
     res,
     sanitizeModel(application, {

@@ -2,11 +2,29 @@
 const db = require('../../../models');
 const { getFirebaseDb, getFirebaseStorage } = require('../../../shared/config/firebase');
 const memberNumberService = require('../../member/services/memberNumberService');
+const logger = require('../../../shared/utils/logger');
+
+const normalizeApplicationType = (type, occupation) => {
+  const normalizedType = String(type || '').trim().toUpperCase();
+  if (normalizedType === 'EMPLOYEE' || String(occupation || '').trim().toLowerCase() === 'employed') {
+    return 'EMPLOYEE';
+  }
+  return 'NON_EMPLOYEE';
+};
+
+const normalizeIdentityType = (identityType) => {
+  const normalized = String(identityType || 'national').trim().toLowerCase();
+  if (normalized === 'passport') return 'passport';
+  if (['drivers_license', 'driver_license', 'driverlicense', 'driverslicense'].includes(normalized)) {
+    return 'drivers_license';
+  }
+  return 'national';
+};
 
 const parseDataUrl = (value) => {
   const match = /^data:([^;]+);base64,(.+)$/i.exec(String(value || ''));
   if (!match) return null;
-  const extension = match[1].split('/').pop().replace('jpeg', 'jpg');
+  const extension = match[1].split('/').pop().replace('jpeg', 'jpg').replace('plain', 'txt');
   return {
     buffer: Buffer.from(match[2], 'base64'),
     contentType: match[1],
@@ -27,20 +45,40 @@ const uploadMemberDocument = async (memberNumber, label, dataUrl) => {
   return url;
 };
 
+const persistApplicationDocuments = async (application, member) => {
+  const isPassport = String(application.identityType || '').toLowerCase() === 'passport';
+  const [frontUrl, backUrl] = await Promise.all([
+    uploadMemberDocument(member.memberNumber, isPassport ? 'passport-front' : 'national-id-front', application.idDocument),
+    isPassport ? Promise.resolve(null) : uploadMemberDocument(member.memberNumber, 'national-id-back', application.passportPhoto),
+  ]);
+
+  if (frontUrl || backUrl) {
+    await member.update({
+      nationalIdUrl: isPassport ? member.nationalIdUrl : frontUrl || member.nationalIdUrl,
+      nationalIdBackUrl: isPassport ? member.nationalIdBackUrl : backUrl || member.nationalIdBackUrl,
+      passportUrl: isPassport ? frontUrl || member.passportUrl : member.passportUrl,
+      passportBackUrl: member.passportBackUrl,
+    });
+  }
+};
+
 const createApplication = async (data) => {
   return await db.MembershipApplication.create({
     name: data.name,
     email: data.email,
     phone: data.phone,
     nationalId: data.nationalId || data.identityNumber,
-    identityType: data.identityType || 'national',
+    identityType: normalizeIdentityType(data.identityType),
     identityNumber: data.identityNumber || data.nationalId,
     idDocument: data.idDocument || null,
     passportPhoto: data.passportPhoto || null,
     kraPin: data.kraPin,
     occupation: data.occupation ?? null,
     address: data.address ?? null,
-    type: data.type,
+    poBox: data.poBox ?? null,
+    county: data.county ?? null,
+    subCounty: data.subCounty ?? null,
+    type: normalizeApplicationType(data.type, data.occupation),
     consentGiven: data.consentGiven ?? false,
     consentGivenAt: data.consentGiven ? new Date() : null,
     feePaid: data.feePaid ?? false,
@@ -86,6 +124,9 @@ const updateApplication = async (id, data) => {
         : application.paymentConfirmedAt,
     occupation: data.occupation ?? application.occupation,
     address: data.address ?? application.address,
+    poBox: data.poBox ?? application.poBox,
+    county: data.county ?? application.county,
+    subCounty: data.subCounty ?? application.subCounty,
     // Removed idDocumentName and passportPhotoName
   });
 };
@@ -114,6 +155,9 @@ const finalizePaidApplication = async ({
     kraPin: application.kraPin || user.kraPin,
     occupation: application.occupation || user.occupation,
     address: application.address || user.address,
+    poBox: application.poBox || user.poBox,
+    county: application.county || user.county,
+    subCounty: application.subCounty || user.subCounty,
     consentGiven: application.consentGiven ?? user.consentGiven,
     consentGivenAt: application.consentGivenAt || user.consentGivenAt || new Date(),
     role: 'MEMBER',
@@ -124,7 +168,7 @@ const finalizePaidApplication = async ({
   if (!member) {
     member = await memberNumberService.createMember({
       userId: user.id,
-      type: application.type || 'NON_EMPLOYEE',
+      type: normalizeApplicationType(application.type, application.occupation),
       nationalId: application.nationalId || application.identityNumber || user.nationalId || null,
       status: 'ACTIVE',
       dateJoined: new Date(),
@@ -134,7 +178,7 @@ const finalizePaidApplication = async ({
     });
   } else {
     await member.update({
-      type: application.type || member.type || 'NON_EMPLOYEE',
+      type: normalizeApplicationType(application.type || member.type, application.occupation),
       nationalId: application.nationalId || application.identityNumber || member.nationalId,
       status: 'ACTIVE',
       dateJoined: member.dateJoined || new Date(),
@@ -168,17 +212,14 @@ const finalizePaidApplication = async ({
     await member.update({ registrationTransactionId: transaction.id });
   }
 
-  const [nationalIdUrl, passportUrl] = await Promise.all([
-    uploadMemberDocument(member.memberNumber, 'national-id', application.idDocument),
-    uploadMemberDocument(member.memberNumber, 'passport', application.passportPhoto),
-  ]);
-
-  if (nationalIdUrl || passportUrl) {
-    await member.update({
-      nationalIdUrl: nationalIdUrl || member.nationalIdUrl,
-      passportUrl: passportUrl || member.passportUrl,
+  persistApplicationDocuments(application, member).catch((error) => {
+    logger.warn('Membership document persistence failed after payment verification', {
+      module: 'applications',
+      applicationId: application.id,
+      memberId: member.id,
+      error: error.message,
     });
-  }
+  });
 
   if (!transaction && references.length) {
     const firestore = getFirebaseDb();
