@@ -3,6 +3,7 @@ const { Op } = require('sequelize');
 const db = require('../models');
 const logger = require('../shared/utils/logger');
 const { enqueueEmail, QUEUES } = require('./email/emailQueue');
+const { buildNewDeviceEmail, getBrandLogoAttachments } = require('./email/templates');
 
 const getClientIp = (req) => {
   const forwarded = req.headers['x-forwarded-for'];
@@ -35,16 +36,26 @@ const getLoginLocation = (req) => {
     decodeHeaderLocation(getHeaderValue(req, 'x-akamai-country-code')) ||
     decodeHeaderLocation(getHeaderValue(req, 'x-country-code')) ||
     decodeHeaderLocation(getHeaderValue(req, 'x-geo-country'));
+  const latitude = getHeaderValue(req, 'x-vercel-ip-latitude') || getHeaderValue(req, 'x-geo-latitude') || getHeaderValue(req, 'x-latitude');
+  const longitude = getHeaderValue(req, 'x-vercel-ip-longitude') || getHeaderValue(req, 'x-geo-longitude') || getHeaderValue(req, 'x-longitude');
 
   const parts = [city, region, country].filter(Boolean);
-  return parts.length ? parts.join(', ') : 'Location unavailable';
+  const location = parts.length ? parts.join(', ') : 'Location unavailable';
+  return latitude && longitude ? `${location} (${latitude}, ${longitude})` : location;
 };
 
 const getDeviceInfo = (req) => {
   const userAgent = req.headers['user-agent'] || 'Unknown browser';
+  const clientBrand = getHeaderValue(req, 'sec-ch-ua');
+  const clientPlatform = getHeaderValue(req, 'sec-ch-ua-platform').replace(/^"|"$/g, '');
+  const clientMobile = getHeaderValue(req, 'sec-ch-ua-mobile');
+  const providedDeviceName = getHeaderValue(req, 'x-device-name');
+  const deviceName = providedDeviceName
+    || [clientBrand, clientPlatform, clientMobile ? `mobile=${clientMobile}` : ''].filter(Boolean).join(' | ')
+    || userAgent;
   return {
-    deviceId: req.headers['x-device-id'] || userAgent,
-    deviceName: req.headers['x-device-name'] || userAgent,
+    deviceId: getHeaderValue(req, 'x-device-id') || `${userAgent}:${clientPlatform || 'unknown-platform'}`,
+    deviceName,
     userAgent,
     ipAddress: getClientIp(req),
     location: getLoginLocation(req)
@@ -54,20 +65,12 @@ const getDeviceInfo = (req) => {
 const notifyNewDevice = async (user, session) => {
   await enqueueEmail(QUEUES.NOTIFICATIONS, 'NOTIFICATION', {
     to: user.email,
-    subject: 'New device login on your AYEDOS account',
-    html: `
-      <div style="font-family: Arial, sans-serif; color: #0f172a;">
-        <h2>New device login detected</h2>
-        <p>Hello ${user.firstName || user.name || 'Member'},</p>
-        <p>Your AYEDOS account was accessed using a device we have not seen before.</p>
-        <ul>
-          <li><strong>Device:</strong> ${session.deviceName || 'Unknown device'}</li>
-          <li><strong>IP:</strong> ${session.ipAddress || 'Unknown IP'}</li>
-          <li><strong>Time:</strong> ${new Date(session.loginAt || Date.now()).toLocaleString()}</li>
-        </ul>
-        <p>If this was not you, change your password immediately.</p>
-      </div>
-    `
+    subject: 'New device login on your AYEDOS SACCO account',
+    html: buildNewDeviceEmail({
+      recipientName: user.firstName || user.name || 'Member',
+      session,
+    }),
+    attachments: getBrandLogoAttachments(),
   });
 };
 
