@@ -72,14 +72,14 @@ const guarantorName = (guarantor) => guarantor.Member?.User?.name
 
 const reportNames = {
   portfolio: 'Portfolio Report',
-  transactions: 'Transaction Report',
+  transactions: 'Transaction Statement',
   loans: 'Full Loans Report',
-  savings: 'Shares and Savings Report',
-  'shares-savings': 'Shares and Savings Report',
+  savings: 'Savings and Share Capital Report',
+  'shares-savings': 'Savings and Share Capital Report',
   withdrawals: 'Withdrawals Report',
   'loan-repayment': 'Loan Repayment Report',
   guarantor: 'Guarantor Report',
-  'payroll-deduction': 'Payroll Deductions Report',
+  'payroll-deduction': 'Payroll Deduction Report',
 };
 
 const buildReportSections = ({ reportType, transactions, loans, shares }) => {
@@ -156,7 +156,7 @@ const buildReportSections = ({ reportType, transactions, loans, shares }) => {
     guarantor: [loanSections()[2]],
     withdrawals: [loanSections()[3]],
     savings: [{
-      title: 'Shares and Savings',
+      title: 'Savings and Share Capital',
       columns: ['Date', 'Record', 'Amount', 'Status'],
       rows: [
         ...(shares || []).map((share) => ({ Record: 'Share capital', Amount: `KES ${formatMoney((share.shares || 0) * (share.shareValue || 0))}`, Status: 'Active', Date: formatDateTime(share.createdAt) })),

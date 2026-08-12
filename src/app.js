@@ -49,6 +49,8 @@ const mpesaRoutes = require('./features/routes/mpesa.routes');
 const walletRoutes = require('./features/wallet/routes/walletRoutes');
 const groupRoutes = require('./features/groups/routes/groupRoutes');
 const optOutRoutes = require('./features/optout/routes/optOutRoutes');
+const paymentRoutes = require('./features/payments/routes/paymentRoutes');
+const eventRoutes = require('./features/events/routes/eventRoutes');
 
 const applicationController = require('./features/applications/controllers/applicationController');
 const memberController = require('./features/member/controllers/memberController');
@@ -234,6 +236,7 @@ app.use('/api/loans', sensitiveLimiter);
 app.use('/api/transactions', sensitiveLimiter);
 app.use('/api/finance', sensitiveLimiter);
 app.use('/api/v1/wallet', sensitiveLimiter);
+app.use('/api/v1/payments', sensitiveLimiter);
 
 const searchLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -513,6 +516,8 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/mpesa', mpesaRoutes);
 app.get('/api/payments/status/:checkoutRequestId', protect, memberController.getLoanPaymentStatus);
 app.use('/api/v1/wallet', walletRoutes);
+app.use('/api/v1/payments', paymentRoutes);
+app.use('/api/v1/events', eventRoutes);
 app.use('/api/member/groups', groupRoutes);
 app.use('/api/opt-out-requests', optOutRoutes);
 

@@ -312,17 +312,6 @@ const updateLoanStatus = async (id, status, options = {}) => {
 
   if (!result) return null;
 
-  if (normalized === 'APPROVED') {
-    await db.sequelize.transaction(async (transaction) => {
-      const loan = await db.Loan.findByPk(result, { transaction });
-      if (loan) await finalizeLoanDisbursement(loan, transaction);
-    }).catch((error) => logger.error('Loan disbursement finalization failed', {
-      module: 'loans',
-      loanId: result,
-      error: error.message,
-    }));
-  }
-
   if (['APPROVED', 'REJECTED'].includes(normalized)) {
     await notificationService.createMemberLoanDecisionNotification(result, normalized, options)
       .catch((error) => logger.error('Loan decision notification failed', {
@@ -334,6 +323,44 @@ const updateLoanStatus = async (id, status, options = {}) => {
   }
 
   return getLoanById(result);
+};
+
+const disburseLoan = async (id, options = {}) => {
+  const result = await db.sequelize.transaction(async (transaction) => {
+    const loan = await db.Loan.findByPk(id, {
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+    if (!loan) return null;
+
+    const status = String(loan.status || '').toUpperCase();
+    if (!['APPROVED', 'ACTIVE', 'DISBURSED'].includes(status)) {
+      const error = new Error('Loan must be approved before disbursement');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    await loan.update({
+      status: 'ACTIVE',
+      approvedById: options.disbursedById || loan.approvedById,
+      principalBalance: loan.principalBalance ?? Number(loan.amount || 0),
+      accruedInterest: loan.accruedInterest ?? 0,
+      lastInterestAccrualAt: loan.lastInterestAccrualAt || new Date(),
+      nextPaymentDueAt: loan.nextPaymentDueAt || addMonths(new Date(), 1),
+    }, { transaction });
+
+    const walletTransaction = await finalizeLoanDisbursement(loan, transaction);
+    return {
+      loanId: loan.id,
+      walletTransactionId: walletTransaction?.transactionId || walletTransaction?.id || null,
+    };
+  });
+
+  if (!result) return null;
+  return {
+    loan: await getLoanById(result.loanId),
+    walletTransactionId: result.walletTransactionId,
+  };
 };
 
 const getGuarantorRequest = async (token) => {
@@ -442,6 +469,7 @@ module.exports = {
   updateLoan,
   deleteLoan,
   updateLoanStatus,
+  disburseLoan,
   getGuarantorRequest,
   respondToGuarantorRequest,
 };

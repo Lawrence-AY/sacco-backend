@@ -178,8 +178,12 @@ const withdrawMpesa = async ({ member_id, wallet_id, phone_number, amount, curre
 
   const transactionId = makeTransactionId();
 
-  return db.sequelize.transaction(async () => {
-    const wallet = await db.Wallet.findOne({ where: { walletId: wallet_id, memberId: member_id } });
+  return db.sequelize.transaction(async (transaction) => {
+    const wallet = await db.Wallet.findOne({
+      where: { walletId: wallet_id, memberId: member_id },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
     if (!wallet) {
       const error = new Error('Wallet not found');
       error.statusCode = 404;
@@ -230,7 +234,7 @@ const withdrawMpesa = async ({ member_id, wallet_id, phone_number, amount, curre
         amlCheckPassed: risk.amlCheckPassed,
         complianceStatus: risk.complianceStatus,
         complianceReason: risk.reason,
-      });
+      }, { transaction });
 
       return { rejected, risk };
     }
@@ -254,12 +258,12 @@ const withdrawMpesa = async ({ member_id, wallet_id, phone_number, amount, curre
         riskScore: risk.riskScore,
         amlCheckPassed: risk.amlCheckPassed,
         complianceStatus: risk.complianceStatus,
-      });
+      }, { transaction });
       return { failed, risk };
     }
 
     const newWithdrawable = toMoney(prevWithdrawable - requestedAmount);
-    await wallet.update({ withdrawableBalance: newWithdrawable });
+    await wallet.update({ withdrawableBalance: newWithdrawable }, { transaction });
 
     const verified = await db.WalletTransaction.create({
       id: transactionId,
@@ -284,7 +288,28 @@ const withdrawMpesa = async ({ member_id, wallet_id, phone_number, amount, curre
       riskScore: risk.riskScore,
       amlCheckPassed: risk.amlCheckPassed,
       complianceStatus: risk.complianceStatus,
+    }, { transaction });
+
+    const member = await db.Member.findOne({
+      where: {
+        [Op.or]: [
+          { id: member_id },
+          { memberNumber: member_id },
+        ],
+      },
+      transaction,
     });
+    await db.Transaction.create({
+      memberId: member?.id || null,
+      type: 'WITHDRAWAL',
+      amount: requestedAmount,
+      method: 'MPESA',
+      status: 'SUCCESS',
+      reference: payout.receipt,
+      description: `Wallet withdrawal ${transactionId}`,
+      paymentCategory: 'wallet_withdrawal',
+      internalReference: transactionId,
+    }, { transaction });
 
     const block = await mintBlock(verified);
     return { verified, risk, block };

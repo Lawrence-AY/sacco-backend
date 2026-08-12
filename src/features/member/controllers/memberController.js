@@ -16,6 +16,7 @@ const { buildBrandedReportPdf } = require('../../../services/reports/pdfReport')
 const { buildReportSections, formatMoney, reportNames } = require('../../../services/reports/reportTemplates');
 const shareCapitalTransferService = require('../../shares/services/shareCapitalTransferService');
 const memberNumberService = require('../services/memberNumberService');
+const { allocateMpesaRepayment } = require('../../loans/services/loanRepaymentService');
 const { formatEAT } = require('../../../shared/utils/eatDateTime');
 const { getFirebaseDb, getFirebaseStorage } = require('../../../shared/config/firebase');
 const PROFILE_PHOTO_MAX_BYTES = 1.5 * 1024 * 1024;
@@ -32,11 +33,21 @@ const KYC_DOCUMENT_TYPES = {
 };
 
 const DEFAULT_KCB_PAYBILL_NUMBER = '522522';
+const LOAN_REPAYMENT_STK_TIMEOUT_MS = Number(process.env.LOAN_REPAYMENT_STK_TIMEOUT_MS || 45000);
 const MINIMUM_LOAN_SHARE_CAPITAL = 25000;
 const LOAN_ELIGIBILITY_MESSAGE = 'You are not yet eligible to apply for a loan. Please complete the minimum required share capital purchase before submitting a loan application.';
 const SELF_GUARANTEE_MULTIPLIER = Number(process.env.SELF_GUARANTEE_SAVINGS_MULTIPLIER || 1);
 
 const getKcbMpesaBaseUrl = () => process.env.MPESA_URL?.trim().replace(/\/+$/, '') || null;
+const getBackendCallbackUrl = (req) => {
+  const configured = process.env.BACKEND_BASE_URL
+    || process.env.PUBLIC_BACKEND_URL
+    || process.env.API_PUBLIC_URL
+    || process.env.APP_BASE_URL;
+  const baseUrl = configured?.trim().replace(/\/+$/, '')
+    || `${req.protocol}://${req.get('host')}`.replace(/\/+$/, '');
+  return `${baseUrl}/api/mpesa/callback`;
+};
 
 const findMemberByUserId = async (userId) => {
   return db.Member.findOne({ where: { userId } });
@@ -1079,36 +1090,90 @@ const initiateLoanRepaymentStk = asyncHandler(async (req, res) => {
     if (!baseUrl) throw new Error('M-Pesa STK Push is not configured');
     const upstream = await fetch(`${baseUrl}/loans_repayment`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(LOAN_REPAYMENT_STK_TIMEOUT_MS),
       body: JSON.stringify({
         phone, amount: Math.round(amount), accountReference: memberAccountReference,
         AccountReference: memberAccountReference, transactionDesc: `Loan repayment - ${memberAccountReference}`,
         TransactionDesc: `Loan repayment - ${memberAccountReference}`, loanId: loan.id, memberId: member.id,
         member_number: memberAccountReference,
         type: 'LOAN_REPAYMENT', method: 'MPESA', paymentCategory: 'loan_repayment', internalReference,
+        callbackUrl: getBackendCallbackUrl(req),
+        CallBackURL: getBackendCallbackUrl(req),
       }),
     });
-    const payload = await upstream.json();
+    const text = await upstream.text();
+    let payload = {};
+    try {
+      payload = text ? JSON.parse(text) : {};
+    } catch {
+      payload = { message: text || 'M-Pesa returned an invalid response' };
+    }
     const checkoutRequestId = payload.checkoutRequestId || payload.CheckoutRequestID;
     if (!upstream.ok || !checkoutRequestId) throw new Error(payload.message || payload.error || 'M-Pesa did not return a checkout request ID');
     await ledger.update({ checkoutRequestId, merchantRequestId: payload.merchantRequestId || payload.MerchantRequestID || null, reference: checkoutRequestId });
     return ResponseHandler.success(res, { transactionId: ledger.id, checkoutRequestId, merchantRequestId: ledger.merchantRequestId, status: 'PENDING' }, 'STK Push Sent!', 200);
   } catch (error) {
-    await ledger.update({ status: 'FAILED', description: error.message });
-    throw new ValidationError(error.message || 'Unable to send M-Pesa PIN prompt');
+    const timedOut = error.name === 'TimeoutError' || error.name === 'AbortError';
+    await ledger.update({
+      status: timedOut ? 'PENDING' : 'FAILED',
+      description: timedOut
+        ? 'M-Pesa STK initiation timed out before a checkout request was returned'
+        : error.message,
+    });
+    throw new ValidationError(timedOut
+      ? 'M-Pesa is taking longer than expected to send the PIN prompt. Please wait a moment and check your phone before retrying.'
+      : error.message || 'Unable to send M-Pesa PIN prompt');
   }
 });
 
 const getLoanPaymentStatus = asyncHandler(async (req, res) => {
   const member = await findMemberByUserId(req.user.id);
-  const ledger = member ? await db.Transaction.findOne({ where: { memberId: member.id, checkoutRequestId: req.params.checkoutRequestId, type: 'LOAN_REPAYMENT' } }) : null;
+  let ledger = member ? await db.Transaction.findOne({ where: { memberId: member.id, checkoutRequestId: req.params.checkoutRequestId, type: 'LOAN_REPAYMENT' } }) : null;
   if (!ledger) throw new NotFoundError('Payment request not found');
-  const repayment = await db.LoanTransaction.findOne({ where: { ledgerTransactionId: ledger.id } });
+  let repayment = await db.LoanTransaction.findOne({ where: { ledgerTransactionId: ledger.id } });
+  if (String(ledger.status || '').toUpperCase() === 'PENDING' && !repayment) {
+    const providerTransaction = await getProviderTransaction(ledger).catch((error) => {
+      logger.warn('Loan repayment provider status lookup failed', {
+        module: 'member',
+        transactionId: ledger.id,
+        checkoutRequestId: ledger.checkoutRequestId,
+        error: error.message,
+      });
+      return null;
+    });
+    if (String(providerTransaction?.status || '').toUpperCase() === 'SUCCESS') {
+      const receipt = providerTransaction.reference || providerTransaction.mpesaReceiptNumber || null;
+      await allocateMpesaRepayment({
+        ledgerTransactionId: ledger.id,
+        receipt,
+        confirmedAmount: providerTransaction.amount,
+        resultDescription: providerTransaction.description || 'M-Pesa loan repayment received',
+      });
+      ledger = await db.Transaction.findByPk(ledger.id);
+      repayment = await db.LoanTransaction.findOne({ where: { ledgerTransactionId: ledger.id } });
+    } else if (String(providerTransaction?.status || '').toUpperCase() === 'FAILED') {
+      await ledger.update({
+        status: 'FAILED',
+        description: providerTransaction.description || 'M-Pesa repayment failed',
+      });
+    }
+  }
+  const loan = ledger.loanId ? await db.Loan.findByPk(ledger.loanId) : null;
+  const remainingBalance = repayment
+    ? Number(repayment.remainingPrincipal) + Number(repayment.metadata?.remaining_interest || 0)
+    : loan
+      ? Number(loan.principalBalance ?? loan.amount ?? 0) + Number(loan.accruedInterest || 0)
+      : null;
   return ResponseHandler.success(res, {
     checkoutRequestId: ledger.checkoutRequestId, status: ledger.status,
     mpesaReceiptNumber: ledger.status === 'SUCCESS' ? ledger.reference : null,
     principalPaid: repayment ? Number(repayment.principalPaid) : null,
     interestPaid: repayment ? Number(repayment.interestPaid) : null,
-    remainingBalance: repayment ? Number(repayment.remainingPrincipal) + Number(repayment.metadata?.remaining_interest || 0) : null,
+    remainingPrincipal: loan ? Number(loan.principalBalance ?? loan.amount ?? 0) : repayment ? Number(repayment.remainingPrincipal) : null,
+    remainingInterest: loan ? Number(loan.accruedInterest || 0) : repayment ? Number(repayment.metadata?.remaining_interest || 0) : null,
+    remainingBalance,
+    nextPaymentDueAt: loan?.nextPaymentDueAt || null,
+    loanStatus: loan?.status || null,
   }, 'Payment status retrieved');
 });
 

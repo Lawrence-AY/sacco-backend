@@ -1,7 +1,8 @@
 const loanService = require('../services/loanService');
+const db = require('../../../models');
 const asyncHandler = require('../../../shared/utils/asyncHandler');
 const ResponseHandler = require('../../../shared/utils/response');
-const { NotFoundError, ValidationError } = require('../../../shared/utils/errors');
+const { NotFoundError, ValidationError, ForbiddenError } = require('../../../shared/utils/errors');
 const { LoanDTO } = require('../../../shared/utils/dtos');
 
 /**
@@ -10,7 +11,18 @@ const { LoanDTO } = require('../../../shared/utils/dtos');
  * @access  Private
  */
 const getLoans = asyncHandler(async (req, res) => {
-  const loans = await loanService.getAllLoans();
+  const role = String(req.user.role || '').toUpperCase();
+  let loans;
+  if (['ADMIN', 'FINANCE', 'SUPERADMIN'].includes(role)) {
+    loans = await loanService.getAllLoans();
+  } else {
+    const member = await db.Member.findOne({ where: { userId: req.user.id } });
+    loans = member ? await db.Loan.findAll({
+      where: { memberId: member.id },
+      include: [db.Guarantor, { model: db.Member, include: [db.User] }],
+      order: [['createdAt', 'DESC']],
+    }) : [];
+  }
   return ResponseHandler.success(res, loans.map((loan) => LoanDTO.basic(loan, req.user)), 'Loans retrieved successfully', 200);
 });
 
@@ -23,6 +35,13 @@ const getLoanById = asyncHandler(async (req, res) => {
   const loan = await loanService.getLoanById(req.params.id);
   if (!loan) {
     throw new NotFoundError('Loan not found');
+  }
+  const role = String(req.user.role || '').toUpperCase();
+  if (!['ADMIN', 'FINANCE', 'SUPERADMIN'].includes(role)) {
+    const member = await db.Member.findOne({ where: { userId: req.user.id } });
+    if (!member || loan.memberId !== member.id) {
+      throw new ForbiddenError('You can only access your own loans');
+    }
   }
   return ResponseHandler.success(res, LoanDTO.basic(loan, req.user), 'Loan retrieved successfully', 200);
 });

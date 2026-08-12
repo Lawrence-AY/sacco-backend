@@ -1,5 +1,6 @@
 const db = require('../../../models');
 const loanService = require('../../loans/services/loanService');
+const { postManualRepayment, voidRepayment } = require('../../loans/services/loanRepaymentService');
 const deductionService = require('../../deductions/services/deductionService');
 const asyncHandler = require('../../../shared/utils/asyncHandler');
 const ResponseHandler = require('../../../shared/utils/response');
@@ -231,6 +232,28 @@ const createTransaction = asyncHandler(async (req, res) => {
   if (!req.body.amount || !req.body.type) {
     throw new ValidationError('Amount and type are required');
   }
+  if (String(req.body.type || '').toUpperCase() === 'LOAN_REPAYMENT') {
+    if (!req.body.loanId) throw new ValidationError('loanId is required for loan repayments');
+    const result = await postManualRepayment({
+      loanId: req.body.loanId,
+      memberId: req.body.memberId || null,
+      amount: req.body.amount,
+      reference: req.body.reference,
+      evidence: req.body.description || req.body.evidence || null,
+      postedById: req.user.id,
+      method: String(req.body.method || 'MANUAL').toUpperCase(),
+    });
+    return ResponseHandler.created(res, {
+      id: result.ledger.id,
+      type: result.ledger.type,
+      amount: Number(result.ledger.amount),
+      status: result.ledger.status,
+      reference: result.ledger.reference,
+      principalPaid: Number(result.repayment.principalPaid),
+      interestPaid: Number(result.repayment.interestPaid),
+      remainingPrincipal: Number(result.repayment.remainingPrincipal),
+    }, 'Loan repayment posted and allocated successfully');
+  }
   const transaction = await db.Transaction.create({
     memberId: req.body.memberId || null,
     loanId: req.body.loanId || null,
@@ -269,6 +292,18 @@ const voidTransaction = asyncHandler(async (req, res) => {
   if (!transaction) {
     throw new NotFoundError('Transaction not found');
   }
+  if (String(transaction.type || '').toUpperCase() === 'LOAN_REPAYMENT') {
+    const result = await voidRepayment({
+      ledgerTransactionId: transaction.id,
+      reason,
+      voidedById: req.user.id,
+    });
+    return ResponseHandler.success(res, {
+      id: result.ledger.id,
+      status: result.ledger.status,
+      reference: result.ledger.reference,
+    }, 'Loan repayment reversed and voided successfully', 200);
+  }
   await transaction.update({ status: 'FAILED', reference: reason || transaction.reference });
   return ResponseHandler.success(res, {
     id: transaction.id,
@@ -281,6 +316,9 @@ const verifyTransaction = asyncHandler(async (req, res) => {
   const transaction = await db.Transaction.findByPk(req.params.transactionId);
   if (!transaction) {
     throw new NotFoundError('Transaction not found');
+  }
+  if (String(transaction.type || '').toUpperCase() === 'LOAN_REPAYMENT') {
+    throw new ValidationError('Loan repayments must be posted through the repayment allocation engine, not raw verification');
   }
 
   await transaction.update({ status: 'SUCCESS' });
@@ -346,9 +384,12 @@ const rejectLoan = asyncHandler(async (req, res) => {
 });
 
 const disburseLoan = asyncHandler(async (req, res) => {
-  const loan = await loanService.updateLoanStatus(req.params.loanId, 'ACTIVE');
-  if (!loan) throw new NotFoundError('Loan not found');
-  return ResponseHandler.success(res, LoanDTO.basic(loan, req.user), 'Loan disbursed successfully', 200);
+  const result = await loanService.disburseLoan(req.params.loanId, { disbursedById: req.user.id });
+  if (!result) throw new NotFoundError('Loan not found');
+  return ResponseHandler.success(res, {
+    loan: LoanDTO.basic(result.loan, req.user),
+    walletTransactionId: result.walletTransactionId,
+  }, 'Loan disbursed successfully', 200);
 });
 
 const getAllShares = asyncHandler(async (req, res) => {
@@ -476,7 +517,7 @@ const getAllMembers = asyncHandler(async (req, res) => {
     );
     const outstandingLoans = memberLoans
       .filter((loan) => !['COMPLETED', 'REJECTED'].includes(String(loan.status || '').toUpperCase()))
-      .reduce((sum, loan) => sum + Number(loan.balance ?? loan.amount ?? 0), 0);
+      .reduce((sum, loan) => sum + Number(loan.principalBalance ?? loan.amount ?? 0) + Number(loan.accruedInterest || 0), 0);
     return {
       id: member.id,
       memberNumber: member.memberNumber || null,
@@ -543,7 +584,7 @@ const getMemberFinancialProfile = asyncHandler(async (req, res) => {
       createdAt: loan.createdAt,
       updatedAt: loan.updatedAt,
       repaid,
-      balance: Math.max(Number(loan.amount || 0) - repaid, 0),
+      balance: Number(loan.principalBalance ?? loan.amount ?? 0) + Number(loan.accruedInterest || 0),
     };
   });
   const defaultingHistory = loanHistory.filter((loan) =>
@@ -620,8 +661,9 @@ const getAllCompanies = asyncHandler(async (req, res) => {
 });
 
 const getFinancialReports = asyncHandler(async (req, res) => {
-  const [transactions, loans, dividends, transfers, loanTransactions, members, membershipApplications] = await Promise.all([
+  const [transactions, groupTransactions, loans, dividends, transfers, loanTransactions, members, membershipApplications] = await Promise.all([
     db.Transaction.findAll({ where: { status: 'SUCCESS' }, order: [['createdAt', 'ASC']] }),
+    db.GroupTransaction.findAll({ where: { status: 'SUCCESS' }, order: [['createdAt', 'ASC']] }),
     db.Loan.findAll({ order: [['createdAt', 'ASC']] }),
     db.Dividend.findAll({ order: [['createdAt', 'ASC']] }),
     db.ShareCapitalTransfer.findAll({ where: { status: 'SUCCESS' } }),
@@ -720,7 +762,15 @@ const getFinancialReports = asyncHandler(async (req, res) => {
   };
   const timeSeries = { daily: {}, monthly: {}, yearly: {} };
   const ensurePeriod = (bucket, key) => (bucket[key] ||= { label: key, deposits: 0, withdrawals: 0, repayments: 0, disbursements: 0, count: 0 });
-  transactions.forEach((transaction) => {
+  const reportTransactions = [
+    ...transactions,
+    ...groupTransactions.map((transaction) => ({
+      ...transaction.toJSON(),
+      paymentCategory: 'group_loan',
+      description: `Group ${transaction.type}`,
+    })),
+  ];
+  reportTransactions.forEach((transaction) => {
     const amount = Number(transaction.amount || 0); const type = String(transaction.type || '').toUpperCase();
     const classification = classifyTransaction(transaction); const createdAt = new Date(transaction.createdAt);
     const eatDate = new Date(createdAt.getTime() + (3 * 60 * 60 * 1000));
@@ -746,10 +796,10 @@ const getFinancialReports = asyncHandler(async (req, res) => {
 
   return ResponseHandler.success(res, {
     totals: {
-      transactions: transactions.length + transfers.length,
+      transactions: reportTransactions.length + transfers.length,
       loans: loans.length,
       dividends: dividends.length,
-      transactionAmount: transactions.reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0) + transfers.reduce((sum, transfer) => sum + Number(transfer.grossAmount || 0), 0),
+      transactionAmount: reportTransactions.reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0) + transfers.reduce((sum, transfer) => sum + Number(transfer.grossAmount || 0), 0),
       loanPrincipal: loans.reduce((sum, loan) => sum + Number(loan.amount || 0), 0),
       dividendsDeclared: dividends.reduce((sum, dividend) => sum + Number(dividend.amount || 0), 0),
       interests: {
