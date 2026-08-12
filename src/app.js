@@ -51,6 +51,7 @@ const groupRoutes = require('./features/groups/routes/groupRoutes');
 const optOutRoutes = require('./features/optout/routes/optOutRoutes');
 
 const applicationController = require('./features/applications/controllers/applicationController');
+const memberController = require('./features/member/controllers/memberController');
 
 const { loginUser, verifyLoginOTP, refreshToken, logoutUser, registerUser, verifyOTP, resendOTP, setPassword, protect, getSessions, revokeSession } = require('./shared/middleware/authMiddleware');
 
@@ -510,6 +511,7 @@ app.use('/api/search', searchRoutes);
 app.use('/search', searchRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/mpesa', mpesaRoutes);
+app.get('/api/payments/status/:checkoutRequestId', protect, memberController.getLoanPaymentStatus);
 app.use('/api/v1/wallet', walletRoutes);
 app.use('/api/member/groups', groupRoutes);
 app.use('/api/opt-out-requests', optOutRoutes);

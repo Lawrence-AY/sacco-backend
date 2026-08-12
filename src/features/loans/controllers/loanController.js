@@ -36,8 +36,12 @@ const createLoan = asyncHandler(async (req, res) => {
   if (!req.body.memberId || !req.body.amount || !req.body.type) {
     throw new ValidationError('MemberId, amount, and type are required');
   }
-  const loan = await loanService.createLoan(req.body);
-  return ResponseHandler.created(res, LoanDTO.basic(loan, req.user), 'Loan created successfully');
+  const result = await loanService.createLoan(req.body);
+  return ResponseHandler.created(res, {
+    success: true,
+    transactionId: result.transactionId,
+    loanDetails: LoanDTO.basic(result.loan, req.user),
+  }, result.autoApproved ? 'Emergency Loan Auto-Approved & Disbursed' : 'Loan created successfully');
 });
 
 /**
