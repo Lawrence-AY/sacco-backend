@@ -9,8 +9,10 @@ const escapePdfText = (value) => String(value ?? '')
   .replace(/\r?\n/g, ' ');
 
 const page = { width: 612, height: 792, margin: 36 };
-const rowHeight = 24;
+const rowHeight = 34;
+const headerHeight = 34;
 const theme = { r: 140 / 255, g: 198 / 255, b: 63 / 255 };
+const themeDark = { r: 0.0, g: 0.23, b: 0.09 };
 const logoSize = { width: 138, height: 42 };
 const borderWidth = 0.35;
 const cellPaddingX = 5;
@@ -120,7 +122,14 @@ const logoLockup = (x, y, logoName) => [
   logoName ? `q\n${logoSize.width} 0 0 ${logoSize.height} ${x} ${y - 32} cm\n/${logoName} Do\nQ` : text('AYEDOS SACCO', x, y - 4, 16, 'F2'),
 ].join('\n');
 
-const wrapText = (value, limit, maxLines = 4) => {
+const ellipsize = (value, limit) => {
+  const textValue = String(value ?? '-');
+  if (textValue.length <= limit) return textValue;
+  if (limit <= 1) return textValue.slice(0, limit);
+  return `${textValue.slice(0, limit - 3)}...`;
+};
+
+const wrapText = (value, limit, maxLines = 2) => {
   const output = String(value ?? '-').replace(/\s+/g, ' ').trim() || '-';
   if (output.length <= limit) return [output];
   const lines = [];
@@ -143,23 +152,25 @@ const wrapText = (value, limit, maxLines = 4) => {
     }
   });
   if (current) lines.push(current);
-  return lines.slice(0, maxLines);
+  const limited = lines.slice(0, maxLines);
+  if (lines.length > maxLines) {
+    limited[limited.length - 1] = ellipsize(limited[limited.length - 1], limit);
+  }
+  return limited;
 };
 
 const textLines = (lines, x, y, size = 8, font = 'F1', gap = 10) => lines
   .map((lineText, index) => text(lineText, x, y - (index * gap), size, font))
   .join('\n');
 
-const rowLines = (row, columns, widths, maxLines = 4) => columns.map((column, index) => {
+const rowLines = (row, columns, widths, maxLines = 2) => columns.map((column, index) => {
   const limit = Math.max(10, Math.floor((widths[index] - (cellPaddingX * 2)) / 3.8));
   return wrapText(row[column], limit, maxLines);
 });
 
-const dynamicRowHeight = (linesByColumn) => Math.max(rowHeight, (cellPaddingY * 2) + (Math.max(...linesByColumn.map((lines) => lines.length), 1) * lineGap));
-
 const headerLines = (columns, widths) => columns.map((column, index) => {
   const limit = Math.max(10, Math.floor((widths[index] - (cellPaddingX * 2)) / 3.8));
-  return wrapText(column, limit, 3);
+  return wrapText(column, limit, 2);
 });
 
 const columnWidths = (columns) => {
@@ -174,6 +185,8 @@ const paginate = ({ memberNumber, reportName, durationLabel, summaryRows, sectio
   const pages = [];
   let commands = [];
   let y = page.height - page.margin;
+  const requestedAt = new Date();
+  const requestedAtLabel = requestedAt.toLocaleString();
 
   const addPage = () => {
     if (commands.length) pages.push(commands);
@@ -186,13 +199,24 @@ const paginate = ({ memberNumber, reportName, durationLabel, summaryRows, sectio
   };
 
   addPage();
-  commands.push(logoLockup((page.width - logoSize.width) / 2, y, assets.logoName));
-  y -= 58;
-  commands.push(text(`${memberNumber || 'Member'} - ${reportName}`, page.margin, y, 15, 'F2'));
-  y -= 18;
-  commands.push(text(`Request date: ${new Date().toLocaleString()}`, page.margin, y, 9));
-  commands.push(text(`Period: ${durationLabel || 'All records'}`, page.margin + 210, y, 9));
-  y -= 22;
+  commands.push(logoLockup(page.margin + 14, y - 5, assets.logoName));
+  commands.push(text(reportName || 'Member Report', page.margin + 176, y - 20, 16, 'F2'));
+  commands.push(text('AYEDOS SACCO', page.margin + 176, y - 38, 9, 'F2'));
+  y -= 78;
+
+  const metaY = y;
+  commands.push(fillRect(page.margin, metaY - 8, page.width - (page.margin * 2), 34, 0.98));
+  commands.push(strokeRgb(theme.r, theme.g, theme.b));
+  commands.push(rect(page.margin, metaY - 8, page.width - (page.margin * 2), 34));
+  commands.push(resetColor());
+  commands.push(text('Member ID', page.margin + 10, metaY + 10, 7, 'F2'));
+  commands.push(text(memberNumber || 'Member', page.margin + 10, metaY - 3, 9));
+  commands.push(text('Period', page.margin + 170, metaY + 10, 7, 'F2'));
+  commands.push(text(durationLabel || 'All records', page.margin + 170, metaY - 3, 9));
+  commands.push(text('Date requested', page.margin + 340, metaY + 10, 7, 'F2'));
+  commands.push(text(requestedAtLabel, page.margin + 340, metaY - 3, 9));
+  y -= 48;
+
   if (summaryRows?.length) {
     commands.push(text('Summary', page.margin, y, 11, 'F2'));
     y -= 18;
@@ -209,9 +233,8 @@ const paginate = ({ memberNumber, reportName, durationLabel, summaryRows, sectio
     const columns = section.columns || section.headers || [];
     const widths = columnWidths(columns);
     const headerWrapped = headerLines(columns, widths);
-    const headerHeight = dynamicRowHeight(headerWrapped);
     ensureSpace(48 + headerHeight);
-    commands.push(rgb(0.0, 0.23, 0.09));
+    commands.push(rgb(themeDark.r, themeDark.g, themeDark.b));
     commands.push(text(section.title, page.margin, y - 8, 11, 'F2'));
     commands.push(resetColor());
     y -= 40;
@@ -233,7 +256,7 @@ const paginate = ({ memberNumber, reportName, durationLabel, summaryRows, sectio
     const rows = section.rows?.length ? section.rows : [Object.fromEntries(columns.map((column, index) => [column, index === 0 ? 'No records found.' : '']))];
     rows.forEach((row) => {
       const wrapped = rowLines(row, columns, widths);
-      const height = dynamicRowHeight(wrapped);
+      const height = rowHeight;
       ensureSpace(height + 4);
       x = page.margin;
       commands.push(strokeRgb(theme.r, theme.g, theme.b));
@@ -253,8 +276,8 @@ const paginate = ({ memberNumber, reportName, durationLabel, summaryRows, sectio
     pageCommands.push(strokeRgb(theme.r, theme.g, theme.b));
     pageCommands.push(line(page.margin, 30, page.width - page.margin, 30));
     pageCommands.push(resetColor());
-    pageCommands.push(text('AYEDOS SACCO', page.margin, 16, 8, 'F2'));
-    pageCommands.push(text(`Page ${index + 1} of ${pages.length}`, page.width - page.margin - 60, 16, 8));
+    pageCommands.push(text('AYEDOS SACCO', page.margin, 18, 8, 'F2'));
+    pageCommands.push(text(`Page ${index + 1} of ${pages.length}`, page.width - page.margin - 60, 18, 8));
   });
   return pages;
 };

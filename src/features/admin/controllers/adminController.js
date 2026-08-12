@@ -90,6 +90,7 @@ const mapMemberImportRow = (row) => {
 };
 
 const mapFinancialImportRow = (row) => {
+  const sheetName = pick(row, ['sheet', 'worksheet', 'workbookSheet']);
   const memberNumber = pick(row, ['memberNumber', 'registrationNumber', 'memberNo']);
   const email = pick(row, ['email', 'emailAddress']).toLowerCase();
   const staffId = pick(row, ['staffId', 'staffID', 'payrollNumber', 'employeeId']);
@@ -101,6 +102,7 @@ const mapFinancialImportRow = (row) => {
     missing,
     data: {
       memberNumber,
+      sheetName,
       email,
       staffId,
       shareCapital: toNumber(pick(row, ['shareCapital', 'shares'])),
@@ -374,6 +376,7 @@ const commitFinancialCsvImport = asyncHandler(async (req, res) => {
       const [shareAccount] = await db.ShareAccount.findOrCreate({ where: { memberId: member.id }, defaults: { shares: 0, shareValue: 100 }, transaction });
       await shareAccount.update({ shares: data.shareCapital / Number(shareAccount.shareValue || 100) }, { transaction });
 
+      const importReference = `CSV-${member.memberNumber}-${Date.now()}-${row.rowNumber}`;
       const transactionRows = [
         ['DEPOSIT', data.savings, 'historical_savings'],
         ['DEPOSIT', data.shareCapital, 'share_capital'],
@@ -387,13 +390,13 @@ const commitFinancialCsvImport = asyncHandler(async (req, res) => {
           amount,
           method: 'MANUAL',
           status: 'SUCCESS',
-          reference: `CSV-${category}-${member.memberNumber}-${Date.now()}`,
-          description: `CSV import ${category}`,
+          reference: `${importReference}-${category}`,
+          description: `${data.sheetName ? `${data.sheetName} ` : ''}import ${category}`,
           paymentCategory: category,
         }, { transaction });
       }
     });
-    imported.push({ rowNumber: row.rowNumber, memberId: member.id, memberNumber: member.memberNumber });
+    imported.push({ rowNumber: row.rowNumber, sheetName: data.sheetName, memberId: member.id, memberNumber: member.memberNumber });
   }
   return ResponseHandler.success(res, { imported, skipped }, 'Financial records imported successfully', 201);
 });

@@ -165,7 +165,22 @@ router.post('/callback', async (req, res) => {
       const transaction = await db.Transaction.findOne({ where });
       if (transaction) {
         if (success && transaction.type === 'LOAN_REPAYMENT' && transaction.loanId) {
-          await allocateMpesaRepayment({ ledgerTransactionId: transaction.id, receipt, confirmedAmount: amount, resultDescription: ResultDesc });
+          try {
+            await allocateMpesaRepayment({ ledgerTransactionId: transaction.id, receipt, confirmedAmount: amount, resultDescription: ResultDesc });
+          } catch (allocationError) {
+            await transaction.update({
+              status: 'PENDING',
+              reference: receipt || transaction.reference,
+              amount: amount ? Number(amount) : transaction.amount,
+              description: `ALLOCATION_FAILED: ${allocationError.message}`,
+            });
+            logger.error('M-Pesa loan repayment allocation failed and was persisted for reconciliation', {
+              transactionId: transaction.id,
+              loanId: transaction.loanId,
+              receipt,
+              error: allocationError.message,
+            });
+          }
         } else {
           await transaction.update({ status: success ? 'SUCCESS' : 'FAILED', reference: receipt || transaction.reference, amount: amount ? Number(amount) : transaction.amount, description: ResultDesc || transaction.description });
         }

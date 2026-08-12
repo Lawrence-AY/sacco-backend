@@ -12,6 +12,7 @@ const PUBLIC_AUTH_PATHS = new Set([
   '/api/auth/reset-password',
   '/api/auth/refresh',
   '/api/mpesa/stk',
+  '/api/mpesa/callback',
 ]);
 
 const csrfProtection = (req, res, next) => {
