@@ -171,47 +171,76 @@ async function startServer() {
     validateEnvironment();
 
     const { testFirebaseConnection } = require('./src/shared/config/firebase');
-    const firebase = await testFirebaseConnection();
-    logger.info('Firebase connection successful', {
-      projectId: firebase.projectId,
-      service: firebase.service,
-    });
+    let firebase;
+    try {
+      firebase = await testFirebaseConnection();
+      logger.info('Firebase connection successful', {
+        projectId: firebase.projectId,
+        service: firebase.service,
+      });
+    } catch (error) {
+      if (process.env.NODE_ENV === 'production') throw error;
+      firebase = {
+        connected: false,
+        projectId: process.env.FIREBASE_PROJECT_ID || null,
+        service: 'firebase-admin',
+      };
+      logger.warn('Firebase remote credential check failed; continuing local startup', {
+        error: error.message,
+        hint: 'Firebase requests may fail until network access to oauth2.googleapis.com is available.',
+      });
+    }
 
     // Import app after env is loaded
     const app = require('./src/app');
     const db = require('./src/models');
 
-    // Railway requires binding to 0.0.0.0
-    const PORT = process.env.PORT || 3000;
-    const HOST = process.env.HOST || '0.0.0.0';
-
-    // Create HTTP server
-    server = createServer(app);
+    // Railway requires binding to 0.0.0.0; local development is safer on localhost.
+    const PORT = Number(process.env.PORT || 3000);
+    const HOST = process.env.HOST || (process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1');
 
     // Start listening
-    await new Promise((resolve, reject) => {
+    const listen = (port) => new Promise((resolve, reject) => {
+      const candidateServer = createServer(app);
       const onError = (error) => {
+        candidateServer.off('listening', onListening);
+        candidateServer.close(() => {});
         if (error.code === 'EADDRINUSE') {
-          logger.error(`Port ${PORT} is already in use`, {
+          logger.error(`Port ${port} is already in use`, {
             host: HOST,
-            port: PORT,
-            hint: `Stop the process using ${HOST}:${PORT} or set PORT to another value in sacco-backend/.env`
+            port,
+            hint: `Stop the process using ${HOST}:${port} or set PORT to another value in sacco-backend/.env`
           });
         }
         reject(error);
       };
-
-      server.once('error', onError);
-      server.listen(PORT, HOST, () => {
-        server.off('error', onError);
-        logger.info(`Server listening on ${HOST}:${PORT}`, {
+      const onListening = () => {
+        candidateServer.off('error', onError);
+        server = candidateServer;
+        logger.info(`Server listening on ${HOST}:${port}`, {
           host: HOST,
-          port: PORT,
+          port,
           environment: process.env.NODE_ENV
         });
-        resolve();
-      });
+        resolve(port);
+      };
+
+      candidateServer.once('error', onError);
+      candidateServer.once('listening', onListening);
+      candidateServer.listen(port, HOST);
     });
+    const maxPortAttempts = process.env.NODE_ENV === 'production' ? 1 : Number(process.env.PORT_RETRY_ATTEMPTS || 10);
+    let activePort = PORT;
+    for (let attempt = 0; attempt < maxPortAttempts; attempt += 1) {
+      try {
+        activePort = await listen(PORT + attempt);
+        break;
+      } catch (error) {
+        if (error.code !== 'EADDRINUSE' || attempt === maxPortAttempts - 1) throw error;
+        logger.warn('Trying next development port', { nextPort: PORT + attempt + 1 });
+      }
+    }
+    process.env.PORT = String(activePort);
 
     // Log successful startup
     logger.info('HTTP server startup completed successfully', {

@@ -22,7 +22,7 @@ const pickWritable = (data) => writableFields.reduce((acc, field) => {
 }, {});
 
 const getAllTransactions = async () => {
-  return await db.Transaction.findAll({ order: [['createdAt', 'DESC']] });
+  return await db.Transaction.findAll({ where: { status: 'SUCCESS' }, order: [['createdAt', 'DESC']] });
 };
 
 const getTransactionById = async (id) => {

@@ -116,7 +116,7 @@ const sendSms = async ({ to, message, purpose = 'general' }) => {
 const sendOtpSms = ({ to, otp, purpose }) => sendSms({
   to,
   purpose,
-  message: `Your AYEDOS SACCO verification code is ${otp}. It expires shortly. Do not share this code.`,
+  message: `AYEDOS SACCO verification code is ${otp}.\nIt is valid for 10 min.\nDo not share this code.`,
 });
 
 module.exports = {

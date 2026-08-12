@@ -175,17 +175,18 @@ const getAllTransactions = asyncHandler(async (req, res) => {
   const page = Math.max(Number(req.query.page) || 1, 1);
   const limit = [10, 25].includes(Number(req.query.limit)) ? Number(req.query.limit) : 25;
   const offset = (page - 1) * limit;
-  const where = {};
+  const where = { status: 'SUCCESS' };
   if (req.query.type) {
     where.type = req.query.type;
   }
-  if (req.query.status) {
-    where.status = req.query.status;
+  if (req.query.status && String(req.query.status).toUpperCase() === 'SUCCESS') {
+    where.status = 'SUCCESS';
   }
   const [transactionResult, members, transferResult, loanTransactions] = await Promise.all([
     db.Transaction.findAndCountAll({ where, order: [['createdAt', 'DESC']], limit: page * limit }),
     db.Member.findAll({ include: [{ model: db.User, attributes: ['name', 'firstName', 'lastName'] }] }),
     db.ShareCapitalTransfer.findAndCountAll({
+      where: { status: 'SUCCESS' },
       include: [
         { model: db.Member, as: 'sender', attributes: ['memberNumber'] },
         { model: db.Member, as: 'recipient', attributes: ['memberNumber'] },

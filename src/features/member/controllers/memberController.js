@@ -11,6 +11,9 @@ const logger = require('../../../shared/utils/logger');
 const notificationService = require('../../notifications/services/notificationService');
 const nodemailer = require('nodemailer');
 const bcrypt = require('bcrypt');
+const { buildReportEmail, getBrandLogoAttachments } = require('../../../services/email/templates');
+const { buildBrandedReportPdf } = require('../../../services/reports/pdfReport');
+const { buildReportSections, formatMoney, reportNames } = require('../../../services/reports/reportTemplates');
 const shareCapitalTransferService = require('../../shares/services/shareCapitalTransferService');
 const memberNumberService = require('../services/memberNumberService');
 const { formatEAT } = require('../../../shared/utils/eatDateTime');
@@ -27,6 +30,7 @@ const KYC_DOCUMENT_TYPES = {
   'image/png': 'png',
   'application/pdf': 'pdf',
 };
+
 const DEFAULT_KCB_PAYBILL_NUMBER = '522522';
 const MINIMUM_LOAN_SHARE_CAPITAL = 25000;
 const LOAN_ELIGIBILITY_MESSAGE = 'You are not yet eligible to apply for a loan. Please complete the minimum required share capital purchase before submitting a loan application.';
@@ -649,7 +653,16 @@ const getLoans = asyncHandler(async (req, res) => {
 
   const loans = await db.Loan.findAll({
     where: { memberId: member.id },
-    include: [db.Guarantor],
+    include: [{
+      model: db.Guarantor,
+      include: [{
+        model: db.Member,
+        include: [{
+          model: db.User,
+          attributes: ['id', 'name', 'fullName', 'email', 'phone'],
+        }],
+      }],
+    }],
     order: [['createdAt', 'DESC']],
   });
   const formatted = loans.map((loan) => ({
@@ -672,7 +685,16 @@ const getLoans = asyncHandler(async (req, res) => {
     createdAt: loan.createdAt,
     selfGuaranteed: loan.selfGuaranteed,
     selfGuaranteedAmount: loan.selfGuaranteedAmount,
-    guarantors: loan.Guarantors || [],
+    guarantors: (loan.Guarantors || []).map((guarantor) => ({
+      id: guarantor.id,
+      memberId: guarantor.memberId,
+      amount: guarantor.amount,
+      status: guarantor.status,
+      name: guarantor.Member?.User?.name || guarantor.Member?.User?.fullName || guarantor.Member?.memberNumber || null,
+      memberName: guarantor.Member?.User?.name || guarantor.Member?.User?.fullName || null,
+      memberNumber: guarantor.Member?.memberNumber || null,
+      Member: guarantor.Member,
+    })),
   }));
 
   return ResponseHandler.success(res, formatted, 'Member loans retrieved successfully', 200);
@@ -791,7 +813,7 @@ const getTransactions = asyncHandler(async (req, res) => {
     return ResponseHandler.success(res, [], 'No transactions found', 200);
   }
 
-  const where = { memberId: member.id };
+  const where = { memberId: member.id, status: { [Op.in]: ['SUCCESS', 'PAID', 'COMPLETED'] } };
   if (req.query.type) where.type = req.query.type;
 
   const transactions = await db.Transaction.findAll({ where, order: [['createdAt', 'DESC']] });
@@ -805,12 +827,7 @@ const getTransactions = asyncHandler(async (req, res) => {
       .map((transaction) => syncTransactionWithKcbRegistration(transaction))
   );
 
-  const visibleTransactions = transactions.filter((transaction) => {
-    const status = String(transaction.status || '').toUpperCase();
-    if (status !== 'FAILED') return true;
-    const category = String(transaction.paymentCategory || transaction.kcbEndpoint || transaction.description || transaction.type || '').toLowerCase();
-    return !['deposit', 'savings', 'share_capital', 'sharecapital', 'wallet', 'monthly_contribution', 'loan_repayment'].some((token) => category.includes(token));
-  });
+  const visibleTransactions = transactions;
 
   const formatted = visibleTransactions.map((transaction) => ({
     id: transaction.id,
@@ -828,7 +845,8 @@ const getTransactions = asyncHandler(async (req, res) => {
     internalReference: transaction.internalReference,
     promptChannel: transaction.promptChannel,
   }));
-  const transfers = await shareCapitalTransferService.historyForMember(member.id);
+  const transfers = (await shareCapitalTransferService.historyForMember(member.id))
+    .filter((transfer) => String(transfer.status || '').toUpperCase() === 'SUCCESS');
   formatted.push(...transfers.map((transfer) => ({
     id: transfer.id,
     type: 'SHARE_CAPITAL_TRANSFER',
@@ -1348,17 +1366,36 @@ const emailReport = asyncHandler(async (req, res) => {
 
   const reportType = req.body?.reportType || 'portfolio';
   const durationMonths = Number(req.body?.duration) || 0;
+  const transactionHeavyReports = new Set(['transactions', 'loans', 'loan-repayment', 'withdrawals', 'portfolio']);
   const member = await findMemberByUserId(req.user.id);
   const dateFilter = durationMonths > 0 ? { createdAt: { [Op.gte]: new Date(new Date().setMonth(new Date().getMonth() - durationMonths)) } } : {};
   const transactions = member
-    ? await db.Transaction.findAll({ where: { memberId: member.id, ...dateFilter }, order: [['createdAt', 'DESC']], limit: reportType === 'transactions' ? 100 : 20 })
+    ? await db.Transaction.findAll({
+      where: {
+        memberId: member.id,
+        ...dateFilter,
+        status: { [Op.in]: ['SUCCESS', 'PAID', 'COMPLETED'] },
+      },
+      order: [['createdAt', 'DESC']],
+      limit: transactionHeavyReports.has(reportType) ? 100 : 20,
+    })
     : [];
   const loans = member
-    ? await db.Loan.findAll({ where: { memberId: member.id, ...dateFilter }, order: [['createdAt', 'DESC']] })
+    ? await db.Loan.findAll({
+      where: { memberId: member.id, ...dateFilter },
+      include: [{
+        model: db.Guarantor,
+        include: [{
+          model: db.Member,
+          include: [db.User],
+        }],
+      }],
+      order: [['createdAt', 'DESC']],
+    })
     : [];
   const shares = await shareService.getShareAccountsForUser(req.user);
 
-  const successfulTransactions = transactions.filter((transaction) => ['SUCCESS', 'PAID', 'COMPLETED'].includes(String(transaction.status || '').toUpperCase()));
+  const successfulTransactions = transactions;
   const getCategory = (transaction) => String(
     transaction.paymentCategory ||
     transaction.kcbEndpoint ||
@@ -1372,30 +1409,35 @@ const emailReport = asyncHandler(async (req, res) => {
       ? sum + Number(transaction.amount || 0)
       : sum;
   }, 0);
-  const escapeHtml = (value) => String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-
   const paidShareCapital = categoryTotal(['share_capital', 'sharecapital', 'share capital']);
   const shareAccountCapital = shares.reduce((sum, share) => sum + Number((share.shares || 0) * (share.shareValue || 0)), 0);
   const shareCapital = Math.max(paidShareCapital, shareAccountCapital);
   const savingsTotal = categoryTotal(['savings']);
   const outstandingLoans = loans.reduce((sum, loan) => sum + Number(loan.amount || 0), 0);
   const transactionTotal = successfulTransactions.reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
-  const formatMoney = (value) => Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const transactionRows = transactions.map((transaction) => `
-    <tr>
-      <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${escapeHtml(transaction.createdAt ? new Date(transaction.createdAt).toLocaleDateString() : '-')}</td>
-      <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${escapeHtml(transaction.type)}</td>
-      <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${escapeHtml(transaction.paymentCategory || transaction.description || '-')}</td>
-      <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${escapeHtml(transaction.reference || '-')}</td>
-      <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; text-align: right;">KSh ${formatMoney(transaction.amount)}</td>
-      <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${escapeHtml(transaction.status || '-')}</td>
-    </tr>
-  `).join('');
+  const durationLabel = durationMonths > 0 ? `Last ${durationMonths} month${durationMonths === 1 ? '' : 's'}` : 'All records';
+  const memberNumber = member?.memberNumber || user.memberNumber || 'Member';
+  const reportName = reportNames[reportType] || 'Portfolio Report';
+  const sections = buildReportSections({ reportType, transactions: successfulTransactions, loans, shares });
+  const portfolioSummaryRows = [
+    ['Share capital', `KES ${formatMoney(shareCapital)}`],
+    ['Savings', `KES ${formatMoney(savingsTotal)}`],
+    ['Outstanding loans', `KES ${formatMoney(outstandingLoans)}`],
+    ['Successful transaction total', `KES ${formatMoney(transactionTotal)}`],
+    ['Loans', loans.length],
+  ];
+  const transactionSummaryRows = [
+    ['Share capital', `KES ${formatMoney(shareCapital)}`],
+    ['Savings', `KES ${formatMoney(savingsTotal)}`],
+  ];
+  const summaryRows = reportType === 'transactions' ? transactionSummaryRows : portfolioSummaryRows;
+  const reportPdf = buildBrandedReportPdf({
+    memberNumber,
+    reportName,
+    durationLabel,
+    sections,
+    summaryRows,
+  });
 
   const transporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST,
@@ -1408,41 +1450,22 @@ const emailReport = asyncHandler(async (req, res) => {
   });
 
   await transporter.sendMail({
-    from: `"Ayedos SACCO" <${process.env.SMTP_USER}>`,
+    from: `"AYEDOS SACCO" <${process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER}>`,
     to: user.email,
     subject: `AYEDOS SACCO ${reportType} report`,
-    html: `
-      <div style="font-family: Arial, sans-serif; color: #0f172a;">
-        <h2>AYEDOS SACCO ${reportType} report</h2>
-        <p>Hello ${user.name || 'Member'},</p>
-        <p>Your requested report summary is below.</p>
-        <ul>
-          <li><strong>Share capital:</strong> KSh ${formatMoney(shareCapital)}</li>
-          <li><strong>Savings:</strong> KSh ${formatMoney(savingsTotal)}</li>
-          <li><strong>Outstanding loans:</strong> KSh ${formatMoney(outstandingLoans)}</li>
-          <li><strong>Successful transaction total:</strong> KSh ${formatMoney(transactionTotal)}</li>
-          <li><strong>Loans:</strong> ${loans.length}</li>
-          <li><strong>Transactions reviewed:</strong> ${transactions.length}</li>
-        </ul>
-        ${reportType === 'transactions' ? `
-          <h3>Transaction statement</h3>
-          <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-            <thead>
-              <tr style="background: #f8fafc;">
-                <th style="padding: 8px; text-align: left;">Date</th>
-                <th style="padding: 8px; text-align: left;">Type</th>
-                <th style="padding: 8px; text-align: left;">Prompt</th>
-                <th style="padding: 8px; text-align: left;">Reference</th>
-                <th style="padding: 8px; text-align: right;">Amount</th>
-                <th style="padding: 8px; text-align: left;">Status</th>
-              </tr>
-            </thead>
-            <tbody>${transactionRows || '<tr><td colspan="6" style="padding: 8px;">No transactions found.</td></tr>'}</tbody>
-          </table>
-        ` : ''}
-        <p>Generated at ${new Date().toISOString()}.</p>
-      </div>
-    `
+    html: buildReportEmail({
+      recipientName: user.name,
+      reportType: reportName,
+      summaryRows,
+    }),
+    attachments: [
+      ...getBrandLogoAttachments(),
+      {
+        filename: `${memberNumber} - ${reportName}.pdf`.replace(/[\\/:*?"<>|]/g, '-'),
+        content: reportPdf,
+        contentType: 'application/pdf',
+      },
+    ],
   });
 
   return ResponseHandler.success(res, null, 'Report sent to your email', 200);

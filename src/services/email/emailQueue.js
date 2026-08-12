@@ -3,7 +3,7 @@ const { Queue, Worker } = require('bullmq');
 const db = require('../../models');
 const logger = require('../../shared/utils/logger');
 const { sendEmail } = require('./emailProviders');
-const { buildOtpEmail, buildPasswordResetEmail } = require('./templates');
+const { buildOtpEmail, buildPasswordResetEmail, getBrandLogoAttachments } = require('./templates');
 
 const QUEUES = {
   OTP: 'otp-email',
@@ -59,6 +59,7 @@ const buildMessage = (type, job) => {
       to: job.to,
       subject: 'Verification Code (OTP) - AYEDOS SACCO',
       html: buildOtpEmail(job),
+      attachments: getBrandLogoAttachments(),
     });
   }
   if (type === 'PASSWORD_RESET') {
@@ -73,6 +74,7 @@ const buildMessage = (type, job) => {
     subject: job.subject,
     html: job.html,
     text: job.text,
+    attachments: job.attachments || [],
   });
 };
 

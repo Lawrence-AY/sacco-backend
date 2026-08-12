@@ -161,7 +161,17 @@ const schemas = {
     status: z.string().trim().max(40).optional(),
   }),
   reportRequest: strictObject({
-    reportType: z.enum(['portfolio', 'transactions', 'loans', 'savings']).default('portfolio'),
+    reportType: z.enum([
+      'portfolio',
+      'transactions',
+      'loans',
+      'savings',
+      'shares-savings',
+      'withdrawals',
+      'loan-repayment',
+      'guarantor',
+      'payroll-deduction',
+    ]).default('portfolio'),
     duration: z.coerce.number().int().positive().max(120).optional(),
   }),
   memberOptOutRequest: strictObject({

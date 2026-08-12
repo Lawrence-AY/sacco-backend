@@ -11,6 +11,23 @@ const withTimeout = (promise, timeoutMs, provider) => Promise.race([
   new Promise((_, reject) => setTimeout(() => reject(new Error(`${provider} timed out`)), timeoutMs)),
 ]);
 
+const toResendAttachments = (attachments = []) => attachments
+  .filter((attachment) => attachment?.content || attachment?.path)
+  .map((attachment) => {
+    const item = {
+      filename: attachment.filename || attachment.fileName || 'attachment',
+      contentType: attachment.contentType,
+    };
+    if (attachment.content) {
+      item.content = Buffer.isBuffer(attachment.content)
+        ? attachment.content.toString('base64')
+        : Buffer.from(String(attachment.content)).toString('base64');
+    } else {
+      item.path = attachment.path;
+    }
+    return item;
+  });
+
 class EmailProvider {
   constructor(name) {
     this.name = name;
@@ -74,6 +91,7 @@ class ResendProvider extends EmailProvider {
       subject: message.subject,
       html: message.html,
       text: message.text,
+      attachments: toResendAttachments(message.attachments),
     });
     if (result.error) throw new Error(result.error.message || 'Resend rejected the email');
     return { messageId: result.data?.id };

@@ -463,7 +463,6 @@ const syncDashboardEvents = async (user) => {
 };
 
 const listForUser = async (user, { unreadOnly = false, limit = 30 } = {}) => {
-  await syncDashboardEvents(user);
   const notifications = await db.Notification.findAll({
     where: {
       userId: user.id,
