@@ -6,6 +6,17 @@ const crypto = require('crypto');
 const GUARANTOR_TOKEN_TTL_MS = 72 * 60 * 60 * 1000;
 
 const isEmergencyLoan = (type) => String(type || '').toUpperCase() === 'EMERGENCY';
+const RESTRICTED_LOAN_STATUSES = ['PENDING', 'PENDING_GUARANTORS', 'UNDER_REVIEW', 'APPROVED', 'ACTIVE', 'DISBURSED'];
+
+const addMonths = (value, months) => {
+  const date = new Date(value);
+  const day = date.getUTCDate();
+  date.setUTCDate(1);
+  date.setUTCMonth(date.getUTCMonth() + months);
+  const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+  date.setUTCDate(Math.min(day, lastDay));
+  return date;
+};
 
 const getAvailableGuaranteeSavings = async (memberId, excludeGuarantorId = null) => {
   const [savingsAccount, successfulTransactions, activeGuarantees] = await Promise.all([
@@ -112,14 +123,14 @@ const finalizeLoanDisbursement = async (loan, transaction) => {
     transaction,
   });
 
-  if (existingWalletTx) return;
+  if (existingWalletTx) return existingWalletTx;
 
   const previousWithdrawable = Number(wallet.withdrawableBalance || 0);
   const nextWithdrawable = previousWithdrawable + amount;
   await wallet.update({ withdrawableBalance: nextWithdrawable }, { transaction });
 
   const txId = makeWalletTransactionId();
-  await db.WalletTransaction.create({
+  const walletTransaction = await db.WalletTransaction.create({
     id: txId,
     transactionId: txId,
     walletId: wallet.walletId || wallet.id,
@@ -136,6 +147,7 @@ const finalizeLoanDisbursement = async (loan, transaction) => {
     complianceStatus: 'PASSED',
     complianceReason: 'Finance-approved loan disbursed to member wallet.',
   }, { transaction });
+  return walletTransaction;
 };
 
 const getAllLoans = async () => {
@@ -152,7 +164,19 @@ const getLoanById = async (id) => {
 };
 
 const createLoan = async (data) => {
-  const result = await db.sequelize.transaction(async (transaction) => {
+  const result = await db.sequelize.transaction({
+    isolationLevel: db.Sequelize.Transaction.ISOLATION_LEVELS.SERIALIZABLE,
+  }, async (transaction) => {
+    const existingLoan = await db.Loan.findOne({
+      where: { memberId: data.memberId, status: { [db.Sequelize.Op.in]: RESTRICTED_LOAN_STATUSES } },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+    if (existingLoan) {
+      const error = new Error('You already have an active or pending loan application');
+      error.statusCode = 409;
+      throw error;
+    }
     const emergency = isEmergencyLoan(data.type);
     const risk = emergency ? await runEmergencyEligibilityChecks(data.memberId) : null;
     const selfGuaranteed = data.selfGuarantee === true || data.selfGuaranteed === true;
@@ -171,6 +195,9 @@ const createLoan = async (data) => {
       approvedById: data.approvedById,
       approvalStage: emergency && risk.eligible ? 'FINANCE' : requiresGuarantors ? 'INITIAL' : data.approvalStage || 'FINANCE',
       decidedAt: emergency && risk.eligible ? new Date() : null,
+      principalBalance: emergency && risk.eligible ? Number(data.amount) : null,
+      lastInterestAccrualAt: emergency && risk.eligible ? new Date() : null,
+      nextPaymentDueAt: emergency && risk.eligible ? addMonths(new Date(), 1) : null,
     }, { transaction });
 
     if (data.guarantors && data.guarantors.length > 0) {
@@ -194,14 +221,15 @@ const createLoan = async (data) => {
       }, { transaction });
     }
 
-    if (emergency && loan.status === 'APPROVED') {
-      await finalizeLoanDisbursement(loan, transaction);
-    }
+    const walletTransaction = emergency && loan.status === 'APPROVED'
+      ? await finalizeLoanDisbursement(loan, transaction)
+      : null;
 
     return {
       loanId: loan.id,
       emergency,
       risk,
+      transactionId: walletTransaction?.transactionId || walletTransaction?.id || null,
       disbursementDeadline: emergency && loan.status === 'APPROVED'
         ? new Date(Date.now() + 60 * 60 * 1000)
         : null,
@@ -228,7 +256,11 @@ const createLoan = async (data) => {
     await notificationService.createFinanceLoanRequestNotifications(result.loanId);
   }
 
-  return createdLoan;
+  return {
+    loan: createdLoan,
+    transactionId: result.transactionId,
+    autoApproved: Boolean(result.emergency && result.risk?.eligible),
+  };
 };
 
 const updateLoan = async (id, data) => {
@@ -269,6 +301,10 @@ const updateLoanStatus = async (id, status, options = {}) => {
       duration: options.duration ?? loan.duration,
       rejectionReason: normalized === 'REJECTED' ? options.reason || loan.rejectionReason : loan.rejectionReason,
       decidedAt: ['APPROVED', 'REJECTED'].includes(normalized) ? new Date() : loan.decidedAt,
+      principalBalance: normalized === 'APPROVED' ? Number(options.approvedAmount ?? loan.amount) : loan.principalBalance,
+      accruedInterest: normalized === 'APPROVED' ? 0 : loan.accruedInterest,
+      lastInterestAccrualAt: normalized === 'APPROVED' ? new Date() : loan.lastInterestAccrualAt,
+      nextPaymentDueAt: normalized === 'APPROVED' ? addMonths(new Date(), 1) : loan.nextPaymentDueAt,
     }, { transaction });
 
     return loan.id;

@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../../models');
 const logger = require('../../shared/utils/logger');
 const { getFirebaseDb } = require('../../shared/config/firebase');
+const { allocateMpesaRepayment } = require('../loans/services/loanRepaymentService');
 
 const router = express.Router();
 const MPESA_PROXY_TIMEOUT_MS = Number(process.env.MPESA_TIMEOUT_MS || 115000);
@@ -136,33 +137,38 @@ router.post('/callback', async (req, res) => {
 
     if (matchValue) {
       const registrationId = String(CheckoutRequestID || MerchantRequestID);
-      await getFirebaseDb().collection('registrations').doc(registrationId).set({
-        checkout_request_id: CheckoutRequestID || null,
-        merchant_request_id: MerchantRequestID || null,
-        status: success ? 'paid' : 'failed',
-        mpesa_receipt: receipt || null,
-        amount: amount == null ? null : Number(amount),
-        phone: phone == null ? null : String(phone),
-        result_code: Number(ResultCode),
-        result_description: ResultDesc || null,
-        updated_at: new Date(),
-      }, { merge: true });
+      try {
+        await getFirebaseDb().collection('registrations').doc(registrationId).set({
+          checkout_request_id: CheckoutRequestID || null,
+          merchant_request_id: MerchantRequestID || null,
+          status: success ? 'paid' : 'failed',
+          mpesa_receipt: receipt || null,
+          amount: amount == null ? null : Number(amount),
+          phone: phone == null ? null : String(phone),
+          result_code: Number(ResultCode),
+          result_description: ResultDesc || null,
+          updated_at: new Date(),
+        }, { merge: true });
+      } catch (firebaseError) {
+        logger.error('M-Pesa callback Firebase mirror failed; continuing with primary ledger', { error: firebaseError.message, registrationId });
+      }
 
       const where = {
         [db.Sequelize.Op.or]: [
           { reference: matchValue },
           { internalReference: matchValue },
+          { checkoutRequestId: matchValue },
+          { merchantRequestId: matchValue },
         ],
       };
 
       const transaction = await db.Transaction.findOne({ where });
       if (transaction) {
-        await transaction.update({
-          status: success ? 'SUCCESS' : 'FAILED',
-          reference: receipt || transaction.reference,
-          amount: amount ? Number(amount) : transaction.amount,
-          description: ResultDesc || transaction.description,
-        });
+        if (success && transaction.type === 'LOAN_REPAYMENT' && transaction.loanId) {
+          await allocateMpesaRepayment({ ledgerTransactionId: transaction.id, receipt, confirmedAmount: amount, resultDescription: ResultDesc });
+        } else {
+          await transaction.update({ status: success ? 'SUCCESS' : 'FAILED', reference: receipt || transaction.reference, amount: amount ? Number(amount) : transaction.amount, description: ResultDesc || transaction.description });
+        }
       } else {
         logger.warn('M-Pesa callback transaction not found', {
           MerchantRequestID,

@@ -137,13 +137,18 @@ const formatLoan = (loan) => {
     principal: loan.amount,
     amount: loan.amount,
     requestedAmount: loan.amount,
-    balance: loan.amount,
+    principalBalance: Number(loan.principalBalance ?? loan.amount ?? 0),
+    accruedInterest: Number(loan.accruedInterest || 0),
+    balance: Number(loan.principalBalance ?? loan.amount ?? 0) + Number(loan.accruedInterest || 0),
     reason: loan.reason || null,
     duration: loan.duration,
     interest: loan.interestRate,
     interestRate: loan.interestRate,
     interestGenerated: amount * (interestRate / 100) * duration,
-    status: loan.status,
+    status: loan.type === 'EMERGENCY' && loan.status === 'APPROVED' ? 'AUTO_APPROVED_EMERGENCY' : loan.status,
+    autoApproved: loan.type === 'EMERGENCY' && loan.status === 'APPROVED',
+    auditTimestamp: loan.decidedAt,
+    nextPaymentDueAt: loan.nextPaymentDueAt,
     financeStatus,
     rejectionReason: loan.rejectionReason,
     decidedAt: loan.decidedAt,
@@ -614,13 +619,14 @@ const getAllCompanies = asyncHandler(async (req, res) => {
 });
 
 const getFinancialReports = asyncHandler(async (req, res) => {
-  const [transactions, loans, dividends, transfers, loanTransactions, members] = await Promise.all([
+  const [transactions, loans, dividends, transfers, loanTransactions, members, membershipApplications] = await Promise.all([
     db.Transaction.findAll({ where: { status: 'SUCCESS' }, order: [['createdAt', 'ASC']] }),
     db.Loan.findAll({ order: [['createdAt', 'ASC']] }),
     db.Dividend.findAll({ order: [['createdAt', 'ASC']] }),
     db.ShareCapitalTransfer.findAll({ where: { status: 'SUCCESS' } }),
-    db.LoanTransaction.findAll({ attributes: ['interestPaid'] }),
-    db.Member.findAll({ attributes: ['id', 'memberNumber'], include: [{ model: db.User, attributes: ['name', 'firstName', 'lastName'] }] }),
+    db.LoanTransaction.findAll({ attributes: ['id', 'loanId', 'memberId', 'ledgerTransactionId', 'amount', 'principalPaid', 'interestPaid', 'metadata', 'createdAt'] }),
+    db.Member.findAll({ attributes: ['id', 'userId', 'applicationId', 'memberNumber'], include: [{ model: db.User, attributes: ['name', 'firstName', 'lastName', 'email'] }] }),
+    db.MembershipApplication.findAll({ attributes: ['id', 'name', 'email'] }),
   ]);
 
   const repaymentsByLoan = transactions.reduce((map, transaction) => {
@@ -644,10 +650,66 @@ const getFinancialReports = asyncHandler(async (req, res) => {
   const products = ['EMERGENCY', 'EDUCATION', 'DEVELOPMENT', 'WELFARE'];
   const byProduct = Object.fromEntries(products.map((product) => [product, { repayments: 0, disbursements: 0 }]));
   const flowTotals = { deposits: 0, shareCapitalDeposits: 0, savingsDeposits: 0, withdrawals: 0, repayments: 0, disbursements: 0 };
+  const applicationMap = new Map(membershipApplications.map((application) => [application.id, application]));
   const memberMap = new Map(members.map((member) => [member.id, {
     memberId: member.id, memberNumber: member.memberNumber,
-    memberName: member.User?.name || [member.User?.firstName, member.User?.lastName].filter(Boolean).join(' ') || member.memberNumber,
+    memberName: member.User?.name
+      || [member.User?.firstName, member.User?.lastName].filter(Boolean).join(' ')
+      || applicationMap.get(member.applicationId)?.name
+      || member.User?.email
+      || applicationMap.get(member.applicationId)?.email
+      || 'Unknown member',
   }]));
+  const ledgerMap = new Map(transactions.map((transaction) => [transaction.id, transaction]));
+  const loanInterestBreakdown = loanTransactions
+    .filter((entry) => Number(entry.interestPaid || 0) > 0)
+    .map((entry) => {
+      const identity = memberMap.get(entry.memberId) || { memberId: entry.memberId, memberNumber: 'Unknown', memberName: 'Unknown member' };
+      const ledger = ledgerMap.get(entry.ledgerTransactionId);
+      const occurredAt = ledger?.createdAt || entry.createdAt;
+      return {
+        id: entry.id,
+        ...identity,
+        reference: entry.metadata?.mpesa_receipt_number || ledger?.reference || entry.ledgerTransactionId,
+        sourceAmount: Number(entry.amount || ledger?.amount || 0),
+        interestAmount: Number(entry.interestPaid || 0),
+        principalAmount: Number(entry.principalPaid || 0),
+        occurredAt,
+        occurredAtEAT: formatEAT(occurredAt),
+      };
+    })
+    .sort((left, right) => new Date(right.occurredAt) - new Date(left.occurredAt));
+  const shareCapitalInterestBreakdown = transfers
+    .filter((transfer) => Number(transfer.feeAmount || 0) > 0)
+    .map((transfer) => {
+      const identity = memberMap.get(transfer.senderMemberId) || { memberId: transfer.senderMemberId, memberNumber: 'Unknown', memberName: 'Unknown member' };
+      return {
+        id: transfer.id,
+        ...identity,
+        reference: transfer.metadata?.mpesa_receipt_number || transfer.metadata?.mpesaReceiptNumber || transfer.reference,
+        sourceAmount: Number(transfer.grossAmount || 0),
+        interestAmount: Number(transfer.feeAmount || 0),
+        occurredAt: transfer.createdAt,
+        occurredAtEAT: formatEAT(transfer.createdAt),
+      };
+    })
+    .sort((left, right) => new Date(right.occurredAt) - new Date(left.occurredAt));
+  const effectiveLoanInterestBreakdown = loanInterestBreakdown.length ? loanInterestBreakdown : transactions
+    .filter((transaction) => transaction.type === 'LOAN_REPAYMENT' && transaction.loanId)
+    .map((transaction) => {
+      const identity = memberMap.get(transaction.memberId) || { memberId: transaction.memberId, memberNumber: 'Unknown', memberName: 'Unknown member' };
+      const loan = loanMap.get(transaction.loanId);
+      const principal = Number(loan?.amount || 0);
+      const scheduledInterest = principal * Number(loan?.interestRate || 0) / 100 * Number(loan?.duration || 1);
+      const interestAmount = principal + scheduledInterest > 0 ? Number(transaction.amount || 0) * scheduledInterest / (principal + scheduledInterest) : 0;
+      return {
+        id: transaction.id, ...identity, reference: transaction.reference,
+        sourceAmount: Number(transaction.amount || 0), interestAmount: Math.round(interestAmount * 100) / 100,
+        occurredAt: transaction.createdAt, occurredAtEAT: formatEAT(transaction.createdAt),
+      };
+    })
+    .filter((row) => row.interestAmount > 0)
+    .sort((left, right) => new Date(right.occurredAt) - new Date(left.occurredAt));
   const breakdownKeys = [...Object.keys(flowTotals), ...products.flatMap((product) => [`repayments_${product}`, `disbursements_${product}`])];
   const breakdownMaps = Object.fromEntries(breakdownKeys.map((key) => [key, new Map()]));
   const addMemberAmount = (key, memberId, amount) => {
@@ -698,6 +760,10 @@ const getFinancialReports = asyncHandler(async (req, res) => {
     },
     byProduct,
     memberBreakdowns,
+    interestBreakdowns: {
+      loanRepaymentInterest: effectiveLoanInterestBreakdown,
+      shareCapitalTransferFees: shareCapitalInterestBreakdown,
+    },
     timeSeries: serializedSeries,
     generatedAt: new Date(),
     generatedAtEAT: formatEAT(new Date()),

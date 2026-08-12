@@ -144,6 +144,16 @@ const asDate = (value) => {
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
+const addScheduleMonths = (value, months) => {
+  const date = new Date(value);
+  const originalDay = date.getUTCDate();
+  date.setUTCDate(1);
+  date.setUTCMonth(date.getUTCMonth() + months);
+  const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+  date.setUTCDate(Math.min(originalDay, lastDay));
+  return date;
+};
+
 const getLoanRepaymentTotals = async (memberId) => {
   const repayments = await db.Transaction.findAll({
     where: {
@@ -642,15 +652,21 @@ const getLoans = asyncHandler(async (req, res) => {
     include: [db.Guarantor],
     order: [['createdAt', 'DESC']],
   });
-  const repaymentTotals = await getLoanRepaymentTotals(member.id);
-
   const formatted = loans.map((loan) => ({
     id: loan.id,
     memberId: loan.memberId,
     type: loan.type,
     principal: loan.amount,
-    balance: Math.max(Number(loan.amount || 0) - Number(repaymentTotals.get(String(loan.id)) || 0), 0),
-    repaid: Number(repaymentTotals.get(String(loan.id)) || 0),
+    principalBalance: Number(loan.principalBalance ?? loan.amount ?? 0),
+    accruedInterest: Number(loan.accruedInterest || 0),
+    balance: Number(loan.principalBalance ?? loan.amount ?? 0) + Number(loan.accruedInterest || 0),
+    repaid: Math.max(Number(loan.amount || 0) - Number(loan.principalBalance ?? loan.amount ?? 0), 0),
+    interestRate: Number(loan.interestRate || 0),
+    duration: Number(loan.duration || 0),
+    nextPaymentDueAt: loan.nextPaymentDueAt,
+    lastInterestAccrualAt: loan.lastInterestAccrualAt,
+    autoApproved: loan.type === 'EMERGENCY' && loan.status === 'APPROVED',
+    auditTimestamp: loan.decidedAt,
     status: loan.status,
     approvedAt: loan.updatedAt,
     createdAt: loan.createdAt,
@@ -694,7 +710,7 @@ const applyForLoan = asyncHandler(async (req, res) => {
     throw new ValidationError('Select at least one guarantor, or use self-guarantee if your savings cover the loan.');
   }
 
-  const loan = await loanService.createLoan({
+  const result = await loanService.createLoan({
     ...req.body,
     memberId: member.id,
     status: 'PENDING',
@@ -703,7 +719,11 @@ const applyForLoan = asyncHandler(async (req, res) => {
     guarantors: selfGuarantee || isEmergencyLoan ? [] : guarantors,
   });
 
-  return ResponseHandler.created(res, LoanDTO.basic(loan, req.user), 'Loan application submitted successfully');
+  return ResponseHandler.created(res, {
+    success: true,
+    transactionId: result.transactionId,
+    loanDetails: LoanDTO.basic(result.loan, req.user),
+  }, result.autoApproved ? 'Emergency Loan Auto-Approved & Disbursed' : 'Loan application submitted successfully');
 });
 
 const cancelLoan = asyncHandler(async (req, res) => {
@@ -798,6 +818,7 @@ const getTransactions = asyncHandler(async (req, res) => {
     amount: transaction.amount,
     description: buildTransactionDescription(transaction),
     createdAt: transaction.createdAt,
+    createdAtEAT: formatEAT(transaction.createdAt),
     status: transaction.status,
     method: transaction.method,
     reference: transaction.reference,
@@ -819,6 +840,7 @@ const getTransactions = asyncHandler(async (req, res) => {
       ? `Share capital transfer to ${transfer.recipient?.memberNumber}`
       : `Share capital transfer from ${transfer.sender?.memberNumber}`,
     createdAt: transfer.createdAt,
+    createdAtEAT: formatEAT(transfer.createdAt),
     status: transfer.status,
     reference: transfer.reference,
     paymentCategory: 'share_capital_transfer',
@@ -976,23 +998,100 @@ const repayLoan = asyncHandler(async (req, res) => {
       remainingPrincipal, accruedDays,
       metadata: { rateBasis: 'MONTHLY_REDUCING_BALANCE', monthlyRate: Number(loan.interestRate || 0), reference },
     }, { transaction: dbTransaction });
+    const startDate = new Date(loan.decidedAt || loan.createdAt);
+    const elapsedMonths = Math.max(0, (paymentDate.getUTCFullYear() - startDate.getUTCFullYear()) * 12 + paymentDate.getUTCMonth() - startDate.getUTCMonth());
+    const remainingInstallments = Math.max(Number(loan.duration || 1) - elapsedMonths, 1);
+    let nextPaymentDueAt = null;
+    if (remainingPrincipal !== 0 || remainingInterest !== 0) {
+      nextPaymentDueAt = addScheduleMonths(startDate, Math.min(elapsedMonths + 1, Number(loan.duration || 1)));
+      if (nextPaymentDueAt <= paymentDate) nextPaymentDueAt = addScheduleMonths(startDate, elapsedMonths + 2);
+    }
     await loan.update({
       principalBalance: remainingPrincipal, accruedInterest: remainingInterest,
       lastInterestAccrualAt: paymentDate,
+      nextPaymentDueAt,
       status: remainingPrincipal === 0 && remainingInterest === 0 ? 'COMPLETED' : loan.status,
     }, { transaction: dbTransaction });
-    return { ledger, repayment, paymentDate };
+    return { ledger, repayment, paymentDate, loanId: loan.id, remainingInterest, nextPaymentDueAt, remainingInstallments };
   });
-  await releaseCoveredGuarantors(loan.id);
+  await releaseCoveredGuarantors(result.loanId);
 
   return ResponseHandler.created(res, {
     id: result.ledger.id, type: result.ledger.type, amount: Number(result.ledger.amount),
     transactionType: result.repayment.transactionType,
     principalPaid: Number(result.repayment.principalPaid), interestPaid: Number(result.repayment.interestPaid),
     remainingPrincipal: Number(result.repayment.remainingPrincipal), accruedDays: result.repayment.accruedDays,
+    remainingInterest: result.remainingInterest,
+    outstandingBalance: Number(result.repayment.remainingPrincipal) + result.remainingInterest,
+    nextPaymentDueAt: result.nextPaymentDueAt,
+    nextPaymentAmount: result.remainingInstallments ? (Number(result.repayment.remainingPrincipal) + result.remainingInterest) / result.remainingInstallments : 0,
     status: result.ledger.status, method: result.ledger.method, reference: result.ledger.reference,
     createdAt: result.paymentDate, createdAtEAT: formatEAT(result.paymentDate),
   }, 'Interim loan payment allocated and schedule recalculated successfully');
+});
+
+const initiateLoanRepaymentStk = asyncHandler(async (req, res) => {
+  const member = await findMemberByUserId(req.user.id);
+  if (!member) throw new NotFoundError('Member profile not found');
+  const loan = await db.Loan.findByPk(req.params.loanId);
+  if (!loan) throw new NotFoundError('Loan not found');
+  if (loan.memberId !== member.id) throw new ForbiddenError('You do not own this loan');
+  if (!['ACTIVE', 'APPROVED', 'DISBURSED'].includes(String(loan.status).toUpperCase())) throw new ValidationError('Loan is not eligible for repayment');
+  const amount = Number(req.body.amount);
+  const phone = String(req.body.phone || '').replace(/\s+/g, '');
+  const principal = Number(loan.principalBalance ?? loan.amount ?? 0);
+  const accrualStart = new Date(loan.lastInterestAccrualAt || loan.decidedAt || loan.createdAt);
+  const accruedDays = Math.max(0, Math.floor((Date.now() - accrualStart.getTime()) / 86400000));
+  const liveInterest = Number(loan.accruedInterest || 0) + principal * (Number(loan.interestRate || 0) / 100 / 30) * accruedDays;
+  const outstanding = principal + liveInterest;
+  if (!Number.isInteger(amount) || amount <= 0 || amount > outstanding) throw new ValidationError(`Enter a whole-shilling amount between KES 1 and KES ${outstanding.toFixed(2)}`);
+  if (!/^(?:254|0)?7\d{8}$/.test(phone)) throw new ValidationError('Enter a valid Kenyan M-Pesa phone number');
+
+  const internalReference = `LOAN-${loan.id}-${Date.now()}`;
+  if (!member.memberNumber) throw new ValidationError('Your member number is required before an M-Pesa loan repayment can be initiated');
+  const memberAccountReference = String(member.memberNumber);
+  const ledger = await db.Transaction.create({
+    memberId: member.id, loanId: loan.id, type: 'LOAN_REPAYMENT', amount,
+    method: 'MPESA', status: 'PENDING', reference: internalReference,
+    internalReference, description: `Loan repayment for member ${memberAccountReference}`,
+    paymentCategory: 'loan_repayment', kcbEndpoint: '/loans_repayment', promptChannel: 'STK',
+  });
+  try {
+    const baseUrl = getKcbMpesaBaseUrl();
+    if (!baseUrl) throw new Error('M-Pesa STK Push is not configured');
+    const upstream = await fetch(`${baseUrl}/loans_repayment`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        phone, amount: Math.round(amount), accountReference: memberAccountReference,
+        AccountReference: memberAccountReference, transactionDesc: `Loan repayment - ${memberAccountReference}`,
+        TransactionDesc: `Loan repayment - ${memberAccountReference}`, loanId: loan.id, memberId: member.id,
+        member_number: memberAccountReference,
+        type: 'LOAN_REPAYMENT', method: 'MPESA', paymentCategory: 'loan_repayment', internalReference,
+      }),
+    });
+    const payload = await upstream.json();
+    const checkoutRequestId = payload.checkoutRequestId || payload.CheckoutRequestID;
+    if (!upstream.ok || !checkoutRequestId) throw new Error(payload.message || payload.error || 'M-Pesa did not return a checkout request ID');
+    await ledger.update({ checkoutRequestId, merchantRequestId: payload.merchantRequestId || payload.MerchantRequestID || null, reference: checkoutRequestId });
+    return ResponseHandler.success(res, { transactionId: ledger.id, checkoutRequestId, merchantRequestId: ledger.merchantRequestId, status: 'PENDING' }, 'STK Push Sent!', 200);
+  } catch (error) {
+    await ledger.update({ status: 'FAILED', description: error.message });
+    throw new ValidationError(error.message || 'Unable to send M-Pesa PIN prompt');
+  }
+});
+
+const getLoanPaymentStatus = asyncHandler(async (req, res) => {
+  const member = await findMemberByUserId(req.user.id);
+  const ledger = member ? await db.Transaction.findOne({ where: { memberId: member.id, checkoutRequestId: req.params.checkoutRequestId, type: 'LOAN_REPAYMENT' } }) : null;
+  if (!ledger) throw new NotFoundError('Payment request not found');
+  const repayment = await db.LoanTransaction.findOne({ where: { ledgerTransactionId: ledger.id } });
+  return ResponseHandler.success(res, {
+    checkoutRequestId: ledger.checkoutRequestId, status: ledger.status,
+    mpesaReceiptNumber: ledger.status === 'SUCCESS' ? ledger.reference : null,
+    principalPaid: repayment ? Number(repayment.principalPaid) : null,
+    interestPaid: repayment ? Number(repayment.interestPaid) : null,
+    remainingBalance: repayment ? Number(repayment.remainingPrincipal) + Number(repayment.metadata?.remaining_interest || 0) : null,
+  }, 'Payment status retrieved');
 });
 
 const depositSavings = asyncHandler(async (req, res) => {
@@ -1360,6 +1459,8 @@ module.exports = {
   applyForLoan,
   cancelLoan,
   repayLoan,
+  initiateLoanRepaymentStk,
+  getLoanPaymentStatus,
   depositSavings,
   initiateContribution,
   checkContributionStatus,

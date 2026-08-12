@@ -4,6 +4,7 @@
  */
 
 const logger = require('./logger');
+const { formatEAT } = require('./eatDateTime');
 
 // Sensitive fields that should NEVER be exposed in API responses
 const SENSITIVE_FIELDS = [
@@ -178,7 +179,9 @@ const TransactionDTO = {
       promptChannel: transaction.promptChannel,
       status: transaction.status,
       createdAt: transaction.createdAt,
-      updatedAt: transaction.updatedAt
+      createdAtEAT: formatEAT(transaction.createdAt),
+      updatedAt: transaction.updatedAt,
+      updatedAtEAT: formatEAT(transaction.updatedAt)
     });
 
     // Add sensitive financial details only for authorized users
@@ -217,6 +220,13 @@ const LoanDTO = {
       duration: loan.duration,
       term: loan.term || loan.duration,
       status: loan.status,
+      principalBalance: Number(loan.principalBalance ?? loan.amount ?? 0),
+      accruedInterest: Number(loan.accruedInterest || 0),
+      outstandingBalance: Number(loan.principalBalance ?? loan.amount ?? 0) + Number(loan.accruedInterest || 0),
+      nextPaymentDueAt: loan.nextPaymentDueAt,
+      lastInterestAccrualAt: loan.lastInterestAccrualAt,
+      autoApproved: loan.type === 'EMERGENCY' && loan.status === 'APPROVED',
+      auditTimestamp: loan.decidedAt,
       reason: loan.reason,
       purpose: loan.purpose || loan.reason,
       rejectionReason: loan.rejectionReason,
@@ -234,7 +244,7 @@ const LoanDTO = {
       Object.assign(baseData, {
         approvedAmount: loan.approvedAmount,
         disbursedAmount: loan.disbursedAmount,
-        outstandingBalance: loan.outstandingBalance,
+        outstandingBalance: Number(loan.principalBalance ?? loan.amount ?? 0) + Number(loan.accruedInterest || 0),
         nextPaymentDate: loan.nextPaymentDate,
         approvedBy: loan.approvedBy,
         approvedAt: loan.approvedAt
