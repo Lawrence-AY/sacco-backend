@@ -16,6 +16,8 @@ router.get('/loans', memberController.getLoans);
 router.post('/loans', validate(schemas.loanRequest), memberController.applyForLoan);
 router.post('/loans/:loanId/cancel', memberController.cancelLoan);
 router.post('/loans/:loanId/repay', memberController.repayLoan);
+router.post('/loans/:loanId/repay/stk', memberController.initiateLoanRepaymentStk);
+router.get('/payments/status/:checkoutRequestId', memberController.getLoanPaymentStatus);
 router.post('/savings/deposit', memberController.depositSavings);
 router.post('/contributions', memberController.initiateContribution);
 router.get('/contributions/:transactionId/status', memberController.checkContributionStatus);
