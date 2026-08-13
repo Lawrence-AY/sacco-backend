@@ -11,7 +11,8 @@ const escapeHtml = (value) => String(value ?? '')
   .replace(/"/g, '&quot;')
   .replace(/'/g, '&#39;');
 
-const resolveLogoPath = (fileName) => path.resolve(__dirname, '../../../../ayedos-webapp/src/assets', fileName);
+// Email runs from the backend, while the approved logo assets live in the web app.
+const resolveLogoPath = (fileName) => path.resolve(__dirname, '../../../../Ayedos-Sacco_Web_App/src/assets', fileName);
 
 const getBrandLogoAttachments = () => [
   { fileName: 'logo-light.png', cid: BRAND_LOGO_CID },
@@ -61,11 +62,11 @@ const buildBrandedEmail = ({ children, footer = 'This is an automated email. Rep
         <td align="center" style="padding:16px 12px">
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" class="ayedos-email-card" style="max-width:700px;border-collapse:separate;border-spacing:0;overflow:hidden;border-radius:34px;background:#ffffff;border:1px solid #e8eef5">
             <tr>
-              <td align="center" style="padding:44px 40px 28px;background:transparent">${brandLogoHtml}</td>
+      <td align="center" style="padding:30px 32px 16px;background:transparent">${brandLogoHtml}</td>
             </tr>
             ${children}
             <tr>
-              <td class="ayedos-email-footer" align="center" style="padding:28px 34px 31px;background:#ffffff;border-top:1px solid #e6edf5">
+      <td class="ayedos-email-footer" align="center" style="padding:20px 30px 24px;background:#ffffff;border-top:1px solid #e6edf5">
                 <p class="ayedos-email-muted" style="margin:0;font-size:13px;line-height:1.6;color:#8298b1">${escapeHtml(footer)}</p>
               </td>
             </tr>
@@ -143,27 +144,27 @@ const buildNewDeviceEmail = ({ recipientName, session }) => {
     ['Device', session.deviceName || 'Unknown device'],
     ['Browser / User agent', session.userAgent || 'Unknown browser'],
     ['IP address', session.ipAddress || 'Unknown IP'],
-    ['Location', session.location || 'Location unavailable'],
+    ['Approx. location', session.location || 'Location unavailable'],
     ['Time', new Date(session.loginAt || Date.now()).toLocaleString()],
   ].map(([label, value]) => `
     <tr>
-      <td style="padding:10px 0;color:#64748b;font-size:13px;font-weight:700">${escapeHtml(label)}</td>
-      <td style="padding:10px 0;color:#24384d;font-size:13px;text-align:right">${escapeHtml(value)}</td>
+      <td style="padding:7px 0;color:#64748b;font-size:13px;font-weight:700">${escapeHtml(label)}</td>
+      <td style="padding:7px 0;color:#24384d;font-size:13px;text-align:right">${escapeHtml(value)}</td>
     </tr>
   `).join('');
 
   return buildBrandedEmail({
     children: `
       <tr>
-        <td style="padding:0 40px 34px">
+        <td style="padding:0 28px 20px">
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" class="ayedos-email-panel" style="border-collapse:separate;border-spacing:0;border-radius:24px;background:#f7f9fc;border:1px solid #e6edf5">
             <tr>
-              <td style="padding:30px 32px">
+              <td style="padding:24px 26px">
                 <div class="ayedos-email-title" style="font-size:14px;font-weight:800;letter-spacing:0.16em;text-transform:uppercase;color:#5b82aa">Security Alert</div>
                 <h1 class="ayedos-email-strong" style="margin:12px 0 8px;font-size:24px;line-height:1.25;color:#24384d">New device login detected</h1>
-                <p class="ayedos-email-text" style="margin:0 0 18px;font-size:15px;line-height:1.65;color:#5f748c">Hello ${escapeHtml(recipientName || 'Member')}, your AYEDOS SACCO account was accessed using a device we have not seen before.</p>
+                <p class="ayedos-email-text" style="margin:0 0 12px;font-size:15px;line-height:1.55;color:#5f748c">Hello ${escapeHtml(recipientName || 'Member')}, your AYEDOS SACCO account was accessed using a device we have not seen before.</p>
                 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">${rows}</table>
-                <p class="ayedos-email-strong" style="margin:18px 0 0;font-size:14px;line-height:1.6;color:#24384d;font-weight:800">If this was not you, change your password immediately.</p>
+                <p class="ayedos-email-strong" style="margin:12px 0 0;font-size:14px;line-height:1.5;color:#24384d;font-weight:800">If this was not you, change your password immediately.</p>
               </td>
             </tr>
           </table>

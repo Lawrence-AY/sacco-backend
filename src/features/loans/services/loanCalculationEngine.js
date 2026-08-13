@@ -28,11 +28,14 @@ const calculateAccruedInterestCents = ({
   originalPrincipalCents,
   currentPrincipalCents,
   accruedInterestCents = 0,
-  annualRatePercent = 0,
+  monthlyRatePercent = 0,
   accruedDays = 0,
   amortization = DEFAULT_AMORTIZATION,
 }) => {
-  const rate = Number(annualRatePercent || 0) / 100;
+  // Loan products store interestRate as a monthly percentage.  Accrue a
+  // pro-rated monthly charge so an early payoff is charged only for the days
+  // the member had the outstanding principal.
+  const rate = Number(monthlyRatePercent || 0) / 100;
   const basePrincipal = normalizeAmortization(amortization) === 'SIMPLE_INTEREST'
     ? originalPrincipalCents
     : currentPrincipalCents;
@@ -51,7 +54,7 @@ const calculateLoanPaymentAllocation = ({ loan, amount, paymentDate = new Date()
     originalPrincipalCents,
     currentPrincipalCents,
     accruedInterestCents: storedInterestCents,
-    annualRatePercent: loan.interestRate,
+    monthlyRatePercent: loan.interestRate,
     accruedDays,
     amortization,
   });
@@ -96,11 +99,31 @@ const calculateLoanPaymentAllocation = ({ loan, amount, paymentDate = new Date()
   };
 };
 
+// This is a read-only quote for dashboards and payment prompts. It does not
+// update the loan record; posting a payment remains the only operation that
+// persists accrued interest and resets lastInterestAccrualAt.
+const calculateCurrentOutstandingBalance = (loan, asOf = new Date()) => {
+  const originalPrincipalCents = toCents(loan.amount);
+  const currentPrincipalCents = toCents(loan.principalBalance ?? loan.amount);
+  const accruedDays = daysBetween(loan.lastInterestAccrualAt || loan.decidedAt || loan.createdAt, asOf);
+  const amortization = normalizeAmortization(loan.amortizationMethod || loan.amortization || loan.metadata?.amortizationMethod);
+  const interestCents = calculateAccruedInterestCents({
+    originalPrincipalCents,
+    currentPrincipalCents,
+    accruedInterestCents: toCents(loan.accruedInterest || 0),
+    monthlyRatePercent: loan.interestRate,
+    accruedDays,
+    amortization,
+  });
+  return fromCents(currentPrincipalCents + interestCents);
+};
+
 module.exports = {
   DEFAULT_AMORTIZATION,
   toCents,
   fromCents,
   normalizeAmortization,
   calculateAccruedInterestCents,
+  calculateCurrentOutstandingBalance,
   calculateLoanPaymentAllocation,
 };

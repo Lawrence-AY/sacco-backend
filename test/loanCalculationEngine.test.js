@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { calculateLoanPaymentAllocation } = require('../src/features/loans/services/loanCalculationEngine');
+const { calculateCurrentOutstandingBalance, calculateLoanPaymentAllocation } = require('../src/features/loans/services/loanCalculationEngine');
 
 const baseLoan = {
   amount: 1000,
@@ -75,4 +75,60 @@ test('reducing balance interest accrues from current principal using cents', () 
   assert.equal(result.interestPaid, 1);
   assert.equal(result.principalPaid, 0);
   assert.equal(result.remainingPrincipal, 500.13);
+});
+
+test('a 12-month loan settled after one month charges only one month of interest', () => {
+  const result = calculateLoanPaymentAllocation({
+    loan: {
+      ...baseLoan,
+      amount: 100000,
+      principalBalance: 100000,
+      interestRate: 1, // 1% monthly
+    },
+    amount: 101000,
+    paymentDate: new Date('2026-01-31T00:00:00.000Z'),
+  });
+
+  assert.equal(result.accruedDays, 30);
+  assert.equal(result.interestPaid, 1000);
+  assert.equal(result.principalPaid, 100000);
+  assert.equal(result.newOutstandingBalance, 0);
+  assert.equal(result.paidOff, true);
+});
+
+test('interest after a principal payment is calculated from the reduced balance', () => {
+  const firstPayment = calculateLoanPaymentAllocation({
+    loan: { ...baseLoan, amount: 100000, principalBalance: 100000, interestRate: 1 },
+    amount: 20000,
+    paymentDate: new Date('2026-01-31T00:00:00.000Z'),
+  });
+  const payoff = calculateLoanPaymentAllocation({
+    loan: {
+      ...baseLoan,
+      amount: 100000,
+      principalBalance: firstPayment.remainingPrincipal,
+      accruedInterest: firstPayment.remainingInterest,
+      interestRate: 1,
+      lastInterestAccrualAt: new Date('2026-01-31T00:00:00.000Z'),
+    },
+    amount: 81756,
+    paymentDate: new Date('2026-02-28T00:00:00.000Z'),
+  });
+
+  assert.equal(firstPayment.interestPaid, 1000);
+  assert.equal(firstPayment.remainingPrincipal, 81000);
+  assert.equal(payoff.interestPaid, 756);
+  assert.equal(payoff.principalPaid, 81000);
+  assert.equal(payoff.paidOff, true);
+});
+
+test('dashboard outstanding quote includes only interest accrued to the quote date', () => {
+  const outstanding = calculateCurrentOutstandingBalance({
+    ...baseLoan,
+    amount: 100000,
+    principalBalance: 100000,
+    interestRate: 1,
+  }, new Date('2026-01-31T00:00:00.000Z'));
+
+  assert.equal(outstanding, 101000);
 });

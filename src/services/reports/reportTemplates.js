@@ -140,13 +140,12 @@ const buildReportSections = ({ reportType, transactions, loans, shares }) => {
   const sectionsByType = {
     transactions: [{
       title: 'Transactions',
-      columns: ['Date & Time', 'Phone Number', 'Details', 'Type', 'Reference', 'Amount'],
+      columns: ['Date & Time', 'Phone Number', 'Details', 'Reference', 'Amount'],
       rows: successfulTransactions
         .map((transaction) => ({
           'Date & Time': formatDateTime(transaction.createdAt),
           'Phone Number': transactionPhone(transaction),
           Details: transactionDetails(transaction),
-          Type: transactionKind(transaction),
           Reference: transaction.reference || transaction.internalReference || '-',
           Amount: `KES ${formatMoney(transaction.amount)}`,
         })),

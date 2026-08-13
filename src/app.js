@@ -205,7 +205,11 @@ app.use(cors(corsOptions));
 // ============= RATE LIMITING =============
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
+  // A signed-in dashboard refreshes several independent resources together.
+  // 100 requests is exhausted in a few minutes by normal use (six requests
+  // every 15 seconds), causing false 429 errors. Sensitive routes keep their
+  // own stricter limit below.
+  max: 1000,
   message: {
     success: false,
     code: 'RATE_LIMITED',
@@ -213,7 +217,10 @@ const limiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => req.method === 'OPTIONS' || isLocalRequest(req) || isLocalDevelopmentOrigin(req)
+  // Health probes are read-only and are polled by every open dashboard. They
+  // must not consume a member's API allowance or make a healthy API appear
+  // offline after normal dashboard activity.
+  skip: (req) => req.method === 'OPTIONS' || req.path === '/health' || isLocalRequest(req) || isLocalDevelopmentOrigin(req)
 });
 
 app.use('/api/', limiter);
