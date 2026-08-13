@@ -17,6 +17,8 @@ const { buildReportSections, formatMoney, reportNames } = require('../../../serv
 const shareCapitalTransferService = require('../../shares/services/shareCapitalTransferService');
 const memberNumberService = require('../services/memberNumberService');
 const { allocateMpesaRepayment } = require('../../loans/services/loanRepaymentService');
+const { calculateCurrentOutstandingBalance } = require('../../loans/services/loanCalculationEngine');
+const { isShareCapitalPayment, settleShareCapitalPayment } = require('../../shares/services/shareCapitalPaymentService');
 const { formatEAT } = require('../../../shared/utils/eatDateTime');
 const { getFirebaseDb, getFirebaseStorage } = require('../../../shared/config/firebase');
 const PROFILE_PHOTO_MAX_BYTES = 1.5 * 1024 * 1024;
@@ -326,14 +328,24 @@ const syncTransactionWithKcbRegistration = async (transaction) => {
       const receipt = providerStatus === 'SUCCESS' ? providerTransaction.reference || null : null;
 
       if (providerStatus === 'SUCCESS' || providerStatus === 'FAILED') {
-        await transaction.update({
-          status: providerStatus,
-          reference: receipt || transaction.reference,
-          providerTransactionId: providerTransaction.id,
-          providerInternalReference: providerTransaction.internalReference
-            || transaction.providerInternalReference,
-        });
-        if (providerStatus === 'SUCCESS') {
+        if (providerStatus === 'SUCCESS' && isShareCapitalPayment(transaction)) {
+          const settled = await settleShareCapitalPayment({
+            transactionId: transaction.id,
+            receipt,
+            amount: providerTransaction.amount,
+            description: providerTransaction.description,
+          });
+          transaction.set({ status: settled.status, reference: settled.reference, amount: settled.amount });
+        } else {
+          await transaction.update({
+            status: providerStatus,
+            reference: receipt || transaction.reference,
+            providerTransactionId: providerTransaction.id,
+            providerInternalReference: providerTransaction.internalReference
+              || transaction.providerInternalReference,
+          });
+        }
+        if (providerStatus === 'SUCCESS' && !isShareCapitalPayment(transaction)) {
           await applyLoanRepaymentLink(transaction);
         }
       }
@@ -371,11 +383,16 @@ const syncTransactionWithKcbRegistration = async (transaction) => {
   const receipt = registration.mpesa_receipt || registration.transaction_reference || null;
 
   if (['paid', 'completed', 'success'].includes(normalizedStatus)) {
-    await transaction.update({
-      status: 'SUCCESS',
-      reference: receipt || transaction.reference,
-    });
-    await applyLoanRepaymentLink(transaction);
+    if (isShareCapitalPayment(transaction)) {
+      const settled = await settleShareCapitalPayment({ transactionId: transaction.id, receipt });
+      transaction.set({ status: settled.status, reference: settled.reference, amount: settled.amount });
+    } else {
+      await transaction.update({
+        status: 'SUCCESS',
+        reference: receipt || transaction.reference,
+      });
+      await applyLoanRepaymentLink(transaction);
+    }
   } else if (normalizedStatus === 'failed') {
     await transaction.update({ status: 'FAILED' });
   }
@@ -676,14 +693,19 @@ const getLoans = asyncHandler(async (req, res) => {
     }],
     order: [['createdAt', 'DESC']],
   });
-  const formatted = loans.map((loan) => ({
+  const formatted = loans.map((loan) => {
+    const outstandingBalance = calculateCurrentOutstandingBalance(loan);
+    return ({
     id: loan.id,
     memberId: loan.memberId,
     type: loan.type,
     principal: loan.amount,
     principalBalance: Number(loan.principalBalance ?? loan.amount ?? 0),
     accruedInterest: Number(loan.accruedInterest || 0),
-    balance: Number(loan.principalBalance ?? loan.amount ?? 0) + Number(loan.accruedInterest || 0),
+    // Use the same current, reducing-balance quote shown by every member view.
+    // Persisted accruedInterest remains untouched until a payment is posted.
+    balance: outstandingBalance,
+    outstandingBalance,
     repaid: Math.max(Number(loan.amount || 0) - Number(loan.principalBalance ?? loan.amount ?? 0), 0),
     interestRate: Number(loan.interestRate || 0),
     duration: Number(loan.duration || 0),
@@ -706,7 +728,8 @@ const getLoans = asyncHandler(async (req, res) => {
       memberNumber: guarantor.Member?.memberNumber || null,
       Member: guarantor.Member,
     })),
-  }));
+    });
+  });
 
   return ResponseHandler.success(res, formatted, 'Member loans retrieved successfully', 200);
 });
@@ -824,7 +847,9 @@ const getTransactions = asyncHandler(async (req, res) => {
     return ResponseHandler.success(res, [], 'No transactions found', 200);
   }
 
-  const where = { memberId: member.id, status: { [Op.in]: ['SUCCESS', 'PAID', 'COMPLETED'] } };
+  // Fetch pending M-Pesa rows too, so a callback/provider confirmation can be
+  // reconciled before the member's balance and transaction history are built.
+  const where = { memberId: member.id };
   if (req.query.type) where.type = req.query.type;
 
   const transactions = await db.Transaction.findAll({ where, order: [['createdAt', 'DESC']] });
@@ -838,7 +863,9 @@ const getTransactions = asyncHandler(async (req, res) => {
       .map((transaction) => syncTransactionWithKcbRegistration(transaction))
   );
 
-  const visibleTransactions = transactions;
+  const visibleTransactions = transactions.filter((transaction) => (
+    ['SUCCESS', 'PAID', 'COMPLETED'].includes(String(transaction.status || '').toUpperCase())
+  ));
 
   const formatted = visibleTransactions.map((transaction) => ({
     id: transaction.id,
@@ -855,6 +882,7 @@ const getTransactions = asyncHandler(async (req, res) => {
     kcbEndpoint: transaction.kcbEndpoint,
     internalReference: transaction.internalReference,
     promptChannel: transaction.promptChannel,
+    phoneNumber: req.user.phone || null,
   }));
   const transfers = (await shareCapitalTransferService.historyForMember(member.id))
     .filter((transfer) => String(transfer.status || '').toUpperCase() === 'SUCCESS');
@@ -1483,7 +1511,11 @@ const emailReport = asyncHandler(async (req, res) => {
   const durationLabel = durationMonths > 0 ? `Last ${durationMonths} month${durationMonths === 1 ? '' : 's'}` : 'All records';
   const memberNumber = member?.memberNumber || user.memberNumber || 'Member';
   const reportName = reportNames[reportType] || 'Portfolio Report';
-  const sections = buildReportSections({ reportType, transactions: successfulTransactions, loans, shares });
+  const transactionsWithPhone = successfulTransactions.map((transaction) => ({
+    ...transaction.get({ plain: true }),
+    phoneNumber: user.phone || null,
+  }));
+  const sections = buildReportSections({ reportType, transactions: transactionsWithPhone, loans, shares });
   const portfolioSummaryRows = [
     ['Share capital', `KES ${formatMoney(shareCapital)}`],
     ['Savings', `KES ${formatMoney(savingsTotal)}`],

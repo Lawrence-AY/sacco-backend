@@ -3,6 +3,7 @@ const db = require('../../models');
 const logger = require('../../shared/utils/logger');
 const { getFirebaseDb } = require('../../shared/config/firebase');
 const { allocateMpesaRepayment } = require('../loans/services/loanRepaymentService');
+const { isShareCapitalPayment, settleShareCapitalPayment } = require('../shares/services/shareCapitalPaymentService');
 
 const router = express.Router();
 const MPESA_PROXY_TIMEOUT_MS = Number(process.env.MPESA_TIMEOUT_MS || 115000);
@@ -181,6 +182,13 @@ router.post('/callback', async (req, res) => {
               error: allocationError.message,
             });
           }
+        } else if (success && isShareCapitalPayment(transaction)) {
+          await settleShareCapitalPayment({
+            transactionId: transaction.id,
+            receipt,
+            amount: amount == null ? transaction.amount : Number(amount),
+            description: ResultDesc,
+          });
         } else {
           await transaction.update({ status: success ? 'SUCCESS' : 'FAILED', reference: receipt || transaction.reference, amount: amount ? Number(amount) : transaction.amount, description: ResultDesc || transaction.description });
         }

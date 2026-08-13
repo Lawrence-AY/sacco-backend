@@ -5,6 +5,7 @@
 
 const logger = require('./logger');
 const { formatEAT } = require('./eatDateTime');
+const { calculateCurrentOutstandingBalance } = require('../../features/loans/services/loanCalculationEngine');
 
 // Sensitive fields that should NEVER be exposed in API responses
 const SENSITIVE_FIELDS = [
@@ -211,6 +212,7 @@ const TransactionDTO = {
 const LoanDTO = {
   basic: (loan, requestingUser = null) => {
     if (!loan) return null;
+    const outstandingBalance = calculateCurrentOutstandingBalance(loan);
 
     const baseData = sanitizeBase({
       id: loan.id,
@@ -222,7 +224,7 @@ const LoanDTO = {
       status: loan.status,
       principalBalance: Number(loan.principalBalance ?? loan.amount ?? 0),
       accruedInterest: Number(loan.accruedInterest || 0),
-      outstandingBalance: Number(loan.principalBalance ?? loan.amount ?? 0) + Number(loan.accruedInterest || 0),
+      outstandingBalance,
       nextPaymentDueAt: loan.nextPaymentDueAt,
       lastInterestAccrualAt: loan.lastInterestAccrualAt,
       autoApproved: loan.type === 'EMERGENCY' && loan.status === 'APPROVED',

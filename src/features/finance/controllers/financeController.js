@@ -1,4 +1,5 @@
 const db = require('../../../models');
+const { calculateCurrentOutstandingBalance } = require('../../loans/services/loanCalculationEngine');
 const loanService = require('../../loans/services/loanService');
 const { postManualRepayment, voidRepayment } = require('../../loans/services/loanRepaymentService');
 const deductionService = require('../../deductions/services/deductionService');
@@ -98,6 +99,16 @@ const formatDividend = (dividend) => ({
   status: dividend.status ?? 'DECLARED',
 });
 
+const scheduledReducingBalanceInterest = (principal, monthlyRatePercent, durationMonths) => {
+  const amount = Number(principal || 0);
+  const periods = Number(durationMonths || 0);
+  const monthlyRate = Number(monthlyRatePercent || 0) / 100;
+  if (amount <= 0 || periods <= 0) return 0;
+  if (monthlyRate === 0) return 0;
+  const installment = (amount * monthlyRate) / (1 - Math.pow(1 + monthlyRate, -periods));
+  return Math.round((installment * periods - amount) * 100) / 100;
+};
+
 const formatLoan = (loan) => {
   const member = loan.Member;
   const user = member?.User;
@@ -105,6 +116,7 @@ const formatLoan = (loan) => {
   const amount = Number(loan.amount || 0);
   const interestRate = Number(loan.interestRate || 0);
   const duration = Number(loan.duration || 0);
+  const outstandingBalance = calculateCurrentOutstandingBalance(loan);
   const rawStatus = String(loan.status || '').toUpperCase();
   const financeStatus = ['PENDING', 'UNDER_REVIEW'].includes(rawStatus)
     ? 'PENDING_FINANCE'
@@ -140,12 +152,13 @@ const formatLoan = (loan) => {
     requestedAmount: loan.amount,
     principalBalance: Number(loan.principalBalance ?? loan.amount ?? 0),
     accruedInterest: Number(loan.accruedInterest || 0),
-    balance: Number(loan.principalBalance ?? loan.amount ?? 0) + Number(loan.accruedInterest || 0),
+    balance: outstandingBalance,
+    outstandingBalance,
     reason: loan.reason || null,
     duration: loan.duration,
     interest: loan.interestRate,
     interestRate: loan.interestRate,
-    interestGenerated: amount * (interestRate / 100) * duration,
+    interestGenerated: scheduledReducingBalanceInterest(amount, interestRate, duration),
     status: loan.type === 'EMERGENCY' && loan.status === 'APPROVED' ? 'AUTO_APPROVED_EMERGENCY' : loan.status,
     autoApproved: loan.type === 'EMERGENCY' && loan.status === 'APPROVED',
     auditTimestamp: loan.decidedAt,
@@ -680,7 +693,7 @@ const getFinancialReports = asyncHandler(async (req, res) => {
   }, new Map());
   const calculatedLoanInterest = loans.reduce((sum, loan) => {
     const principal = Number(loan.amount || 0);
-    const scheduledInterest = principal * Number(loan.interestRate || 0) / 100 * Number(loan.duration || 1);
+    const scheduledInterest = scheduledReducingBalanceInterest(principal, loan.interestRate, loan.duration);
     const totalDue = principal + scheduledInterest;
     const repaid = Math.min(repaymentsByLoan.get(loan.id) || 0, totalDue);
     const realizedInterest = totalDue > 0 ? repaid * (scheduledInterest / totalDue) : 0;
@@ -743,7 +756,7 @@ const getFinancialReports = asyncHandler(async (req, res) => {
       const identity = memberMap.get(transaction.memberId) || { memberId: transaction.memberId, memberNumber: 'Unknown', memberName: 'Unknown member' };
       const loan = loanMap.get(transaction.loanId);
       const principal = Number(loan?.amount || 0);
-      const scheduledInterest = principal * Number(loan?.interestRate || 0) / 100 * Number(loan?.duration || 1);
+      const scheduledInterest = scheduledReducingBalanceInterest(principal, loan?.interestRate, loan?.duration);
       const interestAmount = principal + scheduledInterest > 0 ? Number(transaction.amount || 0) * scheduledInterest / (principal + scheduledInterest) : 0;
       return {
         id: transaction.id, ...identity, reference: transaction.reference,

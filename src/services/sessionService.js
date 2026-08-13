@@ -5,6 +5,10 @@ const logger = require('../shared/utils/logger');
 const { enqueueEmail, QUEUES } = require('./email/emailQueue');
 const { buildNewDeviceEmail, getBrandLogoAttachments } = require('./email/templates');
 
+const GEOLOCATION_TIMEOUT_MS = 2500;
+const GEOLOCATION_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const geolocationCache = new Map();
+
 const getClientIp = (req) => {
   const forwarded = req.headers['x-forwarded-for'];
   if (forwarded) return String(forwarded).split(',')[0].trim();
@@ -44,6 +48,55 @@ const getLoginLocation = (req) => {
   return latitude && longitude ? `${location} (${latitude}, ${longitude})` : location;
 };
 
+const isPublicIpAddress = (value) => {
+  const ip = String(value || '').replace(/^::ffff:/, '').trim();
+  if (!ip || ip === '::1' || ip === 'localhost') return false;
+  if (ip.includes(':')) return !/^(?:fc|fd|fe80)/i.test(ip);
+  const [first, second] = ip.split('.').map(Number);
+  return !(first === 10 || first === 127 || first === 0 || (first === 169 && second === 254) || (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168));
+};
+
+const lookupIpLocation = async (ipAddress) => {
+  const ip = String(ipAddress || '').replace(/^::ffff:/, '').trim();
+  if (!isPublicIpAddress(ip)) return 'Location unavailable';
+
+  const cached = geolocationCache.get(ip);
+  if (cached && cached.expiresAt > Date.now()) return cached.location;
+
+  try {
+    const response = await fetch(`https://ipwho.is/${encodeURIComponent(ip)}`, {
+      signal: AbortSignal.timeout(GEOLOCATION_TIMEOUT_MS),
+      headers: { accept: 'application/json' },
+    });
+    const payload = response.ok ? await response.json() : null;
+    const location = payload?.success
+      ? [payload.city, payload.region, payload.country].filter(Boolean).join(', ')
+      : '';
+    if (location) {
+      geolocationCache.set(ip, { location, expiresAt: Date.now() + GEOLOCATION_CACHE_TTL_MS });
+      return location;
+    }
+  } catch (error) {
+    logger.warn('IP geolocation lookup failed', { module: 'auth', error: error.message });
+  }
+  return 'Location unavailable';
+};
+
+const resolveSessionLocation = async (session) => {
+  const existing = String(session?.location || '');
+  const parts = existing.split(',').map((part) => part.trim()).filter(Boolean);
+  if (parts.length >= 3) return existing;
+
+  const geolocated = await lookupIpLocation(session?.ipAddress);
+  const location = geolocated !== 'Location unavailable'
+    ? geolocated
+    : (existing || 'Location unavailable');
+  if (location !== session?.location && typeof session?.update === 'function') {
+    await session.update({ location });
+  }
+  return location;
+};
+
 const getDeviceInfo = (req) => {
   const userAgent = req.headers['user-agent'] || 'Unknown browser';
   const clientBrand = getHeaderValue(req, 'sec-ch-ua');
@@ -63,12 +116,15 @@ const getDeviceInfo = (req) => {
 };
 
 const notifyNewDevice = async (user, session) => {
+  const location = await resolveSessionLocation(session);
+  const sessionData = typeof session.get === 'function' ? session.get({ plain: true }) : session;
+  const emailSession = { ...sessionData, location };
   await enqueueEmail(QUEUES.NOTIFICATIONS, 'NOTIFICATION', {
     to: user.email,
     subject: 'New device login on your AYEDOS SACCO account',
     html: buildNewDeviceEmail({
       recipientName: user.firstName || user.name || 'Member',
-      session,
+      session: emailSession,
     }),
     attachments: getBrandLogoAttachments(),
   });
@@ -233,23 +289,28 @@ const listSessions = async (userId, currentSessionId) => {
     limit: 50
   });
 
-  return sessions.map((session) => ({
+  return Promise.all(sessions.map(async (session) => {
+    const location = await resolveSessionLocation(session);
+    return {
     id: session.id,
     device: session.deviceName || 'Unknown device',
     deviceName: session.deviceName || 'Unknown device',
     ip: session.ipAddress || '-',
-    location: session.location || 'Unknown location',
+    location,
     status: session.status,
     event: session.event || 'Login',
     date: session.loginAt || session.createdAt,
     lastActive: session.lastActiveAt || session.updatedAt,
     current: session.id === currentSessionId,
     isNewDevice: session.isNewDevice
+    };
   }));
 };
 
 module.exports = {
   getDeviceInfo,
+  lookupIpLocation,
+  resolveSessionLocation,
   createOtpSession,
   activateSession,
   assertActiveSession,
