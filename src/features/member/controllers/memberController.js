@@ -21,6 +21,10 @@ const { calculateCurrentOutstandingBalance } = require('../../loans/services/loa
 const { isShareCapitalPayment, settleShareCapitalPayment } = require('../../shares/services/shareCapitalPaymentService');
 const { formatEAT } = require('../../../shared/utils/eatDateTime');
 const { getFirebaseDb, getFirebaseStorage } = require('../../../shared/config/firebase');
+const { generateOTP } = require('../../../shared/utils/generateOTP');
+const otpService = require('../../../services/otpService');
+const { enqueueEmail, QUEUES } = require('../../../services/email/emailQueue');
+const { sendOtpSms } = require('../../../services/sms/smsService');
 const PROFILE_PHOTO_MAX_BYTES = 1.5 * 1024 * 1024;
 const PROFILE_PHOTO_TYPES = {
   'image/jpeg': 'jpg',
@@ -687,11 +691,37 @@ const searchOptOutTransferees = asyncHandler(async (req, res) => {
   return ResponseHandler.success(res, rows, 'Opt-out transferees retrieved successfully', 200);
 });
 
+const sendOptOutOtp = asyncHandler(async (req, res) => {
+  const user = await db.User.findByPk(req.user.id);
+  if (!user) throw new NotFoundError('User not found');
+  const member = await findMemberByUserId(req.user.id);
+  if (!member) throw new NotFoundError('Member profile not found');
+
+  const activeOtpSession = await otpService.getActiveOtpSession({ userId: user.id, purpose: 'OPT_OUT' });
+  if (activeOtpSession) otpService.assertResendAllowed(activeOtpSession);
+
+  const otp = generateOTP();
+  await otpService.createOtpSession({ userId: user.id, purpose: 'OPT_OUT', otp });
+  await enqueueEmail(QUEUES.OTP, 'OTP', { to: user.email, otp }, { immediate: true }).catch((error) => {
+    logger.error('Opt-out OTP email delivery failed', { module: 'member', userId: user.id, error: error.message });
+  });
+  sendOtpSms({ to: user.phone, otp, purpose: 'OPT_OUT' }).catch((error) => {
+    logger.error('Opt-out OTP SMS delivery failed', { module: 'member', userId: user.id, error: error.message });
+  });
+
+  return ResponseHandler.success(res, {
+    email: user.email,
+    phone: user.phone,
+    resendAvailableIn: 60,
+  }, 'OTP sent to your registered email and phone number', 200);
+});
+
 const requestOptOut = asyncHandler(async (req, res) => {
   const member = await findMemberByUserId(req.user.id);
   if (!member) {
     throw new NotFoundError('Member profile not found');
   }
+  await otpService.verifyOtp({ userId: req.user.id, purpose: 'OPT_OUT', otp: req.body.otp });
 
   const existingRequest = await db.MemberExitRequest.findOne({
     where: {
@@ -725,7 +755,7 @@ const requestOptOut = asyncHandler(async (req, res) => {
     status: 'PENDING',
     metadata: {
       submittedFrom: 'member_portal',
-      confirmationText: 'CONFIRM',
+      otpVerified: true,
       formUploaded: Boolean(req.body.uploadedFormDataUrl || req.body.uploadedFormName),
       transfereeMemberId: req.body.transfereeMemberId || null,
       transferAmount,
@@ -1702,6 +1732,7 @@ module.exports = {
   getTransactions,
   searchGuarantors,
   searchOptOutTransferees,
+  sendOptOutOtp,
   getGuarantees,
   emailReport,
 };

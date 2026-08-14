@@ -77,14 +77,12 @@ const schemas = {
     consentGivenAt: z.string().trim().max(64).optional(),
     currentPassword: z.string().min(1).max(128).optional(),
     nominees: z.array(strictObject({
-      fullName: z.string().trim().min(2).max(120),
-      relationship: z.string().trim().min(2).max(80),
-      phone: z.string().trim().min(7).max(30),
+      fullName: optionalEmptyableString(120),
+      relationship: optionalEmptyableString(80),
+      phone: optionalEmptyableString(30),
       nationalId: z.string().trim().max(30).optional().or(z.literal('')),
-      allocationPercentage: z.coerce.number().positive().max(100),
-    })).max(3).optional().refine((items) => !items || Math.abs(items.reduce((sum, item) => sum + item.allocationPercentage, 0) - 100) < 0.001, {
-      message: 'Nominee allocation percentages must total 100%',
-    }),
+      allocationPercentage: z.coerce.number().min(0).max(100).optional().or(z.literal('')),
+    })).max(3).optional(),
   }),
   profilePhotoUpload: strictObject({
     photo: profilePhotoDataUrl,
@@ -182,9 +180,7 @@ const schemas = {
     transferAmount: z.coerce.number().positive().max(100000000).optional(),
     uploadedFormName: z.string().trim().max(255).optional().or(z.literal('')),
     uploadedFormDataUrl: z.string().trim().max(8000000).optional().or(z.literal('')),
-    confirmText: z.string().trim().refine((value) => value.toUpperCase() === 'CONFIRM', {
-      message: 'Type CONFIRM to submit the opt-out request',
-    }),
+    otp: z.string().trim().regex(/^\d{6,8}$/, 'Enter the OTP sent to your email and phone'),
     acknowledgedTerms: z.boolean().refine((value) => value === true, {
       message: 'You must acknowledge the opt-out terms',
     }),
