@@ -70,6 +70,10 @@ const User = sequelize.define('User', {
     type: DataTypes.DATE,
     allowNull: true
   },
+  mustChangePassword: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false
+  },
   consentGiven: {
     type: DataTypes.BOOLEAN,
     defaultValue: false

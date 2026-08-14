@@ -175,8 +175,16 @@ const schemas = {
     duration: z.coerce.number().int().positive().max(120).optional(),
   }),
   memberOptOutRequest: strictObject({
-    reason: z.string().trim().max(1000).optional().or(z.literal('')),
+    reason: z.string().trim().min(1, 'Reason for leaving is required').max(1000),
     buyerMemberNumber: z.string().trim().max(60).optional().or(z.literal('')),
+    transfereeInfo: z.string().trim().max(1500).optional().or(z.literal('')),
+    transfereeMemberId: z.string().uuid().optional(),
+    transferAmount: z.coerce.number().positive().max(100000000).optional(),
+    uploadedFormName: z.string().trim().max(255).optional().or(z.literal('')),
+    uploadedFormDataUrl: z.string().trim().max(8000000).optional().or(z.literal('')),
+    confirmText: z.string().trim().refine((value) => value.toUpperCase() === 'CONFIRM', {
+      message: 'Type CONFIRM to submit the opt-out request',
+    }),
     acknowledgedTerms: z.boolean().refine((value) => value === true, {
       message: 'You must acknowledge the opt-out terms',
     }),

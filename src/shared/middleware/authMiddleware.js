@@ -222,8 +222,14 @@ const protect = asyncHandler(async (req, res, next) => {
         throw new UnauthorizedError('This login session has expired or was revoked');
       }
     }
+    const path = String(req.originalUrl || req.path || '');
+    const passwordResetAllowedPaths = ['/api/auth/change-password', '/api/users/me', '/api/auth/logout'];
+    if (user.mustChangePassword && !passwordResetAllowedPaths.some((allowedPath) => path.startsWith(allowedPath))) {
+      throw new ForbiddenError('Password reset required before continuing');
+    }
     next();
   } catch (error) {
+    if (error instanceof ForbiddenError) throw error;
     throw new UnauthorizedError(error.message || 'Token verification failed');
   }
 });

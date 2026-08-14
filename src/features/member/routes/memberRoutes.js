@@ -11,6 +11,7 @@ router.post('/profile/photo', validate(schemas.profilePhotoUpload), memberContro
 router.post('/profile/kyc-documents', validate(schemas.kycDocumentsUpload), memberController.uploadKycDocuments);
 router.put('/profile', validate(schemas.profileUpdate), memberController.updateProfile);
 router.post('/share-capital/transfers', validate(schemas.shareCapitalTransfer), memberController.transferShareCapital);
+router.get('/opt-out/transferees', memberController.searchOptOutTransferees);
 router.post('/opt-out', validate(schemas.memberOptOutRequest), memberController.requestOptOut);
 router.get('/loans', memberController.getLoans);
 router.post('/loans', validate(schemas.loanRequest), memberController.applyForLoan);

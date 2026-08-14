@@ -32,7 +32,10 @@ const MemberExitRequest = sequelize.define('MemberExitRequest', {
     defaultValue: 0
   },
   buyerMemberNumber: DataTypes.STRING,
+  transfereeInfo: DataTypes.TEXT,
   reason: DataTypes.TEXT,
+  uploadedFormName: DataTypes.STRING,
+  uploadedFormDataUrl: DataTypes.TEXT,
   acknowledgedTerms: {
     type: DataTypes.BOOLEAN,
     defaultValue: false
@@ -54,7 +57,9 @@ const MemberExitRequest = sequelize.define('MemberExitRequest', {
   disbursedAmount: { type: DataTypes.DECIMAL(14, 2), allowNull: false, defaultValue: 0 },
   disbursedAt: DataTypes.DATE,
   disbursedById: DataTypes.UUID,
-  disbursementTransactionId: DataTypes.UUID
+  disbursementTransactionId: DataTypes.UUID,
+  accessRevokedAt: DataTypes.DATE,
+  metadata: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} }
 }, {
   timestamps: true,
   indexes: [

@@ -1,6 +1,7 @@
 const bcrypt = require('bcrypt');
 const { Op } = require('sequelize');
 const User = require('../../../models/user.model');
+const db = require('../../../models');
 const ResponseHandler = require('../../../shared/utils/response');
 const { UnauthorizedError, ValidationError } = require('../../../shared/utils/errors');
 const logger = require('../../../shared/utils/logger');
@@ -17,6 +18,25 @@ const passwordHistoryService = require('../../../services/passwordHistoryService
 
 const FORGOT_PASSWORD_SUCCESS_MESSAGE =
   'If an account with that email exists, a password reset link will be sent shortly.';
+
+const createPasswordChangedNotification = async (user) => {
+  if (!user?.id) return null;
+  const notification = await db.Notification.create({
+    userId: user.id,
+    eventKey: `password-changed:${user.id}:${Date.now()}`,
+    title: 'Password updated',
+    body: 'Your account password was updated successfully. Full portal access is now enabled.',
+    category: 'security',
+    severity: 'success',
+    actionUrl: '/dashboard/user',
+    sourceType: 'User',
+    sourceId: user.id,
+    metadata: {
+      mustChangePasswordCleared: true,
+    },
+  });
+  return typeof notification.toJSON === 'function' ? notification.toJSON() : notification;
+};
 
 const forgotPassword = async (req, res, next) => {
   try {
@@ -119,7 +139,8 @@ const resetPassword = async (req, res, next) => {
     user.password = await bcrypt.hash(newPassword, 10);
     user.passwordResetToken = null;
     user.passwordResetExpires = null;
-    await user.save({ fields: ['password', 'passwordResetToken', 'passwordResetExpires'] });
+    user.mustChangePassword = false;
+    await user.save({ fields: ['password', 'passwordResetToken', 'passwordResetExpires', 'mustChangePassword'] });
     await passwordHistoryService.recordPassword(user.id, user.password);
 
     logger.info('Password reset completed', {
@@ -168,10 +189,12 @@ const changePassword = async (req, res, next) => {
     await passwordHistoryService.assertNotReused(user.id, newPassword);
     await passwordHistoryService.assertNotReused(user.id, newPassword);
     user.password = await bcrypt.hash(newPassword, 10);
-    await user.save({ fields: ['password'] });
+    user.mustChangePassword = false;
+    await user.save({ fields: ['password', 'mustChangePassword'] });
     await passwordHistoryService.recordPassword(user.id, user.password);
+    const notification = await createPasswordChangedNotification(user);
 
-    return ResponseHandler.success(res, null, 'Password changed successfully', 200);
+    return ResponseHandler.success(res, { notification }, 'Password changed successfully. Full portal access is now enabled.', 200);
   } catch (error) {
     logger.error('Change password failed', {
       module: 'auth',

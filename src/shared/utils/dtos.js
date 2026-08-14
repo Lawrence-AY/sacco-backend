@@ -95,6 +95,7 @@ const UserDTO = {
       company: user.employer,
       staffId: user.staffId,
       isWhitelisted: user.isWhitelisted,
+      mustChangePassword: user.mustChangePassword,
       employerContribution: user.employerContribution,
       monthlyIncome: user.monthlyIncome,
       payrollNumber: user.payrollNumber,
