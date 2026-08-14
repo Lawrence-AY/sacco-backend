@@ -21,6 +21,7 @@ const userColumns = {
   lockedUntil: { type: DataTypes.DATE, allowNull: true },
   lastLoginIp: { type: DataTypes.STRING, allowNull: true },
   lastLoginAt: { type: DataTypes.DATE, allowNull: true },
+  mustChangePassword: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
 };
 
 const ensureUserProfileColumns = async (sequelize) => {
@@ -270,6 +271,9 @@ const ensureOptOutAndReducingBalanceSchema = async (sequelize) => {
     adminReviewedById: { type: DataTypes.UUID, allowNull: true }, financeReviewedById: { type: DataTypes.UUID, allowNull: true }, rejectionReason: { type: DataTypes.TEXT, allowNull: true },
     disbursedAmount: { type: DataTypes.DECIMAL(14, 2), allowNull: false, defaultValue: 0 }, disbursedAt: { type: DataTypes.DATE, allowNull: true },
     disbursedById: { type: DataTypes.UUID, allowNull: true }, disbursementTransactionId: { type: DataTypes.UUID, allowNull: true },
+    transfereeInfo: { type: DataTypes.TEXT, allowNull: true }, uploadedFormName: { type: DataTypes.STRING, allowNull: true },
+    uploadedFormDataUrl: { type: DataTypes.TEXT, allowNull: true }, accessRevokedAt: { type: DataTypes.DATE, allowNull: true },
+    metadata: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} },
   });
   await ensureTableColumns(sequelize, 'Loans', {
     principalBalance: { type: DataTypes.DECIMAL(14, 2), allowNull: true }, accruedInterest: { type: DataTypes.DECIMAL(14, 2), allowNull: false, defaultValue: 0 },

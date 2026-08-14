@@ -2,6 +2,20 @@ const db = require('../../../models');
 const { DatabaseError, ValidationError } = require('../../../shared/utils/errors');
 
 const privateUserFields = ['password', 'otp', 'otpExpiresAt', 'otpAttempts', 'otpLastSentAt', 'failedLoginAttempts', 'lockedUntil', 'passwordResetToken', 'passwordResetExpires'];
+const memberProfileFields = [
+  'id',
+  'userId',
+  'memberNumber',
+  'type',
+  'nationalId',
+  'status',
+  'dateJoined',
+  'applicationId',
+  'paymentReference',
+  'registrationTransactionId',
+  'isVerified',
+  'nominees',
+];
 
 const getAllUsers = async () => {
   try {
@@ -9,7 +23,7 @@ const getAllUsers = async () => {
       attributes: { exclude: privateUserFields },
       include: [{
         model: db.Member,
-        attributes: ['id', 'userId', 'memberNumber', 'type', 'nationalId', 'status', 'dateJoined', 'applicationId', 'paymentReference', 'registrationTransactionId', 'isVerified'],
+        attributes: memberProfileFields,
       }],
       order: [['createdAt', 'DESC']]
     });
@@ -24,7 +38,7 @@ const getUserById = async (id) => {
       attributes: { exclude: privateUserFields },
       include: [{
         model: db.Member,
-        attributes: ['id', 'userId', 'memberNumber', 'type', 'nationalId', 'status', 'dateJoined', 'applicationId', 'paymentReference', 'registrationTransactionId', 'isVerified'],
+        attributes: memberProfileFields,
       }],
     });
   } catch (error) {
@@ -77,7 +91,7 @@ const updateUser = async (id, data) => {
       attributes: { exclude: privateUserFields },
       include: [{
         model: db.Member,
-        attributes: ['id', 'userId', 'memberNumber', 'type', 'nationalId', 'status', 'dateJoined', 'applicationId', 'paymentReference', 'registrationTransactionId', 'isVerified'],
+        attributes: memberProfileFields,
       }],
     });
 

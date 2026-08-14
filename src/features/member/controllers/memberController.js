@@ -389,7 +389,7 @@ const getProfile = asyncHandler(async (req, res) => {
     throw new NotFoundError('User not found');
   }
   const member = await findMemberByUserId(req.user.id);
-  return ResponseHandler.success(res, { ...UserDTO.private(user), nominees: member?.nominees || [] }, 'Profile retrieved successfully');
+  return ResponseHandler.success(res, { ...UserDTO.private(user), Member: user.Member || member, nominees: member?.nominees || [] }, 'Profile retrieved successfully');
 });
 
 const parseProfilePhotoDataUrl = (dataUrl) => {
@@ -525,13 +525,15 @@ const updateProfile = asyncHandler(async (req, res) => {
       throw new ForbiddenError('Current password confirmation failed');
     }
   }
-  const updated = await userService.updateUser(req.user.id, safeBody);
+  let updated = await userService.updateUser(req.user.id, safeBody);
   if (!updated) {
     throw new NotFoundError('User not found');
   }
   const member = await findMemberByUserId(req.user.id);
   if (nominees !== undefined && member) await member.update({ nominees });
-  return ResponseHandler.success(res, { ...UserDTO.private(updated), nominees: member?.nominees || [] }, 'Profile updated successfully', 200);
+  updated = await userService.getUserById(req.user.id);
+  const refreshedMember = updated?.Member || member;
+  return ResponseHandler.success(res, { ...UserDTO.private(updated), Member: refreshedMember, nominees: refreshedMember?.nominees || [] }, 'Profile updated successfully', 200);
 });
 
 const transferShareCapital = asyncHandler(async (req, res) => {
@@ -609,6 +611,65 @@ const getAvailableSelfGuaranteeSavings = async (memberId) => {
   return Math.max((Number(balances.savings || 0) * SELF_GUARANTEE_MULTIPLIER) - encumbered, 0);
 };
 
+const searchOptOutTransferees = asyncHandler(async (req, res) => {
+  const term = String(req.query.q || '').trim();
+  if (term.length < 2) {
+    return ResponseHandler.success(res, [], 'Enter at least 2 characters to search members', 200);
+  }
+
+  const currentMember = await findMemberByUserId(req.user.id);
+  const members = await db.Member.findAll({
+    where: {
+      id: { [Op.ne]: currentMember?.id || null },
+      status: { [Op.ne]: 'TERMINATED' },
+      [Op.or]: [
+        { memberNumber: { [Op.iLike]: `%${term}%` } },
+        { '$User.name$': { [Op.iLike]: `%${term}%` } },
+        { '$User.firstName$': { [Op.iLike]: `%${term}%` } },
+        { '$User.lastName$': { [Op.iLike]: `%${term}%` } },
+        { '$User.phone$': { [Op.iLike]: `%${term}%` } },
+      ],
+    },
+    include: [{
+      model: db.User,
+      attributes: ['id', 'name', 'firstName', 'lastName', 'phone', 'email'],
+    }],
+    limit: 8,
+    order: [['memberNumber', 'ASC']],
+    subQuery: false,
+  });
+
+  const rows = await Promise.all(members.map(async (member) => {
+    const user = member.User || {};
+    const balances = await getMemberExitBalances(member.id);
+    const activeLoanBalance = await db.Loan.sum('principalBalance', {
+      where: {
+        memberId: member.id,
+        status: { [Op.in]: ['PENDING', 'PENDING_GUARANTORS', 'UNDER_REVIEW', 'APPROVED', 'ACTIVE'] },
+      },
+    });
+    const fallbackLoanAmount = activeLoanBalance ? 0 : await db.Loan.sum('amount', {
+      where: {
+        memberId: member.id,
+        status: { [Op.in]: ['PENDING', 'PENDING_GUARANTORS', 'UNDER_REVIEW', 'APPROVED', 'ACTIVE'] },
+      },
+    });
+    return {
+      memberId: member.id,
+      memberNumber: member.memberNumber,
+      fullName: user.name || [user.firstName, user.lastName].filter(Boolean).join(' ') || member.memberNumber,
+      phone: user.phone || null,
+      email: user.email || null,
+      shareCapital: Number(balances.shareCapital || 0),
+      savings: Number(balances.savings || 0),
+      loanBalance: Number(activeLoanBalance || fallbackLoanAmount || 0),
+      status: member.status || 'ACTIVE',
+    };
+  }));
+
+  return ResponseHandler.success(res, rows, 'Opt-out transferees retrieved successfully', 200);
+});
+
 const requestOptOut = asyncHandler(async (req, res) => {
   const member = await findMemberByUserId(req.user.id);
   if (!member) {
@@ -628,6 +689,7 @@ const requestOptOut = asyncHandler(async (req, res) => {
   }
 
   const balances = await getMemberExitBalances(member.id);
+  const transferAmount = req.body.transferAmount ? Number(req.body.transferAmount) : null;
   const request = await db.MemberExitRequest.create({
     memberId: member.id,
     savingsWithdrawalAmount: balances.savings,
@@ -635,14 +697,59 @@ const requestOptOut = asyncHandler(async (req, res) => {
     saccoFeeAmount: balances.saccoFee,
     auctionAmount: balances.auctionAmount,
     buyerMemberNumber: req.body.buyerMemberNumber || null,
+    transfereeInfo: req.body.transfereeInfo || null,
     reason: req.body.reason || null,
+    uploadedFormName: req.body.uploadedFormName || null,
+    uploadedFormDataUrl: req.body.uploadedFormDataUrl || null,
     acknowledgedTerms: req.body.acknowledgedTerms,
     requestedAt: new Date(),
     adminApproval: false,
     financeApproval: false,
     status: 'PENDING',
+    metadata: {
+      submittedFrom: 'member_portal',
+      confirmationText: 'CONFIRM',
+      formUploaded: Boolean(req.body.uploadedFormDataUrl || req.body.uploadedFormName),
+      transfereeMemberId: req.body.transfereeMemberId || null,
+      transferAmount,
+    },
   });
   await notificationService.createOptOutReviewNotifications(request.id);
+  await db.Notification.create({
+    userId: req.user.id,
+    eventKey: `opt-out-submitted:${request.id}`,
+    title: 'Opt-out request sent',
+    body: 'Your request to exit has been sent to the Admin and is currently being reviewed. This process typically takes three (3) business days.',
+    category: 'opt_out',
+    severity: 'warning',
+    actionUrl: '/dashboard/member/notifications',
+    sourceType: 'MemberExitRequest',
+    sourceId: request.id,
+    metadata: { requestId: request.id, status: request.status },
+  }).catch(() => null);
+  if (req.body.transfereeMemberId) {
+    const transferee = await db.Member.findByPk(req.body.transfereeMemberId, { include: [db.User] }).catch(() => null);
+    if (transferee?.User?.id) {
+      await db.Notification.create({
+        userId: transferee.User.id,
+        eventKey: `opt-out-transferee:${request.id}:${transferee.id}`,
+        title: 'Incoming share capital transfer',
+        body: `${req.user.name || req.user.email || 'A member'} listed you as the transferee for an opt-out share capital transfer of ${transferAmount ? `KES ${transferAmount.toLocaleString()}` : 'their share capital'} on ${new Date().toLocaleDateString()}. Transferor member number: ${member.memberNumber || 'N/A'}.`,
+        category: 'opt_out',
+        severity: 'info',
+        actionUrl: '/dashboard/member/notifications',
+        sourceType: 'MemberExitRequest',
+        sourceId: request.id,
+        metadata: {
+          requestId: request.id,
+          transferorMemberId: member.id,
+          transferorMemberNumber: member.memberNumber,
+          transferAmount,
+          transactionDate: new Date(),
+        },
+      }).catch(() => null);
+    }
+  }
 
   return ResponseHandler.success(res, {
     id: request.id,
@@ -652,6 +759,8 @@ const requestOptOut = asyncHandler(async (req, res) => {
     saccoFeeAmount: request.saccoFeeAmount,
     auctionAmount: request.auctionAmount,
     buyerMemberNumber: request.buyerMemberNumber,
+    transfereeInfo: request.transfereeInfo,
+    uploadedFormName: request.uploadedFormName,
     requestedAt: request.requestedAt,
   }, 'Opt-out request submitted successfully', 201);
 });
@@ -1433,6 +1542,10 @@ const emailReport = asyncHandler(async (req, res) => {
   const durationMonths = Number(req.body?.duration) || 0;
   const transactionHeavyReports = new Set(['transactions', 'loans', 'loan-repayment', 'withdrawals', 'portfolio']);
   const member = await findMemberByUserId(req.user.id);
+  const isStaffMember = Boolean(String(user.staffId || user.payrollNumber || '').trim());
+  if (!isStaffMember && reportType === 'payroll-deduction') {
+    throw new ForbiddenError('Payroll deduction reports are available to staff members only');
+  }
   const dateFilter = durationMonths > 0 ? { createdAt: { [Op.gte]: new Date(new Date().setMonth(new Date().getMonth() - durationMonths)) } } : {};
   const transactions = member
     ? await db.Transaction.findAll({
@@ -1556,6 +1669,7 @@ module.exports = {
   buyShares,
   getTransactions,
   searchGuarantors,
+  searchOptOutTransferees,
   getGuarantees,
   emailReport,
 };

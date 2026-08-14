@@ -91,12 +91,19 @@ const allowedOrigins = [
   ...getConfiguredOrigins(),
   'http://localhost:3000',
   'http://localhost:5173',
+  'http://localhost:5174',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:5174',
   'https://ayedos-sacco.vercel.app',
   'https://ayedos-webapp.vercel.app'
 ];
 
 const isOriginAllowed = (origin) => {
   if (!origin) return true;
+  if (process.env.NODE_ENV !== 'production' && /^http:\/\/(localhost|127\.0\.0\.1):\d+$/i.test(origin)) {
+    return true;
+  }
   const allowAllOrigins = process.env.NODE_ENV !== 'production' && allowedOrigins.includes('*');
   const allowVercelPreview = process.env.NODE_ENV !== 'production' && /^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(origin);
   const allowNgrokPreview = process.env.NODE_ENV !== 'production' && /^https:\/\/[a-z0-9-]+\.ngrok-free\.(app|dev)$/i.test(origin);
@@ -142,6 +149,8 @@ app.use((req, res, next) => {
   const requestId = req.get('X-Request-ID') || crypto.randomUUID();
   req.id = requestId;
   res.setHeader('X-Request-ID', requestId);
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   next();
 });
 
@@ -194,9 +203,11 @@ const corsOptions = {
     'Ngrok-Skip-Browser-Warning',
     'Accept',
     'Accept-Encoding',
-    'Accept-Language'
+    'Accept-Language',
+    'Referer',
+    'Referrer-Policy'
   ],
-  exposedHeaders: ['X-Total-Count', 'X-Rate-Limit-Remaining'],
+  exposedHeaders: ['X-Total-Count', 'X-Rate-Limit-Remaining', 'Referrer-Policy'],
   maxAge: 86400 // 24 hours
 };
 

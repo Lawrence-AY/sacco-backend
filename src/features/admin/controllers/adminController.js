@@ -9,12 +9,36 @@ const ResponseHandler = require('../../../shared/utils/response');
 const { ValidationError, NotFoundError, ForbiddenError } = require('../../../shared/utils/errors');
 const { UserDTO } = require('../../../shared/utils/dtos');
 
+const detectDelimiter = (line = '') => {
+  const candidates = [',', ';', '\t'];
+  let quoted = false;
+  const counts = Object.fromEntries(candidates.map((delimiter) => [delimiter, 0]));
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    const next = line[index + 1];
+    if (char === '"' && quoted && next === '"') {
+      index += 1;
+    } else if (char === '"') {
+      quoted = !quoted;
+    } else if (!quoted && candidates.includes(char)) {
+      counts[char] += 1;
+    }
+  }
+  return candidates.sort((a, b) => counts[b] - counts[a])[0] || ',';
+};
+
 const parseCsv = (csvText = '') => {
   const rows = [];
   let row = [];
   let cell = '';
   let quoted = false;
-  const text = String(csvText || '').replace(/^\uFEFF/, '');
+  let text = String(csvText || '').replace(/^\uFEFF/, '');
+  const firstLine = text.split(/\r\n|\r|\n/, 1)[0] || '';
+  let delimiter = detectDelimiter(firstLine);
+  if (/^sep=./i.test(firstLine.trim())) {
+    delimiter = firstLine.trim().slice(4, 5) || delimiter;
+    text = text.slice(firstLine.length).replace(/^\r?\n/, '');
+  }
   for (let index = 0; index < text.length; index += 1) {
     const char = text[index];
     const next = text[index + 1];
@@ -23,7 +47,7 @@ const parseCsv = (csvText = '') => {
       index += 1;
     } else if (char === '"') {
       quoted = !quoted;
-    } else if (char === ',' && !quoted) {
+    } else if (char === delimiter && !quoted) {
       row.push(cell.trim());
       cell = '';
     } else if ((char === '\n' || char === '\r') && !quoted) {
@@ -58,14 +82,19 @@ const toNumber = (value) => {
   return Number.isFinite(number) ? number : 0;
 };
 
+const hasStaffId = (value) => Boolean(String(value || '').trim());
+
 const mapMemberImportRow = (row) => {
-  const fullName = pick(row, ['name', 'fullName', 'memberName']);
+  const fullName = pick(row, ['name', 'fullName', 'memberName', 'memberNameFull']);
   const email = pick(row, ['email', 'emailAddress', 'username']).toLowerCase();
-  const phone = pick(row, ['phone', 'phoneNumber', 'mobile']);
-  const nationalId = pick(row, ['nationalId', 'nationalID', 'idNumber']);
-  const memberNumber = pick(row, ['memberNumber', 'registrationNumber', 'memberNo']);
+  const phone = pick(row, ['phone', 'phoneNumber', 'mobile', 'mobileNumber', 'telephone']);
+  const nationalId = pick(row, ['nationalId', 'nationalID', 'idNumber', 'nationalIdentificationNumber']);
+  const memberNumber = pick(row, ['memberNumber', 'registrationNumber', 'memberNo', 'memberId', 'memberID']);
   const staffId = pick(row, ['staffId', 'staffID', 'payrollNumber', 'employeeId']);
   const status = pick(row, ['status']) || 'ACTIVE';
+  const shareCapital = toNumber(pick(row, ['shareCapital', 'share capital', 'shares']));
+  const savings = toNumber(pick(row, ['savings', 'savingsBalance']));
+  const joinDate = pick(row, ['joinDate', 'joinedDate', 'dateJoined', 'joiningDate']);
   const missing = [];
   if (!fullName) missing.push('name');
   if (!email || !/^\S+@\S+\.\S+$/.test(email)) missing.push('email');
@@ -82,6 +111,9 @@ const mapMemberImportRow = (row) => {
       nationalId,
       memberNumber,
       staffId,
+      shareCapital,
+      savings,
+      joinDate,
       status: status.toUpperCase(),
       company: 'Ayedos',
       isWhitelisted: true,
@@ -91,7 +123,7 @@ const mapMemberImportRow = (row) => {
 
 const mapFinancialImportRow = (row) => {
   const sheetName = pick(row, ['sheet', 'worksheet', 'workbookSheet']);
-  const memberNumber = pick(row, ['memberNumber', 'registrationNumber', 'memberNo']);
+  const memberNumber = pick(row, ['memberNumber', 'registrationNumber', 'memberNo', 'memberId', 'memberID']);
   const email = pick(row, ['email', 'emailAddress']).toLowerCase();
   const staffId = pick(row, ['staffId', 'staffID', 'payrollNumber', 'employeeId']);
   const missing = [];
@@ -128,9 +160,59 @@ const formatMember = (member) => {
   };
 };
 
+const formatAdminMemberRow = (member) => {
+  const source = typeof member?.toJSON === 'function' ? member.toJSON() : member;
+  const user = source?.User || source?.user || {};
+  return {
+    id: user.id || source?.userId || source?.id,
+    userId: user.id || source?.userId,
+    memberId: source?.id,
+    memberNumber: source?.memberNumber || '',
+    name: user.name || [user.firstName, user.lastName].filter(Boolean).join(' ') || '',
+    email: user.email || '',
+    phone: user.phone || '',
+    nationalId: user.nationalId || source?.nationalId || '',
+    company: user.employer || '',
+    staffId: user.staffId || '',
+    status: source?.status || (user.isVerified ? 'ACTIVE' : 'PENDING'),
+    isVerified: Boolean(source?.isVerified || user.isVerified),
+    createdAt: source?.createdAt || user.createdAt,
+    archivedAt: source?.updatedAt || user.updatedAt,
+    reason: source?.status && source.status !== 'ACTIVE' ? source.status : 'Inactive or unverified account',
+  };
+};
+
 const getAllUsers = asyncHandler(async (req, res) => {
   const users = await userService.getAllUsers();
   return ResponseHandler.success(res, users.map(UserDTO.admin), 'Users retrieved successfully', 200);
+});
+
+const getArchivedMembers = asyncHandler(async (req, res) => {
+  const members = await db.Member.findAll({
+    where: {
+      [Op.or]: [
+        { status: { [Op.ne]: 'ACTIVE' } },
+        { isVerified: false },
+      ],
+    },
+    include: [{ model: db.User, attributes: { exclude: ['password', 'otp', 'refreshToken', 'passwordResetToken', 'passwordResetExpires'] } }],
+    order: [['updatedAt', 'DESC']],
+    limit: 250,
+  });
+  return ResponseHandler.success(res, members.map(formatAdminMemberRow), 'Archived members retrieved successfully', 200);
+});
+
+const getAuditLogs = asyncHandler(async (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+  const where = {};
+  if (req.query.module) where.module = String(req.query.module);
+  if (req.query.action) where.action = String(req.query.action);
+  const logs = await db.AuditLog.findAll({
+    where,
+    order: [['createdAt', 'DESC']],
+    limit,
+  });
+  return ResponseHandler.success(res, logs, 'Audit logs retrieved successfully', 200);
 });
 
 const getUserById = asyncHandler(async (req, res) => {
@@ -278,8 +360,9 @@ const commitMemberCsvImport = asyncHandler(async (req, res) => {
       skipped.push({ rowNumber: row.rowNumber, email: data.email, reason: 'Email already exists' });
       continue;
     }
-    const password = data.email.replace(/@/g, '');
+    const password = '12345678';
     const hashedPassword = await bcrypt.hash(password, 10);
+    const isStaffMember = hasStaffId(data.staffId);
     const result = await db.sequelize.transaction(async (transaction) => {
       const user = await db.User.create({
         name: data.fullName,
@@ -292,6 +375,7 @@ const commitMemberCsvImport = asyncHandler(async (req, res) => {
         employer: 'Ayedos',
         staffId: data.staffId || null,
         payrollNumber: data.staffId || null,
+        mustChangePassword: true,
         isWhitelisted: true,
         consentGiven: true,
         consentGivenAt: new Date(),
@@ -299,14 +383,16 @@ const commitMemberCsvImport = asyncHandler(async (req, res) => {
       const member = await db.Member.create({
         userId: user.id,
         memberNumber: data.memberNumber || `AYEDOS-${Date.now()}-${String(user.id).slice(0, 6).toUpperCase()}`,
-        type: 'EMPLOYEE',
+        type: isStaffMember ? 'EMPLOYEE' : 'NON_EMPLOYEE',
         nationalId: data.nationalId,
+        shareCapital: data.shareCapital,
+        savings: data.savings,
         status: data.status || 'ACTIVE',
         isVerified: true,
-        dateJoined: new Date(),
+        dateJoined: data.joinDate ? new Date(data.joinDate) : new Date(),
       }, { transaction });
-      await db.SavingsAccount.create({ memberId: member.id }, { transaction });
-      await db.ShareAccount.create({ memberId: member.id }, { transaction });
+      await db.SavingsAccount.create({ memberId: member.id, balance: data.savings }, { transaction });
+      await db.ShareAccount.create({ memberId: member.id, shares: data.shareCapital / 100, shareValue: 100 }, { transaction });
       return { user, member };
     });
     imported.push({
@@ -355,6 +441,8 @@ const commitFinancialCsvImport = asyncHandler(async (req, res) => {
       continue;
     }
 
+    const isStaffMember = hasStaffId(member.User?.staffId || data.staffId);
+    const employerContribution = isStaffMember ? data.employerContribution : 0;
     await db.sequelize.transaction(async (transaction) => {
       await member.update({
         shareCapital: data.shareCapital,
@@ -362,13 +450,13 @@ const commitFinancialCsvImport = asyncHandler(async (req, res) => {
         loans: data.loans,
         loanRepayment: data.loanRepayment,
         interest: data.interest,
-        employerContribution: data.employerContribution,
+        employerContribution,
       }, { transaction });
       if (member.User) {
         await member.User.update({
-          employerContribution: data.employerContribution,
-          staffId: data.staffId || member.User.staffId,
-          payrollNumber: data.staffId || member.User.payrollNumber,
+          employerContribution,
+          staffId: isStaffMember ? (data.staffId || member.User.staffId) : null,
+          payrollNumber: isStaffMember ? (data.staffId || member.User.payrollNumber) : null,
         }, { transaction });
       }
       const [savingsAccount] = await db.SavingsAccount.findOrCreate({ where: { memberId: member.id }, defaults: { balance: 0 }, transaction });
@@ -380,7 +468,7 @@ const commitFinancialCsvImport = asyncHandler(async (req, res) => {
       const transactionRows = [
         ['DEPOSIT', data.savings, 'historical_savings'],
         ['DEPOSIT', data.shareCapital, 'share_capital'],
-        ['DEPOSIT', data.employerContribution, 'employer_contribution'],
+        ['DEPOSIT', employerContribution, 'employer_contribution'],
         ['LOAN_REPAYMENT', data.loanRepayment, 'loan_repayment'],
       ].filter(([, amount]) => Number(amount) > 0);
       for (const [type, amount, category] of transactionRows) {
@@ -403,6 +491,8 @@ const commitFinancialCsvImport = asyncHandler(async (req, res) => {
 
 module.exports = {
   getAllUsers,
+  getArchivedMembers,
+  getAuditLogs,
   getUserById,
   updateUserRole,
   updateUserStatus,
