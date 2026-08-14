@@ -152,8 +152,9 @@ const formatLoan = (loan) => {
     requestedAmount: loan.amount,
     principalBalance: Number(loan.principalBalance ?? loan.amount ?? 0),
     accruedInterest: Number(loan.accruedInterest || 0),
-    balance: outstandingBalance,
-    outstandingBalance,
+    balance: Number(loan.principalBalance ?? loan.amount ?? 0) + Number(loan.accruedInterest || 0),
+    paid: Number(loan.paid ?? loan.dataValues?.paid ?? 0),
+    repaid: Number(loan.paid ?? loan.dataValues?.paid ?? 0),
     reason: loan.reason || null,
     duration: loan.duration,
     interest: loan.interestRate,
@@ -360,6 +361,27 @@ const getAllLoans = asyncHandler(async (req, res) => {
     where,
     include: [db.Guarantor, { model: db.Member, include: [{ model: db.User, attributes: { exclude: ['password', 'otp', 'refreshToken'] } }] }],
     order: [['createdAt', 'DESC']],
+  });
+  const loanIds = loans.map((loan) => loan.id);
+  const repayments = loanIds.length
+    ? await db.Transaction.findAll({
+      where: {
+        loanId: { [db.Sequelize.Op.in]: loanIds },
+        type: 'LOAN_REPAYMENT',
+        status: 'SUCCESS',
+      },
+      attributes: ['loanId', 'amount'],
+    })
+    : [];
+  const repaymentsByLoan = repayments.reduce((totals, repayment) => {
+    totals.set(
+      repayment.loanId,
+      (totals.get(repayment.loanId) || 0) + Number(repayment.amount || 0),
+    );
+    return totals;
+  }, new Map());
+  loans.forEach((loan) => {
+    loan.dataValues.paid = repaymentsByLoan.get(loan.id) || 0;
   });
   const formatted = loans.map(formatLoan);
   return ResponseHandler.success(res, formatted, 'Loans retrieved successfully', 200);
