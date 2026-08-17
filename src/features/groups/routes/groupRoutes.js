@@ -12,5 +12,8 @@ router.post('/:groupId/invitations/:membershipId/respond', validate(schemas.grou
 router.delete('/:groupId/members/:membershipId', controller.removeMember);
 router.post('/:groupId/leave', controller.leaveGroup);
 router.post('/:groupId/loans', validate(schemas.groupLoan), controller.borrow);
+router.post('/:groupId/proposals', validate(schemas.groupLoanProposal), controller.createProposal);
+router.post('/:groupId/proposals/:proposalId/vote', validate(schemas.groupProposalVote), controller.voteProposal);
+router.post('/:groupId/proposals/:proposalId/disburse', controller.disburseProposal);
 router.post('/:groupId/loans/:loanId/repay', validate(schemas.moneyAction), controller.repay);
 module.exports = router;

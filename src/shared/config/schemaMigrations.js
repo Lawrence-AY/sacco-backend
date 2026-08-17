@@ -327,7 +327,7 @@ const ensureBorrowingGroupTables = async (sequelize) => {
   });
   if (!names.has('GroupMemberships')) await queryInterface.createTable('GroupMemberships', {
     id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true }, groupId: { type: DataTypes.UUID, allowNull: false }, memberId: { type: DataTypes.UUID, allowNull: false },
-    role: { type: DataTypes.ENUM('CREATOR', 'MEMBER'), allowNull: false, defaultValue: 'MEMBER' }, status: { type: DataTypes.ENUM('PENDING', 'ACCEPTED', 'REJECTED', 'LEFT', 'REMOVED'), allowNull: false, defaultValue: 'PENDING' },
+    role: { type: DataTypes.ENUM('CREATOR', 'MEMBER'), allowNull: false, defaultValue: 'MEMBER' }, status: { type: DataTypes.ENUM('INVITED', 'ACTIVE', 'REJECTED', 'LEFT', 'REMOVED'), allowNull: false, defaultValue: 'INVITED' },
     invitedByMemberId: { type: DataTypes.UUID, allowNull: false }, respondedAt: { type: DataTypes.DATE, allowNull: true },
     createdAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW }, updatedAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
   });
@@ -355,12 +355,50 @@ const ensureBorrowingGroupTables = async (sequelize) => {
   }
 };
 
+const ensureGroupProposalTables = async (sequelize) => {
+  const queryInterface = sequelize.getQueryInterface();
+  const tables = await queryInterface.showAllTables();
+  const names = new Set(tables.map((table) => String(typeof table === 'object' ? table.tableName || table.name : table)));
+  const userColumns = await queryInterface.describeTable('Users');
+  if (!userColumns.shareCapitalStatus) await queryInterface.addColumn('Users', 'shareCapitalStatus', { type: DataTypes.ENUM('COMPLETED', 'INCOMPLETE'), allowNull: false, defaultValue: 'INCOMPLETE' });
+  if (!names.has('GroupLoanProposals')) await queryInterface.createTable('GroupLoanProposals', {
+    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true }, groupId: { type: DataTypes.UUID, allowNull: false }, createdBy: { type: DataTypes.UUID, allowNull: false },
+    totalAmount: { type: DataTypes.DECIMAL(14, 2), allowNull: false }, durationMonths: { type: DataTypes.INTEGER, allowNull: false }, interestRate: { type: DataTypes.DECIMAL(6, 3), allowNull: false },
+    status: { type: DataTypes.ENUM('DRAFT', 'PENDING_MEMBER_APPROVAL', 'APPROVED', 'REJECTED', 'DISBURSED'), allowNull: false, defaultValue: 'DRAFT' }, approvedAt: DataTypes.DATE, disbursedAt: DataTypes.DATE,
+    createdAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW }, updatedAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+  });
+  if (names.has('GroupMemberships')) {
+    const dialect = sequelize.getDialect();
+    if (dialect === 'postgres') {
+      await sequelize.query(`ALTER TYPE "enum_GroupMemberships_status" ADD VALUE IF NOT EXISTS 'INVITED'`);
+      await sequelize.query(`ALTER TYPE "enum_GroupMemberships_status" ADD VALUE IF NOT EXISTS 'ACTIVE'`);
+      await sequelize.query(`ALTER TABLE "GroupMemberships" ALTER COLUMN "status" DROP DEFAULT`);
+      await sequelize.query(`UPDATE "GroupMemberships" SET "status" = 'INVITED' WHERE "status" = 'PENDING'`);
+      await sequelize.query(`UPDATE "GroupMemberships" SET "status" = 'ACTIVE' WHERE "status" = 'ACCEPTED'`);
+      await sequelize.query(`ALTER TABLE "GroupMemberships" ALTER COLUMN "status" SET DEFAULT 'INVITED'`);
+    } else {
+      await queryInterface.changeColumn('GroupMemberships', 'status', { type: DataTypes.ENUM('PENDING', 'ACCEPTED', 'INVITED', 'ACTIVE', 'REJECTED', 'LEFT', 'REMOVED'), allowNull: false, defaultValue: 'INVITED' });
+      await queryInterface.bulkUpdate('GroupMemberships', { status: 'INVITED' }, { status: 'PENDING' });
+      await queryInterface.bulkUpdate('GroupMemberships', { status: 'ACTIVE' }, { status: 'ACCEPTED' });
+      await queryInterface.changeColumn('GroupMemberships', 'status', { type: DataTypes.ENUM('INVITED', 'ACTIVE', 'REJECTED', 'LEFT', 'REMOVED'), allowNull: false, defaultValue: 'INVITED' });
+    }
+  }
+  if (!names.has('GroupLoanAllocations')) await queryInterface.createTable('GroupLoanAllocations', {
+    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true }, proposalId: { type: DataTypes.UUID, allowNull: false }, memberId: { type: DataTypes.UUID, allowNull: false }, allocatedPercentage: { type: DataTypes.DECIMAL(7, 4), allowNull: false },
+    principalAmount: { type: DataTypes.DECIMAL(14, 2), allowNull: false }, interestAmount: { type: DataTypes.DECIMAL(14, 2), allowNull: false }, repaymentStatus: { type: DataTypes.ENUM('NOT_STARTED', 'ACTIVE', 'PAID', 'DEFAULTED'), allowNull: false, defaultValue: 'NOT_STARTED' },
+    memberAcceptance: { type: DataTypes.ENUM('PENDING', 'ACCEPTED', 'REJECTED'), allowNull: false, defaultValue: 'PENDING' }, respondedAt: DataTypes.DATE, createdAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW }, updatedAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+  });
+  const loanColumns = await queryInterface.describeTable('GroupLoans');
+  if (!loanColumns.proposalId) await queryInterface.addColumn('GroupLoans', 'proposalId', { type: DataTypes.UUID, allowNull: true, unique: true });
+};
+
 const runSchemaMigrations = async (sequelize) => {
   await ensureNotificationTable(sequelize);
   await ensureMemberExitRequestTable(sequelize);
   await ensureOptOutAndReducingBalanceSchema(sequelize);
   await ensureShareCapitalFeatures(sequelize);
   await ensureBorrowingGroupTables(sequelize);
+  await ensureGroupProposalTables(sequelize);
   await ensureUserProfileColumns(sequelize);
   await ensureTransactionTrackingColumns(sequelize);
   await ensureTableColumns(sequelize, 'Members', memberDocumentColumns);

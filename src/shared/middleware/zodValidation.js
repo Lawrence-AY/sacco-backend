@@ -202,6 +202,16 @@ const schemas = {
     paymentPeriodMonths: z.coerce.number().int().positive().max(120),
     interestRate: z.coerce.number().min(0).max(100).optional(),
   }),
+  groupLoanProposal: strictObject({
+    totalAmount: z.coerce.number().positive().max(100000000),
+    durationMonths: z.coerce.number().int().positive().max(120),
+    interestRate: z.coerce.number().min(0).max(100),
+    allocations: z.array(strictObject({
+      memberId: z.string().uuid(),
+      allocatedPercentage: z.coerce.number().positive().max(100),
+    })).min(1),
+  }),
+  groupProposalVote: strictObject({ accept: z.boolean() }),
 };
 
 module.exports = {

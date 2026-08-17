@@ -35,5 +35,8 @@ router.get('/members', financeController.getAllMembers);
 router.get('/members/:memberId/profile', financeController.getMemberFinancialProfile);
 router.get('/companies', financeController.getAllCompanies);
 router.get('/reports', financeController.getFinancialReports);
+router.get('/group-loans/active', financeController.getActiveGroupLoans);
+router.get('/group-borrowing', financeController.getGroupBorrowingOverview);
+router.delete('/group-borrowing/:groupId', financeController.dismantleBorrowingGroup);
 
 module.exports = router;

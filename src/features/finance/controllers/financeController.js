@@ -5,7 +5,7 @@ const { postManualRepayment, voidRepayment } = require('../../loans/services/loa
 const deductionService = require('../../deductions/services/deductionService');
 const asyncHandler = require('../../../shared/utils/asyncHandler');
 const ResponseHandler = require('../../../shared/utils/response');
-const { ValidationError, NotFoundError } = require('../../../shared/utils/errors');
+const { ValidationError, NotFoundError, ForbiddenError } = require('../../../shared/utils/errors');
 const { LoanDTO } = require('../../../shared/utils/dtos');
 const { formatEAT } = require('../../../shared/utils/eatDateTime');
 const MINIMUM_SHARE_CAPITAL = 25000;
@@ -856,6 +856,87 @@ const getFinancialReports = asyncHandler(async (req, res) => {
   }, 'Financial reports retrieved successfully', 200);
 });
 
+const getActiveGroupLoans = asyncHandler(async (req, res) => {
+  const groups = await db.BorrowingGroup.findAll({
+    include: [
+      { model: db.GroupLoan, as: 'loans', required: true, where: { status: 'ACTIVE' } },
+      { model: db.GroupTransaction, as: 'transactions', required: false },
+      { model: db.GroupLoanProposal, as: 'proposals', required: false, where: { status: 'DISBURSED' }, include: [{ model: db.GroupLoanAllocation, as: 'allocations', include: [{ model: db.Member, as: 'member', attributes: ['id', 'memberNumber'], include: [{ model: db.User, attributes: ['name'] }] }] }] },
+    ],
+    order: [['updatedAt', 'DESC']],
+  });
+  const items = groups.flatMap((group) => group.loans.map((loan) => {
+    const proposal = group.proposals.find((item) => item.id === loan.proposalId);
+    const repayments = group.transactions.filter((item) => item.loanId === loan.id && item.type === 'LOAN_REPAYMENT' && item.status === 'SUCCESS');
+    const amountPaid = repayments.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    return { id: loan.id, groupId: group.id, groupName: group.name, proposalId: loan.proposalId, disbursedAmount: Number(loan.amount), totalDue: Number(loan.totalDue), amountPaid, outstandingBalance: Number(loan.balance), progressPercentage: Number(loan.totalDue) > 0 ? Math.min(amountPaid / Number(loan.totalDue) * 100, 100) : 0, status: loan.status,
+      members: (proposal?.allocations || []).map((allocation) => { const paid = repayments.filter((row) => row.memberId === allocation.memberId).reduce((sum, row) => sum + Number(row.amount || 0), 0); const due = Number(allocation.principalAmount) + Number(allocation.interestAmount); return { memberId: allocation.memberId, memberNumber: allocation.member?.memberNumber, name: allocation.member?.User?.name || allocation.member?.memberNumber, totalPayable: due, amountPaid: paid, outstandingBalance: Math.max(due - paid, 0), repaymentStatus: allocation.repaymentStatus }; }),
+    };
+  }));
+  return ResponseHandler.success(res, { items, summary: { activeGroups: groups.length, activeLoans: items.length, totalDisbursed: items.reduce((sum, item) => sum + item.disbursedAmount, 0), totalPaid: items.reduce((sum, item) => sum + item.amountPaid, 0), totalOutstanding: items.reduce((sum, item) => sum + item.outstandingBalance, 0) } }, 'Active group loans retrieved successfully');
+});
+
+const getGroupBorrowingOverview = asyncHandler(async (req, res) => {
+  const groups = await db.BorrowingGroup.findAll({
+    include: [
+      { model: db.GroupMembership, as: 'memberships', include: [{ model: db.Member, as: 'member', attributes: ['id', 'memberNumber'], include: [{ model: db.User, attributes: ['name', 'email', 'phone'] }] }] },
+      { model: db.GroupLoan, as: 'loans' },
+      { model: db.GroupTransaction, as: 'transactions' },
+      { model: db.GroupLoanProposal, as: 'proposals', include: [{ model: db.GroupLoanAllocation, as: 'allocations' }] },
+    ],
+    order: [['updatedAt', 'DESC']],
+  });
+  const items = groups.map((groupModel) => {
+    const group = groupModel.toJSON();
+    const repayments = group.transactions.filter((row) => row.type === 'LOAN_REPAYMENT' && row.status === 'SUCCESS');
+    const loans = group.loans.map((loan) => {
+      const proposal = group.proposals.find((row) => row.id === loan.proposalId);
+      const loanRepayments = repayments.filter((row) => row.loanId === loan.id);
+      const amountPaid = loanRepayments.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+      const scheduledInterest = proposal ? proposal.allocations.reduce((sum, row) => sum + Number(row.interestAmount || 0), 0) : Math.max(Number(loan.totalDue || 0) - Number(loan.amount || 0), 0);
+      const totalDue = Number(loan.totalDue || 0);
+      const interestEarned = totalDue > 0 ? Math.min(amountPaid, totalDue) * scheduledInterest / totalDue : 0;
+      return { ...loan, amount: Number(loan.amount), totalDue, balance: Number(loan.balance), amountPaid, scheduledInterest, interestEarned, repaymentProgress: totalDue > 0 ? Math.min(amountPaid / totalDue * 100, 100) : 0 };
+    });
+    return {
+      id: group.id, name: group.name, description: group.description, status: group.status, creatorMemberId: group.creatorMemberId, createdAt: group.createdAt,
+      members: group.memberships.map((membership) => ({ membershipId: membership.id, memberId: membership.memberId, memberNumber: membership.member?.memberNumber, name: membership.member?.User?.name || membership.member?.memberNumber, email: membership.member?.User?.email, phone: membership.member?.User?.phone, role: membership.role, status: membership.status, joinedAt: membership.respondedAt || membership.createdAt })),
+      loans,
+      proposals: group.proposals.map((proposal) => ({ ...proposal, totalAmount: Number(proposal.totalAmount), interestRate: Number(proposal.interestRate), scheduledInterest: proposal.allocations.reduce((sum, row) => sum + Number(row.interestAmount || 0), 0), allocationCount: proposal.allocations.length })),
+      transactions: [...group.transactions].sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt)),
+      totals: { borrowed: loans.reduce((sum, loan) => sum + loan.amount, 0), repaid: loans.reduce((sum, loan) => sum + loan.amountPaid, 0), outstanding: loans.reduce((sum, loan) => sum + loan.balance, 0), scheduledInterest: loans.reduce((sum, loan) => sum + loan.scheduledInterest, 0), interestEarned: loans.reduce((sum, loan) => sum + loan.interestEarned, 0) },
+    };
+  });
+  return ResponseHandler.success(res, { items, summary: { groups: items.length, activeGroups: items.filter((group) => group.loans.some((loan) => loan.status === 'ACTIVE')).length, totalBorrowed: items.reduce((sum, group) => sum + group.totals.borrowed, 0), totalOutstanding: items.reduce((sum, group) => sum + group.totals.outstanding, 0), totalInterestEarned: items.reduce((sum, group) => sum + group.totals.interestEarned, 0) } }, 'Group borrowing overview retrieved successfully');
+});
+
+const dismantleBorrowingGroup = asyncHandler(async (req, res) => {
+  if (String(req.user?.role || '').toUpperCase() !== 'FINANCE') throw new ForbiddenError('Only Finance can dismantle a borrowing group');
+  const group = await db.BorrowingGroup.findByPk(req.params.groupId, {
+    include: [
+      { model: db.GroupMembership, as: 'memberships', include: [{ model: db.Member, as: 'member', attributes: ['id', 'userId', 'memberNumber'] }] },
+      { model: db.GroupLoan, as: 'loans' },
+      { model: db.GroupLoanProposal, as: 'proposals' },
+    ],
+  });
+  if (!group) throw new NotFoundError('Borrowing group not found');
+  if (group.status === 'CLOSED') return ResponseHandler.success(res, { groupId: group.id, status: 'CLOSED', replayed: true }, 'Group is already dismantled');
+  if (group.loans?.length || group.proposals?.some((proposal) => ['APPROVED', 'DISBURSED'].includes(proposal.status))) {
+    throw new ValidationError('This group cannot be dismantled after a loan has been approved or disbursed');
+  }
+  const memberships = group.memberships || [];
+  await db.sequelize.transaction(async (transaction) => {
+    await db.GroupLoanProposal.update({ status: 'REJECTED' }, { where: { groupId: group.id, status: { [db.Sequelize.Op.in]: ['DRAFT', 'PENDING_MEMBER_APPROVAL'] } }, transaction });
+    await db.GroupMembership.update({ status: 'REMOVED', respondedAt: new Date() }, { where: { groupId: group.id, status: { [db.Sequelize.Op.in]: ['INVITED', 'ACTIVE'] } }, transaction });
+    await group.update({ status: 'CLOSED' }, { transaction });
+  });
+  const memberUserIds = [...new Set(memberships.map((membership) => membership.member?.userId).filter(Boolean))];
+  await Promise.allSettled(memberUserIds.map((userId) => db.Notification.create({
+    userId, eventKey: `group-dismantled:${group.id}:${userId}`, title: 'Group dismantled by management', body: `${group.name} was dismantled by management and is no longer active. Any pending loan proposal was cancelled.`, category: 'group', severity: 'warning', actionUrl: '/dashboard/user/notifications', sourceType: 'BorrowingGroup', sourceId: group.id, metadata: { groupId: group.id, groupName: group.name, status: 'CLOSED', reason: 'Dismantled by management' },
+  })));
+  return ResponseHandler.success(res, { groupId: group.id, status: 'CLOSED', notifiedMembers: memberUserIds.length }, 'Group dismantled and members notified');
+});
+
 module.exports = {
   getAllTransactions,
   createTransaction,
@@ -878,4 +959,7 @@ module.exports = {
   getMemberFinancialProfile,
   getAllCompanies,
   getFinancialReports,
+  getActiveGroupLoans,
+  getGroupBorrowingOverview,
+  dismantleBorrowingGroup,
 };
