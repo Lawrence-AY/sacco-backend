@@ -48,6 +48,11 @@ const User = sequelize.define('User', {
     type: DataTypes.BOOLEAN,
     defaultValue: false
   },
+  shareCapitalStatus: {
+    type: DataTypes.ENUM('COMPLETED', 'INCOMPLETE'),
+    allowNull: false,
+    defaultValue: 'INCOMPLETE'
+  },
   otp: DataTypes.STRING(8),
   otpExpiresAt: DataTypes.DATE,
   otpAttempts: {

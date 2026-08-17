@@ -15,12 +15,12 @@ const severityForStatus = (status) => {
 
 const serialize = (notification) => ({
   id: notification.id,
-  title: notification.title,
-  body: notification.body,
+  title: notification.sourceType === 'BorrowingGroup' && notification.metadata?.status === 'CLOSED' ? 'Group dismantled by management' : notification.title,
+  body: notification.sourceType === 'BorrowingGroup' && notification.metadata?.status === 'CLOSED' ? String(notification.body || '').replace('has been dismantled by Finance', 'was dismantled by management') : notification.body,
   category: notification.category,
   severity: notification.severity,
   tone: notification.severity === 'critical' ? 'warning' : notification.severity,
-  actionUrl: notification.actionUrl,
+  actionUrl: notification.sourceType === 'BorrowingGroup' && notification.metadata?.status === 'CLOSED' ? '/dashboard/user/notifications' : notification.actionUrl,
   sourceType: notification.sourceType,
   sourceId: notification.sourceId,
   readAt: notification.readAt,

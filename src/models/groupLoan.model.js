@@ -4,6 +4,7 @@ const sequelize = require('../shared/config/db');
 const GroupLoan = sequelize.define('GroupLoan', {
   id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
   groupId: { type: DataTypes.UUID, allowNull: false },
+  proposalId: { type: DataTypes.UUID, allowNull: true, unique: true },
   requestedByMemberId: { type: DataTypes.UUID, allowNull: false },
   amount: { type: DataTypes.DECIMAL(14, 2), allowNull: false },
   interestRate: { type: DataTypes.DECIMAL(6, 3), allowNull: false, defaultValue: 1 },
