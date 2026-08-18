@@ -103,7 +103,7 @@ const listGroups = asyncHandler(async (req, res) => {
   const eligibilityPromise = financialEligibility(member.id);
   const memberships = await db.GroupMembership.findAll({ where: { memberId: member.id, status: { [Op.in]: ['INVITED', 'ACTIVE'] } }, attributes: ['groupId'] });
   const groupsPromise = memberships.length
-    ? db.BorrowingGroup.findAll({ where: { id: { [Op.in]: memberships.map((item) => item.groupId) } }, include: groupSummaryInclude, order: [['updatedAt', 'DESC']] })
+    ? db.BorrowingGroup.findAll({ where: { id: { [Op.in]: memberships.map((item) => item.groupId) } }, include: groupInclude, order: [['updatedAt', 'DESC']] })
     : Promise.resolve([]);
   const [eligibility, groups] = await Promise.all([eligibilityPromise, groupsPromise]);
   return ResponseHandler.success(res, { eligibility, groups: groups.map((group) => serializeGroup(group, member.id)) }, 'Groups retrieved successfully');
