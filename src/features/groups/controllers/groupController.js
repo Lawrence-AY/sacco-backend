@@ -361,4 +361,4 @@ const repay = asyncHandler(async (req, res) => {
   return ResponseHandler.success(res, result, 'Group loan repayment recorded');
 });
 
-module.exports = { listGroups, createGroup, searchEligibleMembers, inviteMember, respondInvitation, removeMember, leaveGroup, borrow, repay, createProposal, voteProposal, disburseProposal, proposeGovernanceAction, voteGovernanceAction };
+module.exports = { getGroup, listGroups, createGroup, searchEligibleMembers, inviteMember, respondInvitation, removeMember, leaveGroup, borrow, repay, createProposal, voteProposal, disburseProposal, proposeGovernanceAction, voteGovernanceAction };
