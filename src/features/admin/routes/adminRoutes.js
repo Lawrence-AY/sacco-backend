@@ -31,7 +31,15 @@ router.post('/members/import/commit', adminController.commitMemberCsvImport);
 router.post('/financial-import/preview', adminController.previewFinancialCsvImport);
 router.post('/financial-import/commit', adminController.commitFinancialCsvImport);
 router.get('/notifications', adminController.listNotifications);
+router.post('/notifications/broadcast', adminController.sendBroadcastNotification);
+router.post('/notifications/direct', adminController.sendDirectNotification);
 router.post('/notifications/read-all', adminController.markAllNotificationsRead);
 router.post('/notifications/:notificationId/read', adminController.markNotificationRead);
+router.get('/financial-portfolio', adminController.getFinancialPortfolio);
+router.get('/portfolio', adminController.getFinancialPortfolio);
+router.post('/portfolio', adminController.upsertPortfolio);
+router.put('/portfolio', adminController.upsertPortfolio);
+router.put('/financial-portfolio/:year/reports', adminController.upsertFinancialPortfolioReports);
+router.post('/financial-portfolio/:year/dividends', adminController.upsertMemberDividends);
 
 module.exports = router;

@@ -27,6 +27,7 @@ router.post('/shares', validate(schemas.sharesPurchase), memberController.buySha
 router.get('/transactions', memberController.getTransactions);
 router.get('/guarantors/search', memberController.searchGuarantors);
 router.get('/guarantees', memberController.getGuarantees);
+router.get('/financial-portfolio', memberController.getFinancialPortfolio);
 router.post('/reports/email', validate(schemas.reportRequest), memberController.emailReport);
 
 module.exports = router;

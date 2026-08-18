@@ -532,6 +532,7 @@ app.use('/api/search', searchRoutes);
 app.use('/search', searchRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/mpesa', mpesaRoutes);
+app.get('/api/portfolio/latest', protect, memberController.getFinancialPortfolio);
 app.get('/api/payments/status/:checkoutRequestId', protect, memberController.getLoanPaymentStatus);
 app.use('/api/v1/wallet', walletRoutes);
 app.use('/api/v1/payments', paymentRoutes);

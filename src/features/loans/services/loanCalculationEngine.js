@@ -44,7 +44,7 @@ const calculateAccruedInterestCents = ({
 };
 
 const calculateLoanPaymentAllocation = ({ loan, amount, paymentDate = new Date() }) => {
-  const paymentCents = toCents(amount);
+  const requestedPaymentCents = toCents(amount);
   const originalPrincipalCents = toCents(loan.amount);
   const currentPrincipalCents = toCents(loan.principalBalance ?? loan.amount);
   const storedInterestCents = toCents(loan.accruedInterest || 0);
@@ -60,11 +60,16 @@ const calculateLoanPaymentAllocation = ({ loan, amount, paymentDate = new Date()
   });
   const outstandingCents = currentPrincipalCents + accruedInterestCents;
 
-  if (paymentCents <= 0) {
+  if (requestedPaymentCents <= 0) {
     const error = new Error('Payment amount must be greater than zero');
     error.statusCode = 400;
     throw error;
   }
+  const wholeShillingPayoffCents = Math.ceil(outstandingCents / CENTS) * CENTS;
+  const paymentCents = requestedPaymentCents > outstandingCents && requestedPaymentCents <= wholeShillingPayoffCents
+    ? outstandingCents
+    : requestedPaymentCents;
+
   if (paymentCents > outstandingCents) {
     const error = new Error(`Payment exceeds outstanding balance of KES ${fromCents(outstandingCents).toFixed(2)}`);
     error.statusCode = 400;

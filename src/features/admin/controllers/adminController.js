@@ -335,6 +335,294 @@ const markAllNotificationsRead = asyncHandler(async (req, res) => {
   return ResponseHandler.success(res, null, 'Notifications marked as read', 200);
 });
 
+const normalizeManualNotificationPayload = (body = {}, audience) => ({
+  title: body.title,
+  body: body.body || body.message,
+  audience,
+  recipientUserId: body.recipientUserId,
+  category: body.category || 'announcement',
+  severity: body.severity || 'info',
+  actionUrl: body.actionUrl || null,
+  metadata: body.metadata || {},
+});
+
+const resolveNotificationRecipientUserId = async (body = {}) => {
+  const key = String(body.recipientUserId || body.userId || body.memberId || body.memberNumber || body.email || '').trim();
+  if (!key) throw new ValidationError('Recipient member ID, member number, user ID, or email is required');
+
+  let member = await db.Member.findOne({
+    where: {
+      [Op.or]: [
+        { id: key },
+        { memberNumber: key },
+      ],
+    },
+    include: [{ model: db.User, attributes: ['id', 'email', 'role'] }],
+  });
+
+  if (!member) {
+    member = await db.Member.findOne({
+      include: [{ model: db.User, where: { [Op.or]: [{ id: key }, { email: key }] }, attributes: ['id', 'email', 'role'] }],
+    });
+  }
+
+  if (!member?.User || member.User.role !== 'MEMBER') throw new NotFoundError('Selected member was not found');
+  return member.User.id;
+};
+
+const sendBroadcastNotification = asyncHandler(async (req, res) => {
+  const result = await notificationService.createManualNotification(req.user, normalizeManualNotificationPayload(req.body, req.body?.audience || 'ALL'));
+  return ResponseHandler.created(res, result, 'Broadcast notification sent successfully');
+});
+
+const sendDirectNotification = asyncHandler(async (req, res) => {
+  const recipientUserId = await resolveNotificationRecipientUserId(req.body);
+  const result = await notificationService.createManualNotification(req.user, normalizeManualNotificationPayload({ ...req.body, recipientUserId }, 'INDIVIDUAL'));
+  return ResponseHandler.created(res, result, 'Direct notification sent successfully');
+});
+
+const normalizePortfolioYear = (value) => {
+  const year = Number(value || new Date().getFullYear() - 1);
+  if (!Number.isInteger(year) || year < 2000 || year > new Date().getFullYear() + 1) {
+    throw new ValidationError('Enter a valid financial year');
+  }
+  return year;
+};
+
+const serializeReportRow = (row) => ({
+  id: row.id,
+  year: row.year,
+  category: row.category,
+  amount: Number(row.amount || 0),
+  percentageUsed: Number(row.percentageUsed || 0),
+  metadata: row.metadata || {},
+  updatedAt: row.updatedAt,
+});
+
+const serializePortfolioAnchor = (anchor) => {
+  const metadata = anchor?.metadata || {};
+  return {
+    id: anchor?.id || null,
+    year: anchor?.year || null,
+    metrics: {
+      totalAmount: Number(metadata.metrics?.totalAmount || 0),
+      interestEarned: Number(metadata.metrics?.interestEarned || 0),
+      investments: Number(metadata.metrics?.investments || 0),
+      memberGrowthRate: Number(metadata.metrics?.memberGrowthRate || 0),
+    },
+    chartData: Array.isArray(metadata.chartData) ? metadata.chartData : [],
+    imageUrl: metadata.imageUrl || '',
+    bannerUrl: metadata.bannerUrl || metadata.imageUrl || '',
+    updatedAt: anchor?.updatedAt || null,
+  };
+};
+
+const serializeDividendRow = (row) => ({
+  id: row.id,
+  userId: row.userId,
+  financialYearId: row.financialYearId,
+  totalShares: Number(row.totalShares || 0),
+  dividendPaid: Number(row.dividendPaid || 0),
+  member: row.User ? {
+    id: row.User.id,
+    name: row.User.name,
+    email: row.User.email,
+    memberNumber: row.User.Member?.memberNumber || '',
+  } : null,
+  updatedAt: row.updatedAt,
+});
+
+const getPortfolioYearAnchor = async (year, transaction = null) => {
+  const [anchor] = await db.FinancialYearReport.findOrCreate({
+    where: { year, category: '__YEAR__' },
+    defaults: { amount: 0, percentageUsed: 0, metadata: { hidden: true } },
+    transaction,
+  });
+  return anchor;
+};
+
+const loadFinancialPortfolioPayload = async ({ year, userId = null, includeDividends = false }) => {
+  let targetYear = year;
+  let anchor = null;
+  if (targetYear) {
+    anchor = await getPortfolioYearAnchor(targetYear);
+  } else {
+    anchor = await db.FinancialYearReport.findOne({
+      where: { category: '__YEAR__' },
+      order: [['year', 'DESC']],
+    });
+    if (!anchor) anchor = await getPortfolioYearAnchor(new Date().getFullYear() - 1);
+    targetYear = anchor.year;
+  }
+
+  const reportRows = await db.FinancialYearReport.findAll({
+    where: { year: targetYear, category: { [Op.ne]: '__YEAR__' } },
+    order: [['category', 'ASC']],
+  });
+
+  let dividend = null;
+  if (userId) {
+    dividend = await db.MemberDividend.findOne({ where: { userId, financialYearId: anchor.id } });
+  }
+
+  let dividends = [];
+  if (includeDividends) {
+    dividends = await db.MemberDividend.findAll({
+      where: { financialYearId: anchor.id },
+      include: [{ model: db.User, attributes: ['id', 'name', 'email'], include: [{ model: db.Member, attributes: ['memberNumber'] }] }],
+      order: [[db.User, 'name', 'ASC']],
+      limit: 1000,
+    });
+  }
+
+  return {
+    year: targetYear,
+    portfolio: serializePortfolioAnchor(anchor),
+    reports: reportRows.map(serializeReportRow),
+    investmentCategories: reportRows.map(serializeReportRow),
+    dividend: dividend ? {
+      id: dividend.id,
+      totalShares: Number(dividend.totalShares || 0),
+      dividendPaid: Number(dividend.dividendPaid || 0),
+      updatedAt: dividend.updatedAt,
+    } : null,
+    dividends: dividends.map(serializeDividendRow),
+  };
+};
+
+const getFinancialPortfolio = asyncHandler(async (req, res) => {
+  const year = normalizePortfolioYear(req.query.year);
+  const payload = await loadFinancialPortfolioPayload({ year, includeDividends: true });
+  return ResponseHandler.success(res, payload, 'Financial portfolio retrieved', 200);
+});
+
+const savePortfolioPayload = async ({ year, metrics = {}, categories = [], imageUrl = '', bannerUrl = '', chartData = [] }) => {
+  if (!categories.length) throw new ValidationError('At least one investment category is required');
+  const saved = [];
+  await db.sequelize.transaction(async (transaction) => {
+    const anchor = await getPortfolioYearAnchor(year, transaction);
+    await anchor.update({
+      metadata: {
+        ...(anchor.metadata || {}),
+        hidden: true,
+        metrics: {
+          totalAmount: toNumber(metrics.totalAmount),
+          interestEarned: toNumber(metrics.interestEarned),
+          investments: toNumber(metrics.investments),
+          memberGrowthRate: toNumber(metrics.memberGrowthRate),
+        },
+        imageUrl: String(imageUrl || bannerUrl || '').trim(),
+        bannerUrl: String(bannerUrl || imageUrl || '').trim(),
+        chartData: Array.isArray(chartData) ? chartData : [],
+      },
+    }, { transaction });
+
+    for (const item of categories) {
+      const category = String(item.category || item.label || '').trim();
+      const amount = toNumber(item.amount);
+      const percentageUsed = toNumber(item.percentageUsed ?? item.percentage_used ?? item.percentage);
+      if (!category) throw new ValidationError('Each investment row requires a category');
+      if (amount < 0 || percentageUsed < 0 || percentageUsed > 100) throw new ValidationError('Amounts must be positive and percentages must be between 0 and 100');
+      const [row] = await db.FinancialYearReport.findOrCreate({
+        where: { year, category },
+        defaults: { amount, percentageUsed, metadata: item.metadata || {} },
+        transaction,
+      });
+      await row.update({ amount, percentageUsed, metadata: item.metadata || row.metadata || {} }, { transaction });
+      saved.push(row);
+    }
+  });
+  return saved;
+};
+
+const upsertFinancialPortfolioReports = asyncHandler(async (req, res) => {
+  const year = normalizePortfolioYear(req.params.year || req.body?.year);
+  const categories = Array.isArray(req.body?.categories) ? req.body.categories : [];
+  const saved = await savePortfolioPayload({
+    year,
+    metrics: req.body?.metrics || {},
+    categories,
+    imageUrl: req.body?.imageUrl,
+    bannerUrl: req.body?.bannerUrl,
+    chartData: req.body?.chartData,
+  });
+  return ResponseHandler.success(res, { year, reports: saved.map(serializeReportRow) }, 'Financial usage breakdown saved', 200);
+});
+
+const upsertPortfolio = asyncHandler(async (req, res) => {
+  const year = normalizePortfolioYear(req.body?.year || req.params.year);
+  const categories = Array.isArray(req.body?.investmentCategories)
+    ? req.body.investmentCategories
+    : Array.isArray(req.body?.categories)
+      ? req.body.categories
+      : [];
+  await savePortfolioPayload({
+    year,
+    metrics: req.body?.metrics || {},
+    categories,
+    imageUrl: req.body?.imageUrl,
+    bannerUrl: req.body?.bannerUrl,
+    chartData: req.body?.chartData,
+  });
+  const payload = await loadFinancialPortfolioPayload({ year, includeDividends: true });
+  return ResponseHandler.success(res, payload, 'Portfolio report saved', 200);
+});
+
+const mapDividendImportRow = (row) => ({
+  rowNumber: row.rowNumber,
+  memberNumber: pick(row, ['memberNumber', 'memberNo', 'memberId', 'membershipId']),
+  email: pick(row, ['email', 'emailAddress']).toLowerCase(),
+  userId: pick(row, ['userId', 'user_id']),
+  totalShares: toNumber(pick(row, ['totalShares', 'shares', 'sharesHeld'])),
+  dividendPaid: toNumber(pick(row, ['dividendPaid', 'dividend', 'amount', 'dividendAmount'])),
+});
+
+const upsertMemberDividends = asyncHandler(async (req, res) => {
+  const year = normalizePortfolioYear(req.params.year || req.body?.year);
+  const rawRows = Array.isArray(req.body?.dividends)
+    ? req.body.dividends.map((row, index) => ({ rowNumber: index + 1, ...row }))
+    : parseCsv(req.body?.csv).map(mapDividendImportRow);
+  if (!rawRows.length) throw new ValidationError('No dividend rows supplied');
+
+  const imported = [];
+  const skipped = [];
+  await db.sequelize.transaction(async (transaction) => {
+    const anchor = await getPortfolioYearAnchor(year, transaction);
+    for (const raw of rawRows) {
+      const row = raw.raw ? mapDividendImportRow(raw) : raw;
+      const key = String(row.userId || row.memberNumber || row.email || '').trim();
+      if (!key) {
+        skipped.push({ rowNumber: row.rowNumber, reason: 'Missing member identifier' });
+        continue;
+      }
+      const member = await db.Member.findOne({
+        where: row.memberNumber ? { memberNumber: row.memberNumber } : undefined,
+        include: [{ model: db.User, where: row.userId ? { id: row.userId } : row.email ? { email: row.email } : undefined }],
+        transaction,
+      });
+      if (!member?.User) {
+        skipped.push({ rowNumber: row.rowNumber, reason: 'Member not found', key });
+        continue;
+      }
+      const totalShares = Number(row.totalShares || 0);
+      const dividendPaid = Number(row.dividendPaid || 0);
+      if (totalShares < 0 || dividendPaid < 0) {
+        skipped.push({ rowNumber: row.rowNumber, reason: 'Shares and dividend must be positive', key });
+        continue;
+      }
+      const [dividend] = await db.MemberDividend.findOrCreate({
+        where: { userId: member.User.id, financialYearId: anchor.id },
+        defaults: { totalShares, dividendPaid, metadata: { memberNumber: member.memberNumber } },
+        transaction,
+      });
+      await dividend.update({ totalShares, dividendPaid, metadata: { ...(dividend.metadata || {}), memberNumber: member.memberNumber } }, { transaction });
+      imported.push({ rowNumber: row.rowNumber, userId: member.User.id, memberNumber: member.memberNumber, totalShares, dividendPaid });
+    }
+  });
+
+  return ResponseHandler.success(res, { year, imported, skipped }, 'Member dividends saved', 200);
+});
+
 const previewMemberCsvImport = asyncHandler(async (req, res) => {
   const rows = parseCsv(req.body?.csv);
   if (!rows.length) throw new ValidationError('CSV file is empty or missing headers');
@@ -502,6 +790,12 @@ module.exports = {
   listNotifications,
   markNotificationRead,
   markAllNotificationsRead,
+  sendBroadcastNotification,
+  sendDirectNotification,
+  getFinancialPortfolio,
+  upsertFinancialPortfolioReports,
+  upsertPortfolio,
+  upsertMemberDividends,
   previewMemberCsvImport,
   commitMemberCsvImport,
   previewFinancialCsvImport,

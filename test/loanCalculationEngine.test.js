@@ -60,6 +60,20 @@ test('overpayment is rejected', () => {
   }), /exceeds outstanding balance/);
 });
 
+test('whole-shilling payoff can settle a cents balance from STK', () => {
+  const result = calculateLoanPaymentAllocation({
+    loan: { ...baseLoan, principalBalance: 100, accruedInterest: 0.25 },
+    amount: 101,
+    paymentDate: new Date('2026-01-01T00:00:00.000Z'),
+  });
+
+  assert.equal(result.paymentAmount, 100.25);
+  assert.equal(result.interestPaid, 0.25);
+  assert.equal(result.principalPaid, 100);
+  assert.equal(result.newOutstandingBalance, 0);
+  assert.equal(result.paidOff, true);
+});
+
 test('reducing balance interest accrues from current principal using cents', () => {
   const result = calculateLoanPaymentAllocation({
     loan: {

@@ -573,6 +573,7 @@ const createManualNotification = async (sender, payload = {}) => {
     sourceType: 'ManualNotification',
     sourceId: null,
     metadata: {
+      ...(payload.metadata && typeof payload.metadata === 'object' ? payload.metadata : {}),
       audience,
       recipientUserId,
       sentBy: sender.id,

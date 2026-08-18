@@ -93,6 +93,15 @@ const ensureTableColumns = async (sequelize, tableName, columns) => {
   }
 };
 
+const ensureIndex = async (sequelize, tableName, fields, name, unique = false) => {
+  const queryInterface = sequelize.getQueryInterface();
+  const indexes = await queryInterface.showIndex(tableName).catch(() => []);
+  if (indexes.some((index) => index.name === name)) return;
+  await queryInterface.addIndex(tableName, fields, { name, unique }).catch((error) => {
+    logger.warn('Unable to add index', { tableName, fields, name, unique, error: error.message });
+  });
+};
+
 const memberDocumentColumns = {
   nationalIdUrl: { type: DataTypes.TEXT, allowNull: true },
   nationalIdBackUrl: { type: DataTypes.TEXT, allowNull: true },
@@ -392,6 +401,43 @@ const ensureGroupProposalTables = async (sequelize) => {
   if (!loanColumns.proposalId) await queryInterface.addColumn('GroupLoans', 'proposalId', { type: DataTypes.UUID, allowNull: true, unique: true });
 };
 
+const ensureFinancialPortfolioTables = async (sequelize) => {
+  const queryInterface = sequelize.getQueryInterface();
+  const tables = await queryInterface.showAllTables();
+  const names = new Set(tables.map((table) => String(typeof table === 'object' ? table.tableName || table.name : table)));
+
+  if (!names.has('FinancialYearReports')) {
+    await queryInterface.createTable('FinancialYearReports', {
+      id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
+      year: { type: DataTypes.INTEGER, allowNull: false },
+      category: { type: DataTypes.STRING, allowNull: false },
+      amount: { type: DataTypes.DECIMAL(14, 2), allowNull: false, defaultValue: 0 },
+      percentage_used: { type: DataTypes.DECIMAL(6, 2), allowNull: false, defaultValue: 0 },
+      metadata: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} },
+      createdAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+      updatedAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+    });
+  }
+
+  if (!names.has('MemberDividends')) {
+    await queryInterface.createTable('MemberDividends', {
+      id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
+      user_id: { type: DataTypes.UUID, allowNull: false },
+      financial_year_id: { type: DataTypes.UUID, allowNull: false },
+      total_shares: { type: DataTypes.DECIMAL(14, 2), allowNull: false, defaultValue: 0 },
+      dividend_paid: { type: DataTypes.DECIMAL(14, 2), allowNull: false, defaultValue: 0 },
+      metadata: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} },
+      createdAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+      updatedAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+    });
+  }
+
+  await ensureIndex(sequelize, 'FinancialYearReports', ['year', 'category'], 'uniq_financial_year_report_category', true);
+  await ensureIndex(sequelize, 'FinancialYearReports', ['year'], 'idx_financial_year_reports_year');
+  await ensureIndex(sequelize, 'MemberDividends', ['user_id', 'financial_year_id'], 'uniq_member_dividend_year', true);
+  await ensureIndex(sequelize, 'MemberDividends', ['financial_year_id'], 'idx_member_dividends_year');
+};
+
 const runSchemaMigrations = async (sequelize) => {
   await ensureNotificationTable(sequelize);
   await ensureMemberExitRequestTable(sequelize);
@@ -399,6 +445,7 @@ const runSchemaMigrations = async (sequelize) => {
   await ensureShareCapitalFeatures(sequelize);
   await ensureBorrowingGroupTables(sequelize);
   await ensureGroupProposalTables(sequelize);
+  await ensureFinancialPortfolioTables(sequelize);
   await ensureUserProfileColumns(sequelize);
   await ensureTransactionTrackingColumns(sequelize);
   await ensureTableColumns(sequelize, 'Members', memberDocumentColumns);
