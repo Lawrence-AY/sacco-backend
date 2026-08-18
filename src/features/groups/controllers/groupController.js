@@ -10,8 +10,8 @@ const memberForUser = (userId) => db.Member.findOne({ where: { userId } });
 async function financialEligibility(memberId) {
   const [account, config, transactions, loans] = await Promise.all([
     db.ShareAccount.findOne({ where: { memberId } }), db.SystemConfig.findOne(),
-    db.Transaction.findAll({ where: { memberId, status: 'SUCCESS' } }),
-    db.Loan.findAll({ where: { memberId, status: { [Op.in]: ['APPROVED', 'ACTIVE'] } } }),
+    db.Transaction.findAll({ where: { memberId, status: 'SUCCESS' }, attributes: ['amount', 'paymentCategory', 'description', 'type', 'loanId'] }),
+    db.Loan.findAll({ where: { memberId, status: { [Op.in]: ['APPROVED', 'ACTIVE'] } }, attributes: ['id', 'amount'] }),
   ]);
   const accountCapital = Number(account?.shares || 0) * Number(account?.shareValue || 0);
   const paidCapital = transactions.reduce((sum, row) => String(row.paymentCategory || row.description || '').toLowerCase().includes('share') ? sum + Number(row.amount || 0) : sum, 0);
@@ -22,8 +22,11 @@ async function financialEligibility(memberId) {
   const outstandingLoans = loans.reduce((sum, loan) => sum + Math.max(Number(loan.amount || 0) - (repayments.get(loan.id) || 0), 0), 0);
   const minimumShareCapital = Number(config?.shareCapital || 25000);
   const shareCapital = Math.max(accountCapital, paidCapital);
-  const member = await db.Member.findByPk(memberId, { attributes: ['userId'] });
-  if (member?.userId) await db.User.update({ shareCapitalStatus: shareCapital >= minimumShareCapital ? 'COMPLETED' : 'INCOMPLETE' }, { where: { id: member.userId } });
+  const member = await db.Member.findByPk(memberId, { attributes: ['userId'], include: [{ model: db.User, attributes: ['shareCapitalStatus'] }] });
+  const shareCapitalStatus = shareCapital >= minimumShareCapital ? 'COMPLETED' : 'INCOMPLETE';
+  if (member?.userId && member.User?.shareCapitalStatus !== shareCapitalStatus) {
+    await db.User.update({ shareCapitalStatus }, { where: { id: member.userId } });
+  }
   return { eligible: shareCapital >= minimumShareCapital && outstandingLoans <= 0, shareCapital, minimumShareCapital, outstandingLoans };
 }
 
@@ -87,12 +90,23 @@ async function visibleGroup(groupId, memberId) {
   return { group, membership };
 }
 
+const getGroup = asyncHandler(async (req, res) => {
+  const member = await memberForUser(req.user.id);
+  if (!member) throw new NotFoundError('Member profile not found');
+  const { group } = await visibleGroup(req.params.groupId, member.id);
+  return ResponseHandler.success(res, serializeGroup(group, member.id), 'Group retrieved successfully');
+});
+
 const listGroups = asyncHandler(async (req, res) => {
   const member = await memberForUser(req.user.id);
   if (!member) return ResponseHandler.success(res, { eligibility: null, groups: [] });
+  const eligibilityPromise = financialEligibility(member.id);
   const memberships = await db.GroupMembership.findAll({ where: { memberId: member.id, status: { [Op.in]: ['INVITED', 'ACTIVE'] } }, attributes: ['groupId'] });
-  const groups = memberships.length ? await db.BorrowingGroup.findAll({ where: { id: { [Op.in]: memberships.map((item) => item.groupId) } }, include: groupInclude, order: [['updatedAt', 'DESC']] }) : [];
-  return ResponseHandler.success(res, { eligibility: await financialEligibility(member.id), groups: groups.map((group) => serializeGroup(group, member.id)) }, 'Groups retrieved successfully');
+  const groupsPromise = memberships.length
+    ? db.BorrowingGroup.findAll({ where: { id: { [Op.in]: memberships.map((item) => item.groupId) } }, include: groupSummaryInclude, order: [['updatedAt', 'DESC']] })
+    : Promise.resolve([]);
+  const [eligibility, groups] = await Promise.all([eligibilityPromise, groupsPromise]);
+  return ResponseHandler.success(res, { eligibility, groups: groups.map((group) => serializeGroup(group, member.id)) }, 'Groups retrieved successfully');
 });
 
 const createGroup = asyncHandler(async (req, res) => {

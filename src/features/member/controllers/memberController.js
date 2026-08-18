@@ -17,7 +17,7 @@ const { buildReportSections, formatMoney, reportNames } = require('../../../serv
 const shareCapitalTransferService = require('../../shares/services/shareCapitalTransferService');
 const memberNumberService = require('../services/memberNumberService');
 const { allocateMpesaRepayment } = require('../../loans/services/loanRepaymentService');
-const { calculateCurrentOutstandingBalance } = require('../../loans/services/loanCalculationEngine');
+const { calculateCurrentOutstandingBalance, calculateLoanBalanceQuote } = require('../../loans/services/loanCalculationEngine');
 const { isShareCapitalPayment, settleShareCapitalPayment } = require('../../shares/services/shareCapitalPaymentService');
 const { formatEAT } = require('../../../shared/utils/eatDateTime');
 const { getFirebaseDb, getFirebaseStorage } = require('../../../shared/config/firebase');
@@ -840,11 +840,17 @@ const getLoans = asyncHandler(async (req, res) => {
           attributes: ['id', 'name', 'fullName', 'email', 'phone'],
         }],
       }],
+    }, {
+      model: db.LoanTransaction,
+      as: 'loanTransactions',
+      separate: true,
+      order: [['createdAt', 'DESC']],
     }],
     order: [['createdAt', 'DESC']],
   });
   const formatted = loans.map((loan) => {
-    const outstandingBalance = calculateCurrentOutstandingBalance(loan);
+    const quote = calculateLoanBalanceQuote(loan);
+    const outstandingBalance = quote.outstandingBalance;
     return ({
     id: loan.id,
     memberId: loan.memberId,
@@ -852,6 +858,12 @@ const getLoans = asyncHandler(async (req, res) => {
     principal: loan.amount,
     principalBalance: Number(loan.principalBalance ?? loan.amount ?? 0),
     accruedInterest: Number(loan.accruedInterest || 0),
+    currentAccruedInterest: quote.accruedInterest,
+    accruedDays: quote.accruedDays,
+    remainingInstallments: quote.remainingInstallments,
+    scheduledPaymentAmount: quote.scheduledPaymentAmount,
+    daysPastDue: quote.daysPastDue,
+    amortizationMethod: quote.amortization,
     // Use the same current, reducing-balance quote shown by every member view.
     // Persisted accruedInterest remains untouched until a payment is posted.
     balance: outstandingBalance,
@@ -878,6 +890,32 @@ const getLoans = asyncHandler(async (req, res) => {
       memberNumber: guarantor.Member?.memberNumber || null,
       Member: guarantor.Member,
     })),
+    repayments: (loan.loanTransactions || []).map((repayment) => {
+      const metadata = repayment.metadata || {};
+      const paymentDate = new Date(repayment.createdAt);
+      const loanStart = new Date(loan.decidedAt || loan.createdAt);
+      const elapsedMonths = Math.max(0,
+        (paymentDate.getUTCFullYear() - loanStart.getUTCFullYear()) * 12
+        + paymentDate.getUTCMonth() - loanStart.getUTCMonth());
+      const durationRemaining = Number(metadata.remaining_installments
+        ?? Math.max(Number(loan.duration || 0) - elapsedMonths, 0));
+      const remainingInterest = Number(metadata.remaining_interest || 0);
+      const remainingPrincipal = Number(repayment.remainingPrincipal || 0);
+      return {
+        id: repayment.id,
+        ledgerTransactionId: repayment.ledgerTransactionId,
+        amountPaid: Number(repayment.amount || 0),
+        principalPaid: Number(repayment.principalPaid || 0),
+        interestPaid: Number(repayment.interestPaid || 0),
+        remainingPrincipal,
+        remainingInterest,
+        remainingAmount: Number(metadata.remaining_balance ?? (remainingPrincipal + remainingInterest)),
+        durationRemaining,
+        accruedDays: Number(repayment.accruedDays || 0),
+        reference: metadata.receipt || null,
+        paidAt: repayment.createdAt,
+      };
+    }),
     });
   });
 

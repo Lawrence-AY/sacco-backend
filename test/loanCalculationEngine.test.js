@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { calculateCurrentOutstandingBalance, calculateLoanPaymentAllocation } = require('../src/features/loans/services/loanCalculationEngine');
+const { calculateCurrentOutstandingBalance, calculateLoanBalanceQuote, calculateLoanPaymentAllocation, calculateScheduledInstallment } = require('../src/features/loans/services/loanCalculationEngine');
 
 const baseLoan = {
   amount: 1000,
@@ -134,6 +134,20 @@ test('interest after a principal payment is calculated from the reduced balance'
   assert.equal(payoff.interestPaid, 756);
   assert.equal(payoff.principalPaid, 81000);
   assert.equal(payoff.paidOff, true);
+});
+
+test('scheduled installment uses reducing-balance amortization', () => {
+  assert.equal(calculateScheduledInstallment({ principal: 100000, monthlyRatePercent: 1, installments: 12 }), 8884.88);
+  assert.equal(calculateScheduledInstallment({ principal: 12000, monthlyRatePercent: 0, installments: 12 }), 1000);
+});
+
+test('dashboard quote separates principal and current accrued interest in cents', () => {
+  const quote = calculateLoanBalanceQuote({ ...baseLoan, principalBalance: 800, accruedInterest: 5, duration: 12 }, new Date('2026-01-16T00:00:00.000Z'));
+  assert.equal(quote.principalBalance, 800);
+  assert.equal(quote.accruedInterest, 17);
+  assert.equal(quote.outstandingBalance, 817);
+  assert.equal(quote.accruedDays, 15);
+  assert.equal(quote.remainingInstallments, 12);
 });
 
 test('dashboard outstanding quote includes only interest accrued to the quote date', () => {
