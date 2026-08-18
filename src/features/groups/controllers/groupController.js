@@ -222,9 +222,17 @@ const allowedGovernancePayload = (payload = {}) => {
   if (payload.maxMembers !== undefined) settings.maxMembers = Math.min(Math.max(Number(payload.maxMembers) || 13, 3), 13);
   if (payload.collateralFactor !== undefined) settings.collateralFactor = Math.min(Math.max(Number(payload.collateralFactor) || 70, 1), 100);
   if (payload.reserveRatio !== undefined) settings.reserveRatio = Math.min(Math.max(Number(payload.reserveRatio) || 10, 0), 90);
+  if (payload.leaderMemberId !== undefined) settings.leaderMemberId = payload.leaderMemberId || null;
   if (payload.governanceNote !== undefined) settings.governanceNote = String(payload.governanceNote || '').trim().slice(0, 500);
   if (Object.keys(settings).length) next.governanceSettings = settings;
   return next;
+};
+
+const validateGovernanceLeader = async (groupId, payload, transaction) => {
+  const leaderMemberId = payload?.governanceSettings?.leaderMemberId;
+  if (!leaderMemberId) return;
+  const leaderMembership = await db.GroupMembership.findOne({ where: { groupId, memberId: leaderMemberId, status: 'ACTIVE' }, transaction });
+  if (!leaderMembership) throw new ValidationError('Selected group admin must be an active group member');
 };
 
 const applyGovernanceAction = async (group, action, transaction) => {
@@ -243,6 +251,7 @@ const proposeGovernanceAction = asyncHandler(async (req, res) => {
   if (membership.status !== 'ACTIVE') throw new ForbiddenError('Only active members can propose governance edits');
   const payload = allowedGovernancePayload(req.body || {});
   if (!Object.keys(payload).length) throw new ValidationError('Add at least one group setting to update');
+  await validateGovernanceLeader(group.id, payload);
   const action = await db.GroupGovernanceAction.create({
     groupId: group.id,
     proposedByMemberId: member.id,
@@ -267,6 +276,7 @@ const voteGovernanceAction = asyncHandler(async (req, res) => {
     const action = await db.GroupGovernanceAction.findOne({ where: { id: req.params.actionId, groupId: group.id }, transaction, lock: transaction.LOCK.UPDATE });
     if (!action) throw new NotFoundError('Governance action not found');
     if (action.status !== 'PENDING') throw new ValidationError(`This governance action is already ${action.status.toLowerCase()}`);
+    await validateGovernanceLeader(group.id, action.payload || {}, transaction);
     const votes = { ...(action.votes || {}), [member.id]: accept ? 'ACCEPTED' : 'REJECTED' };
     if (!accept) {
       await action.update({ votes, status: 'REJECTED' }, { transaction });
