@@ -1,6 +1,6 @@
 const db = require('../../../models');
 const eventBus = require('../../../services/realtime/eventBus');
-const { calculateLoanPaymentAllocation, fromCents, toCents } = require('./loanCalculationEngine');
+const { calculateLoanBalanceQuote, calculateLoanPaymentAllocation, fromCents, toCents } = require('./loanCalculationEngine');
 
 const addMonths = (value, months) => {
   const date = new Date(value);
@@ -12,11 +12,15 @@ const addMonths = (value, months) => {
   return date;
 };
 
-const getNextDueDate = (loan, paymentDate, paidOff) => {
+const getNextDueDate = (loan, paymentDate, allocation) => {
+  const { paidOff } = allocation;
   if (paidOff) return null;
-  const start = new Date(loan.decidedAt || loan.createdAt || paymentDate);
-  const elapsedMonths = Math.max(0, (paymentDate.getUTCFullYear() - start.getUTCFullYear()) * 12 + paymentDate.getUTCMonth() - start.getUTCMonth());
-  return addMonths(start, elapsedMonths + 1);
+  const currentDue = loan.nextPaymentDueAt ? new Date(loan.nextPaymentDueAt) : addMonths(new Date(loan.decidedAt || loan.createdAt || paymentDate), 1);
+  const scheduledInstallment = calculateLoanBalanceQuote(loan, paymentDate).scheduledPaymentAmount;
+  // Interest-only or undersized payments reduce the balance but do not satisfy
+  // the contractual installment, so the existing due date remains in force.
+  if (allocation.paymentAmount + 0.005 < scheduledInstallment) return currentDue;
+  return addMonths(currentDue, 1);
 };
 
 const assertLoanPayable = (loan) => {
@@ -78,7 +82,7 @@ const allocateLedgerRepayment = async ({
 }) => {
   const paymentDate = new Date();
   const allocation = calculateLoanPaymentAllocation({ loan, amount, paymentDate });
-  const nextPaymentDueAt = getNextDueDate(loan, paymentDate, allocation.paidOff);
+  const nextPaymentDueAt = getNextDueDate(loan, paymentDate, allocation);
 
   await ledger.update({
     status: 'SUCCESS',
@@ -109,6 +113,7 @@ const allocateLedgerRepayment = async ({
       principal_paid_cents: allocation.principalPaidCents,
       interest_paid_cents: allocation.interestPaidCents,
       outstanding_cents: allocation.newOutstandingCents,
+      remaining_installments: allocation.paidOff ? 0 : calculateLoanBalanceQuote(loan, paymentDate).remainingInstallments,
     },
   }, { transaction });
 

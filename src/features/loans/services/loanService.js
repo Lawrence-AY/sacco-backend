@@ -299,6 +299,23 @@ const updateLoanStatus = async (id, status, options = {}) => {
     });
     if (!loan) return null;
 
+    const currentStatus = String(loan.status || '').toUpperCase();
+    if (currentStatus === normalized) {
+      return { loanId: loan.id, changed: false };
+    }
+
+    const allowedDecisionStatuses = normalized === 'REJECTED'
+      ? ['PENDING', 'UNDER_REVIEW', 'PENDING_GUARANTORS']
+      : ['PENDING', 'UNDER_REVIEW'];
+    if (['APPROVED', 'REJECTED'].includes(normalized)
+      && !allowedDecisionStatuses.includes(currentStatus)) {
+      const error = new Error(`This loan can no longer be ${normalized.toLowerCase()}. Its current status is ${currentStatus}.`);
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const decisionTime = new Date();
+
     await loan.update({
       amount: options.approvedAmount ?? loan.amount,
       status: normalized,
@@ -306,29 +323,29 @@ const updateLoanStatus = async (id, status, options = {}) => {
       interestRate: options.interestRate ?? loan.interestRate,
       duration: options.duration ?? loan.duration,
       rejectionReason: normalized === 'REJECTED' ? options.reason || loan.rejectionReason : loan.rejectionReason,
-      decidedAt: ['APPROVED', 'REJECTED'].includes(normalized) ? new Date() : loan.decidedAt,
+      decidedAt: ['APPROVED', 'REJECTED'].includes(normalized) ? decisionTime : loan.decidedAt,
       principalBalance: normalized === 'APPROVED' ? Number(options.approvedAmount ?? loan.amount) : loan.principalBalance,
       accruedInterest: normalized === 'APPROVED' ? 0 : loan.accruedInterest,
-      lastInterestAccrualAt: normalized === 'APPROVED' ? new Date() : loan.lastInterestAccrualAt,
-      nextPaymentDueAt: normalized === 'APPROVED' ? addMonths(new Date(), 1) : loan.nextPaymentDueAt,
+      lastInterestAccrualAt: normalized === 'APPROVED' ? decisionTime : loan.lastInterestAccrualAt,
+      nextPaymentDueAt: normalized === 'APPROVED' ? addMonths(decisionTime, 1) : loan.nextPaymentDueAt,
     }, { transaction });
 
-    return loan.id;
+    return { loanId: loan.id, changed: true };
   });
 
   if (!result) return null;
 
-  if (['APPROVED', 'REJECTED'].includes(normalized)) {
-    await notificationService.createMemberLoanDecisionNotification(result, normalized, options)
+  if (result.changed && ['APPROVED', 'REJECTED'].includes(normalized)) {
+    await notificationService.createMemberLoanDecisionNotification(result.loanId, normalized, options)
       .catch((error) => logger.error('Loan decision notification failed', {
         module: 'loans',
-        loanId: result,
+        loanId: result.loanId,
         status: normalized,
         error: error.message,
       }));
   }
 
-  return getLoanById(result);
+  return getLoanById(result.loanId);
 };
 
 const disburseLoan = async (id, options = {}) => {

@@ -123,6 +123,39 @@ const calculateCurrentOutstandingBalance = (loan, asOf = new Date()) => {
   return fromCents(currentPrincipalCents + interestCents);
 };
 
+const monthsBetween = (start, end) => {
+  const first = new Date(start);
+  const last = new Date(end);
+  if (Number.isNaN(first.getTime()) || Number.isNaN(last.getTime())) return 0;
+  let months = (last.getUTCFullYear() - first.getUTCFullYear()) * 12 + last.getUTCMonth() - first.getUTCMonth();
+  if (last.getUTCDate() < first.getUTCDate()) months -= 1;
+  return Math.max(0, months);
+};
+
+const calculateScheduledInstallment = ({ principal, monthlyRatePercent = 0, installments = 1 }) => {
+  const principalCents = toCents(principal);
+  const periods = Math.max(1, Math.trunc(Number(installments || 1)));
+  const rate = Number(monthlyRatePercent || 0) / 100;
+  if (principalCents <= 0) return 0;
+  if (rate <= 0) return fromCents(Math.ceil(principalCents / periods));
+  return fromCents(Math.ceil((principalCents * rate) / (1 - Math.pow(1 + rate, -periods))));
+};
+
+const calculateLoanBalanceQuote = (loan, asOf = new Date()) => {
+  const originalPrincipalCents = toCents(loan.amount);
+  const principalCents = toCents(loan.principalBalance ?? loan.amount);
+  const accruedDays = daysBetween(loan.lastInterestAccrualAt || loan.decidedAt || loan.createdAt, asOf);
+  const amortization = normalizeAmortization(loan.amortizationMethod || loan.amortization || loan.metadata?.amortizationMethod);
+  const interestCents = calculateAccruedInterestCents({ originalPrincipalCents, currentPrincipalCents: principalCents, accruedInterestCents: toCents(loan.accruedInterest || 0), monthlyRatePercent: loan.interestRate, accruedDays, amortization });
+  const start = loan.decidedAt || loan.approvedAt || loan.createdAt || asOf;
+  const elapsedMonths = monthsBetween(start, asOf);
+  const remainingInstallments = Math.max(Number(loan.duration || 1) - elapsedMonths, 1);
+  const scheduledPaymentAmount = calculateScheduledInstallment({ principal: fromCents(principalCents), monthlyRatePercent: loan.interestRate, installments: remainingInstallments });
+  const nextDue = loan.nextPaymentDueAt ? new Date(loan.nextPaymentDueAt) : null;
+  const daysPastDue = nextDue && !Number.isNaN(nextDue.getTime()) ? Math.max(0, daysBetween(nextDue, asOf)) : 0;
+  return { amortization, accruedDays, principalBalance: fromCents(principalCents), accruedInterest: fromCents(interestCents), outstandingBalance: fromCents(principalCents + interestCents), remainingInstallments, scheduledPaymentAmount, nextPaymentDueAt: loan.nextPaymentDueAt || null, daysPastDue };
+};
+
 module.exports = {
   DEFAULT_AMORTIZATION,
   toCents,
@@ -130,5 +163,7 @@ module.exports = {
   normalizeAmortization,
   calculateAccruedInterestCents,
   calculateCurrentOutstandingBalance,
+  calculateLoanBalanceQuote,
+  calculateScheduledInstallment,
   calculateLoanPaymentAllocation,
 };

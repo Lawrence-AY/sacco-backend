@@ -7,6 +7,7 @@ router.use(protect, authorize(['MEMBER', 'ADMIN']));
 router.get('/', controller.listGroups);
 router.post('/', validate(schemas.groupCreate), controller.createGroup);
 router.get('/member-search', controller.searchEligibleMembers);
+router.get('/:groupId', controller.getGroup);
 router.post('/:groupId/invitations', validate(schemas.groupInvitation), controller.inviteMember);
 router.post('/:groupId/invitations/:membershipId/respond', validate(schemas.groupInvitationResponse), controller.respondInvitation);
 router.delete('/:groupId/members/:membershipId', controller.removeMember);
