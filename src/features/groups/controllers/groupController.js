@@ -33,10 +33,27 @@ const groupInclude = [
   { model: db.GroupMembership, as: 'memberships', include: [memberInclude] },
   { model: db.GroupLoan, as: 'loans' }, { model: db.GroupTransaction, as: 'transactions' },
   { model: db.GroupLoanProposal, as: 'proposals', include: [{ model: db.GroupLoanAllocation, as: 'allocations', include: [memberInclude] }] },
+  { model: db.GroupGovernanceAction, as: 'governanceActions', include: [{ model: db.Member, as: 'proposedBy', attributes: ['id', 'memberNumber'], include: [{ model: db.User, attributes: ['name'] }] }] },
 ];
 
 const reducingBalanceInterest = (principal, monthlyRate, months) => Math.round((principal * (monthlyRate / 100) * months * (months + 1) / (2 * months)) * 100) / 100;
 const notify = (userId, eventKey, title, body, sourceId, metadata = {}) => db.Notification.create({ userId, eventKey, title, body, category: 'group', severity: title.includes('Rejected') ? 'warning' : 'info', actionUrl: '/dashboard/user/groups', sourceType: 'GroupLoanProposal', sourceId, metadata });
+
+const isValidOddCircleSize = (count) => count >= 3 && count <= 13 && count % 2 === 1;
+
+async function groupBorrowingCap(groupId, transaction = null) {
+  const active = await db.GroupMembership.findAll({ where: { groupId, status: 'ACTIVE' }, transaction });
+  const memberIds = active.map((item) => item.memberId);
+  if (!memberIds.length) return { activeCount: 0, aggregateCollateral: 0, cap: 0 };
+  const [shares, savings] = await Promise.all([
+    db.ShareAccount.findAll({ where: { memberId: { [Op.in]: memberIds } }, transaction }),
+    db.SavingsAccount.findAll({ where: { memberId: { [Op.in]: memberIds } }, transaction }),
+  ]);
+  const shareValue = shares.reduce((sum, row) => sum + Number(row.shares || 0) * Number(row.shareValue || 0), 0);
+  const savingsValue = savings.reduce((sum, row) => sum + Number(row.balance || 0), 0);
+  const aggregateCollateral = shareValue + savingsValue;
+  return { activeCount: active.length, aggregateCollateral, cap: Math.round(aggregateCollateral * 0.7 * 100) / 100 };
+}
 
 const serializeGroup = (group, viewerMemberId) => {
   const row = group.toJSON();
@@ -53,7 +70,9 @@ const serializeGroup = (group, viewerMemberId) => {
       return { proposalId: proposal.id, loanId: loan?.id || null, memberId: allocation.memberId, memberName: allocation.member?.User?.name || allocation.member?.memberNumber, principalAmount: Number(allocation.principalAmount), interestAmount: Number(allocation.interestAmount), totalPayable, amountPaid, outstandingBalance: Math.max(totalPayable - amountPaid, 0), nextDueDate: amountPaid >= totalPayable ? null : nextDueDate, repaymentStatus: amountPaid >= totalPayable ? 'PAID' : allocation.repaymentStatus };
     });
   });
+  const activeCount = (row.memberships || []).filter((item) => item.status === 'ACTIVE').length;
   return { ...row, isCreator: row.creatorMemberId === viewerMemberId, viewerMembershipId: viewerMembership?.id || null, viewerStatus: uiMembershipStatus(viewerMembership?.status) || null,
+    governance: { settings: row.governanceSettings || {}, activeCount, validOddMembership: isValidOddCircleSize(activeCount), actions: (row.governanceActions || []).map((action) => ({ id: action.id, actionType: action.actionType, title: action.title, payload: action.payload || {}, votes: action.votes || {}, status: action.status, executedAt: action.executedAt, createdAt: action.createdAt, proposedBy: action.proposedBy?.User?.name || action.proposedBy?.memberNumber || null })) },
     repaymentProgress,
     members: (row.memberships || []).map((item) => ({ id: item.id, memberId: item.memberId, memberNumber: item.member?.memberNumber,
       name: item.member?.User?.name || item.member?.memberNumber, email: item.member?.User?.email, phone: item.member?.User?.phone,
@@ -101,18 +120,23 @@ const searchEligibleMembers = asyncHandler(async (req, res) => {
 
 const createProposal = asyncHandler(async (req, res) => {
   const creator = await memberForUser(req.user.id); const { group, membership } = await visibleGroup(req.params.groupId, creator?.id);
-  if (group.creatorMemberId !== creator?.id || membership.status !== 'ACTIVE') throw new ForbiddenError('Only the group creator can create a proposal');
+  if (membership.status !== 'ACTIVE') throw new ForbiddenError('Only active group members can create a proposal');
+  const cap = await groupBorrowingCap(group.id);
+  if (!isValidOddCircleSize(cap.activeCount)) throw new ValidationError('Group loans require an odd active membership of 3, 5, 7, 9, 11, or 13 members');
+  if (Number(req.body.totalAmount) > cap.cap) throw new ValidationError(`Loan request exceeds the group borrowing cap of KES ${cap.cap.toLocaleString()}`);
   const totalPercentage = req.body.allocations.reduce((sum, item) => sum + Number(item.allocatedPercentage), 0);
   if (Math.abs(totalPercentage - 100) > 0.0001) throw new ValidationError('Allocated percentages must equal exactly 100%');
   if (new Set(req.body.allocations.map((item) => item.memberId)).size !== req.body.allocations.length) throw new ValidationError('Each member can only be allocated once');
-  const active = await db.GroupMembership.findAll({ where: { groupId: group.id, memberId: { [Op.in]: req.body.allocations.map((item) => item.memberId) }, status: 'ACTIVE' }, include: [memberInclude] });
-  if (active.length !== req.body.allocations.length) throw new ValidationError('All allocated members must be active group members');
+  const active = await db.GroupMembership.findAll({ where: { groupId: group.id, status: 'ACTIVE' }, include: [memberInclude] });
+  const activeIds = new Set(active.map((item) => item.memberId));
+  if (!req.body.allocations.every((item) => activeIds.has(item.memberId))) throw new ValidationError('All allocated members must be active group members');
   const proposal = await db.sequelize.transaction(async (transaction) => {
     const created = await db.GroupLoanProposal.create({ groupId: group.id, createdBy: creator.id, totalAmount: req.body.totalAmount, durationMonths: req.body.durationMonths, interestRate: req.body.interestRate, status: 'PENDING_MEMBER_APPROVAL' }, { transaction });
-    await db.GroupLoanAllocation.bulkCreate(req.body.allocations.map((item) => { const principalAmount = Math.round(req.body.totalAmount * Number(item.allocatedPercentage)) / 100; return { proposalId: created.id, memberId: item.memberId, allocatedPercentage: item.allocatedPercentage, principalAmount, interestAmount: reducingBalanceInterest(principalAmount, req.body.interestRate, req.body.durationMonths) }; }), { transaction });
+    const allocationMap = new Map(req.body.allocations.map((item) => [item.memberId, Number(item.allocatedPercentage)]));
+    await db.GroupLoanAllocation.bulkCreate(active.map((item) => { const percentage = allocationMap.get(item.memberId) || 0; const principalAmount = Math.round(req.body.totalAmount * percentage) / 100; return { proposalId: created.id, memberId: item.memberId, allocatedPercentage: percentage, principalAmount, interestAmount: reducingBalanceInterest(principalAmount, req.body.interestRate, req.body.durationMonths) }; }), { transaction });
     return created;
   });
-  await Promise.all(active.map((row) => notify(row.member.userId, `group-proposal:${proposal.id}:${row.memberId}`, 'Group loan proposal', `${group.name} allocated part of a KES ${Number(req.body.totalAmount).toLocaleString()} loan to you. Review and vote.`, proposal.id, { groupId: group.id, actionRequired: true })));
+  await Promise.all(active.map((row) => notify(row.member.userId, `group-proposal:${proposal.id}:${row.memberId}`, 'Group loan proposal vote', `${group.name} requested KES ${Number(req.body.totalAmount).toLocaleString()}. Every active member must approve before disbursement.`, proposal.id, { groupId: group.id, actionRequired: true })));
   return ResponseHandler.created(res, proposal, 'Proposal sent for member approval');
 });
 
@@ -172,6 +196,74 @@ const disburseProposal = asyncHandler(async (req, res) => {
   });
   await Promise.all(proposal.allocations.map((item) => notify(item.member.userId, `group-proposal-disbursed:${proposal.id}:${item.memberId}`, 'Group loan disbursed', `Your principal allocation of KES ${Number(item.principalAmount).toLocaleString()} is confirmed.`, proposal.id, { groupId: proposal.groupId })));
   return ResponseHandler.success(res, proposal, 'Group loan disbursed');
+});
+
+const allowedGovernancePayload = (payload = {}) => {
+  const next = {};
+  if (payload.name !== undefined) next.name = String(payload.name || '').trim().slice(0, 120);
+  if (payload.description !== undefined) next.description = String(payload.description || '').trim().slice(0, 500);
+  const settings = {};
+  if (payload.maxMembers !== undefined) settings.maxMembers = Math.min(Math.max(Number(payload.maxMembers) || 13, 3), 13);
+  if (payload.collateralFactor !== undefined) settings.collateralFactor = Math.min(Math.max(Number(payload.collateralFactor) || 70, 1), 100);
+  if (payload.reserveRatio !== undefined) settings.reserveRatio = Math.min(Math.max(Number(payload.reserveRatio) || 10, 0), 90);
+  if (payload.governanceNote !== undefined) settings.governanceNote = String(payload.governanceNote || '').trim().slice(0, 500);
+  if (Object.keys(settings).length) next.governanceSettings = settings;
+  return next;
+};
+
+const applyGovernanceAction = async (group, action, transaction) => {
+  if (action.actionType !== 'SETTINGS_UPDATE') return;
+  const payload = allowedGovernancePayload(action.payload || {});
+  const update = {};
+  if (payload.name) update.name = payload.name;
+  if (payload.description !== undefined) update.description = payload.description;
+  if (payload.governanceSettings) update.governanceSettings = { ...(group.governanceSettings || {}), ...payload.governanceSettings };
+  if (Object.keys(update).length) await group.update(update, { transaction });
+};
+
+const proposeGovernanceAction = asyncHandler(async (req, res) => {
+  const member = await memberForUser(req.user.id);
+  const { group, membership } = await visibleGroup(req.params.groupId, member?.id);
+  if (membership.status !== 'ACTIVE') throw new ForbiddenError('Only active members can propose governance edits');
+  const payload = allowedGovernancePayload(req.body || {});
+  if (!Object.keys(payload).length) throw new ValidationError('Add at least one group setting to update');
+  const action = await db.GroupGovernanceAction.create({
+    groupId: group.id,
+    proposedByMemberId: member.id,
+    actionType: 'SETTINGS_UPDATE',
+    title: req.body.title || 'Group settings update',
+    payload,
+    votes: { [member.id]: 'ACCEPTED' },
+  });
+  const active = await db.GroupMembership.findAll({ where: { groupId: group.id, status: 'ACTIVE' }, include: [memberInclude] });
+  await Promise.allSettled(active.filter((row) => row.memberId !== member.id).map((row) => notify(row.member.userId, `group-governance:${action.id}:${row.memberId}`, 'Group governance vote', `${group.name} has a proposed settings update that needs your vote.`, action.id, { groupId: group.id, actionRequired: true, governanceActionId: action.id })));
+  return ResponseHandler.created(res, action, 'Governance edit proposed');
+});
+
+const voteGovernanceAction = asyncHandler(async (req, res) => {
+  const member = await memberForUser(req.user.id);
+  const accept = req.body.accept === true;
+  const result = await db.sequelize.transaction(async (transaction) => {
+    const group = await db.BorrowingGroup.findByPk(req.params.groupId, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!group) throw new NotFoundError('Group not found');
+    const membership = await db.GroupMembership.findOne({ where: { groupId: group.id, memberId: member?.id, status: 'ACTIVE' }, transaction });
+    if (!membership) throw new ForbiddenError('Only active members can vote on governance edits');
+    const action = await db.GroupGovernanceAction.findOne({ where: { id: req.params.actionId, groupId: group.id }, transaction, lock: transaction.LOCK.UPDATE });
+    if (!action) throw new NotFoundError('Governance action not found');
+    if (action.status !== 'PENDING') throw new ValidationError(`This governance action is already ${action.status.toLowerCase()}`);
+    const votes = { ...(action.votes || {}), [member.id]: accept ? 'ACCEPTED' : 'REJECTED' };
+    if (!accept) {
+      await action.update({ votes, status: 'REJECTED' }, { transaction });
+      return { action, status: 'REJECTED' };
+    }
+    const activeCount = await db.GroupMembership.count({ where: { groupId: group.id, status: 'ACTIVE' }, transaction });
+    const approvals = Object.values(votes).filter((vote) => vote === 'ACCEPTED').length;
+    const status = approvals >= activeCount ? 'APPROVED' : 'PENDING';
+    await action.update({ votes, status, executedAt: status === 'APPROVED' ? new Date() : action.executedAt }, { transaction });
+    if (status === 'APPROVED') await applyGovernanceAction(group, action, transaction);
+    return { action, status };
+  });
+  return ResponseHandler.success(res, { id: result.action.id, status: result.status }, result.status === 'APPROVED' ? 'Governance edit approved and applied' : 'Governance vote recorded');
 });
 
 const inviteMember = asyncHandler(async (req, res) => {
@@ -255,4 +347,4 @@ const repay = asyncHandler(async (req, res) => {
   return ResponseHandler.success(res, result, 'Group loan repayment recorded');
 });
 
-module.exports = { listGroups, createGroup, searchEligibleMembers, inviteMember, respondInvitation, removeMember, leaveGroup, borrow, repay, createProposal, voteProposal, disburseProposal };
+module.exports = { listGroups, createGroup, searchEligibleMembers, inviteMember, respondInvitation, removeMember, leaveGroup, borrow, repay, createProposal, voteProposal, disburseProposal, proposeGovernanceAction, voteGovernanceAction };

@@ -883,6 +883,7 @@ const getGroupBorrowingOverview = asyncHandler(async (req, res) => {
       { model: db.GroupLoan, as: 'loans' },
       { model: db.GroupTransaction, as: 'transactions' },
       { model: db.GroupLoanProposal, as: 'proposals', include: [{ model: db.GroupLoanAllocation, as: 'allocations' }] },
+      { model: db.GroupGovernanceAction, as: 'governanceActions', include: [{ model: db.Member, as: 'proposedBy', attributes: ['id', 'memberNumber'], include: [{ model: db.User, attributes: ['name'] }] }] },
     ],
     order: [['updatedAt', 'DESC']],
   });
@@ -900,6 +901,8 @@ const getGroupBorrowingOverview = asyncHandler(async (req, res) => {
     });
     return {
       id: group.id, name: group.name, description: group.description, status: group.status, creatorMemberId: group.creatorMemberId, createdAt: group.createdAt,
+      governanceSettings: group.governanceSettings || {},
+      governanceActions: (group.governanceActions || []).map((action) => ({ id: action.id, title: action.title, actionType: action.actionType, payload: action.payload || {}, votes: action.votes || {}, status: action.status, executedAt: action.executedAt, createdAt: action.createdAt, proposedBy: action.proposedBy?.User?.name || action.proposedBy?.memberNumber || null })),
       members: group.memberships.map((membership) => ({ membershipId: membership.id, memberId: membership.memberId, memberNumber: membership.member?.memberNumber, name: membership.member?.User?.name || membership.member?.memberNumber, email: membership.member?.User?.email, phone: membership.member?.User?.phone, role: membership.role, status: membership.status, joinedAt: membership.respondedAt || membership.createdAt })),
       loans,
       proposals: group.proposals.map((proposal) => ({ ...proposal, totalAmount: Number(proposal.totalAmount), interestRate: Number(proposal.interestRate), scheduledInterest: proposal.allocations.reduce((sum, row) => sum + Number(row.interestAmount || 0), 0), allocationCount: proposal.allocations.length })),

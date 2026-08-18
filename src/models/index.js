@@ -29,6 +29,7 @@ const GroupMembership = require('./groupMembership.model');
 const GroupLoan = require('./groupLoan.model');
 const GroupLoanProposal = require('./groupLoanProposal.model');
 const GroupLoanAllocation = require('./groupLoanAllocation.model');
+const GroupGovernanceAction = require('./groupGovernanceAction.model');
 const GroupTransaction = require('./groupTransaction.model');
 const LoanTransaction = require('./loanTransaction.model');
 const FinancialLedgerEntry = require('./financialLedgerEntry.model');
@@ -121,6 +122,10 @@ Member.hasMany(GroupLoanAllocation, { foreignKey: 'memberId', as: 'groupLoanAllo
 GroupLoanAllocation.belongsTo(Member, { foreignKey: 'memberId', as: 'member' });
 BorrowingGroup.hasMany(GroupTransaction, { foreignKey: 'groupId', as: 'transactions' });
 GroupTransaction.belongsTo(BorrowingGroup, { foreignKey: 'groupId', as: 'group' });
+BorrowingGroup.hasMany(GroupGovernanceAction, { foreignKey: 'groupId', as: 'governanceActions' });
+GroupGovernanceAction.belongsTo(BorrowingGroup, { foreignKey: 'groupId', as: 'group' });
+Member.hasMany(GroupGovernanceAction, { foreignKey: 'proposedByMemberId', as: 'proposedGroupGovernanceActions' });
+GroupGovernanceAction.belongsTo(Member, { foreignKey: 'proposedByMemberId', as: 'proposedBy' });
 GroupLoan.hasMany(GroupTransaction, { foreignKey: 'loanId', as: 'transactions' });
 GroupTransaction.belongsTo(GroupLoan, { foreignKey: 'loanId', as: 'loan' });
 Loan.hasMany(LoanTransaction, { foreignKey: 'loanId', as: 'loanTransactions' });
@@ -168,6 +173,7 @@ const db = {
   GroupLoan,
   GroupLoanProposal,
   GroupLoanAllocation,
+  GroupGovernanceAction,
   GroupTransaction,
   LoanTransaction,
   FinancialLedgerEntry,
