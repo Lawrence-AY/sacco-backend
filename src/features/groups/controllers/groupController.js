@@ -43,6 +43,7 @@ const reducingBalanceInterest = (principal, monthlyRate, months) => Math.round((
 const notify = (userId, eventKey, title, body, sourceId, metadata = {}) => db.Notification.create({ userId, eventKey, title, body, category: 'group', severity: title.includes('Rejected') ? 'warning' : 'info', actionUrl: '/dashboard/user/groups', sourceType: 'GroupLoanProposal', sourceId, metadata });
 
 const isValidOddCircleSize = (count) => count >= 3 && count <= 13 && count % 2 === 1;
+const canManageGroupBorrowing = (group, memberId) => group?.creatorMemberId === memberId || group?.governanceSettings?.leaderMemberId === memberId;
 
 async function groupBorrowingCap(groupId, transaction = null) {
   const active = await db.GroupMembership.findAll({ where: { groupId, status: 'ACTIVE' }, transaction });
@@ -103,7 +104,7 @@ const listGroups = asyncHandler(async (req, res) => {
   const eligibilityPromise = financialEligibility(member.id);
   const memberships = await db.GroupMembership.findAll({ where: { memberId: member.id, status: { [Op.in]: ['INVITED', 'ACTIVE'] } }, attributes: ['groupId'] });
   const groupsPromise = memberships.length
-    ? db.BorrowingGroup.findAll({ where: { id: { [Op.in]: memberships.map((item) => item.groupId) } }, include: groupSummaryInclude, order: [['updatedAt', 'DESC']] })
+    ? db.BorrowingGroup.findAll({ where: { id: { [Op.in]: memberships.map((item) => item.groupId) } }, include: groupInclude, order: [['updatedAt', 'DESC']] })
     : Promise.resolve([]);
   const [eligibility, groups] = await Promise.all([eligibilityPromise, groupsPromise]);
   return ResponseHandler.success(res, { eligibility, groups: groups.map((group) => serializeGroup(group, member.id)) }, 'Groups retrieved successfully');
@@ -135,6 +136,7 @@ const searchEligibleMembers = asyncHandler(async (req, res) => {
 const createProposal = asyncHandler(async (req, res) => {
   const creator = await memberForUser(req.user.id); const { group, membership } = await visibleGroup(req.params.groupId, creator?.id);
   if (membership.status !== 'ACTIVE') throw new ForbiddenError('Only active group members can create a proposal');
+  if (!canManageGroupBorrowing(group, creator.id)) throw new ForbiddenError('Only the group admin or voted leader can submit group loan proposals');
   const cap = await groupBorrowingCap(group.id);
   if (!isValidOddCircleSize(cap.activeCount)) throw new ValidationError('Group loans require an odd active membership of 3, 5, 7, 9, 11, or 13 members');
   if (Number(req.body.totalAmount) > cap.cap) throw new ValidationError(`Loan request exceeds the group borrowing cap of KES ${cap.cap.toLocaleString()}`);
@@ -323,7 +325,8 @@ const leaveGroup = asyncHandler(async (req, res) => {
 
 const borrow = asyncHandler(async (req, res) => {
   const member = await memberForUser(req.user.id); const { group, membership } = await visibleGroup(req.params.groupId, member?.id);
-  if (group.creatorMemberId !== member.id || membership.status !== 'ACTIVE') throw new ForbiddenError('Only the group creator can submit a group borrowing request');
+  if (membership.status !== 'ACTIVE') throw new ForbiddenError('Only active group members can submit a group borrowing request');
+  if (!canManageGroupBorrowing(group, member.id)) throw new ForbiddenError('Only the group admin or voted leader can submit group borrowing requests');
   if (!(await financialEligibility(member.id)).eligible) throw new ForbiddenError('Complete minimum share capital and clear personal outstanding loans before group borrowing');
   const amount = Number(req.body.amount); const months = Number(req.body.paymentPeriodMonths); const rate = Number(req.body.interestRate ?? 1);
   const totalDue = Math.round((amount + amount * rate / 100 * months) * 100) / 100;
@@ -361,4 +364,4 @@ const repay = asyncHandler(async (req, res) => {
   return ResponseHandler.success(res, result, 'Group loan repayment recorded');
 });
 
-module.exports = { listGroups, createGroup, searchEligibleMembers, inviteMember, respondInvitation, removeMember, leaveGroup, borrow, repay, createProposal, voteProposal, disburseProposal, proposeGovernanceAction, voteGovernanceAction };
+module.exports = { getGroup, listGroups, createGroup, searchEligibleMembers, inviteMember, respondInvitation, removeMember, leaveGroup, borrow, repay, createProposal, voteProposal, disburseProposal, proposeGovernanceAction, voteGovernanceAction };
