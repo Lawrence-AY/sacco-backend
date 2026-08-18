@@ -143,8 +143,17 @@ const mapFinancialImportRow = (row) => {
       loanRepayment: toNumber(pick(row, ['loanRepayment', 'repayments'])),
       interest: toNumber(pick(row, ['interest', 'interestEarned'])),
       employerContribution: toNumber(pick(row, ['employerContribution', 'employerContrib'])),
+      totalShares: toNumber(pick(row, ['totalShares', 'sharesHeld', 'dividendShares'])),
+      dividendPaid: toNumber(pick(row, ['dividendPaid', 'dividend', 'dividends', 'dividendAmount', 'annualDividend'])),
+      financialYear: toNumber(pick(row, ['financialYear', 'year', 'dividendYear'])),
     },
   };
+};
+
+const isDividendImportRow = (row) => {
+  const data = row?.data || {};
+  const sheetName = String(data.sheetName || '').toLowerCase();
+  return sheetName.includes('dividend') || Number(data.dividendPaid || 0) > 0 || Number(data.totalShares || 0) > 0;
 };
 
 const formatMember = (member) => {
@@ -623,6 +632,48 @@ const upsertMemberDividends = asyncHandler(async (req, res) => {
   return ResponseHandler.success(res, { year, imported, skipped }, 'Member dividends saved', 200);
 });
 
+const saveDividendImportRows = async ({ rows, year }) => {
+  const imported = [];
+  const skipped = [];
+  const targetYear = normalizePortfolioYear(year || rows.find((row) => row.data?.financialYear)?.data?.financialYear);
+
+  await db.sequelize.transaction(async (transaction) => {
+    const anchor = await getPortfolioYearAnchor(targetYear, transaction);
+    for (const row of rows) {
+      const data = row.data || {};
+      let member = null;
+      if (data.memberNumber) member = await db.Member.findOne({ where: { memberNumber: data.memberNumber }, include: [{ model: db.User }], transaction });
+      if (!member && data.email) member = await db.Member.findOne({ include: [{ model: db.User, where: { email: data.email } }], transaction });
+      if (!member && data.staffId) member = await db.Member.findOne({ include: [{ model: db.User, where: { staffId: data.staffId } }], transaction });
+      if (!member?.User) {
+        skipped.push({ rowNumber: row.rowNumber, sheetName: data.sheetName, reason: 'Member not found', key: data.memberNumber || data.email || data.staffId });
+        continue;
+      }
+
+      const totalShares = Number(data.totalShares || data.shareCapital || 0);
+      const dividendPaid = Number(data.dividendPaid || 0);
+      if (totalShares < 0 || dividendPaid < 0 || (!totalShares && !dividendPaid)) {
+        skipped.push({ rowNumber: row.rowNumber, sheetName: data.sheetName, reason: 'Missing dividend shares/amount', key: member.memberNumber });
+        continue;
+      }
+
+      const [dividend] = await db.MemberDividend.findOrCreate({
+        where: { userId: member.User.id, financialYearId: anchor.id },
+        defaults: { totalShares, dividendPaid, metadata: { memberNumber: member.memberNumber, sourceSheet: data.sheetName || null, importedBy: 'financial_csv' } },
+        transaction,
+      });
+      await dividend.update({
+        totalShares,
+        dividendPaid,
+        metadata: { ...(dividend.metadata || {}), memberNumber: member.memberNumber, sourceSheet: data.sheetName || null, importedBy: 'financial_csv' },
+      }, { transaction });
+      imported.push({ rowNumber: row.rowNumber, sheetName: data.sheetName, userId: member.User.id, memberNumber: member.memberNumber, totalShares, dividendPaid });
+    }
+  });
+
+  return { year: targetYear, imported, skipped };
+};
+
 const previewMemberCsvImport = asyncHandler(async (req, res) => {
   const rows = parseCsv(req.body?.csv);
   if (!rows.length) throw new ValidationError('CSV file is empty or missing headers');
@@ -699,20 +750,28 @@ const previewFinancialCsvImport = asyncHandler(async (req, res) => {
   const rows = parseCsv(req.body?.csv);
   if (!rows.length) throw new ValidationError('CSV file is empty or missing headers');
   const preview = rows.map(mapFinancialImportRow);
+  const dividendRows = preview.filter(isDividendImportRow);
   return ResponseHandler.success(res, {
     rows: preview,
+    dividendRows,
     readyCount: preview.filter((row) => row.ready).length,
+    dividendReadyCount: dividendRows.filter((row) => row.ready).length,
     errorCount: preview.filter((row) => !row.ready).length,
   }, 'Financial import preview generated', 200);
 });
 
 const commitFinancialCsvImport = asyncHandler(async (req, res) => {
-  const rows = parseCsv(req.body?.csv).map(mapFinancialImportRow).filter((row) => row.ready);
+  const mappedRows = parseCsv(req.body?.csv).map(mapFinancialImportRow);
+  const rows = mappedRows.filter((row) => row.ready);
   if (!rows.length) throw new ValidationError('No valid financial rows to import');
   const imported = [];
   const skipped = [];
+  const dividendResult = await saveDividendImportRows({ rows: rows.filter(isDividendImportRow), year: req.body?.year });
 
   for (const row of rows) {
+    if (isDividendImportRow(row) && !Number(row.data.savings || 0) && !Number(row.data.shareCapital || 0) && !Number(row.data.loans || 0) && !Number(row.data.loanRepayment || 0) && !Number(row.data.interest || 0) && !Number(row.data.employerContribution || 0)) {
+      continue;
+    }
     const { data } = row;
     let member = null;
     if (data.memberNumber) {
@@ -774,7 +833,7 @@ const commitFinancialCsvImport = asyncHandler(async (req, res) => {
     });
     imported.push({ rowNumber: row.rowNumber, sheetName: data.sheetName, memberId: member.id, memberNumber: member.memberNumber });
   }
-  return ResponseHandler.success(res, { imported, skipped }, 'Financial records imported successfully', 201);
+  return ResponseHandler.success(res, { imported, skipped, dividends: dividendResult }, 'Financial records imported successfully', 201);
 });
 
 module.exports = {
