@@ -323,7 +323,7 @@ const leaveGroup = asyncHandler(async (req, res) => {
 
 const borrow = asyncHandler(async (req, res) => {
   const member = await memberForUser(req.user.id); const { group, membership } = await visibleGroup(req.params.groupId, member?.id);
-  if (group.creatorMemberId !== member.id || membership.status !== 'ACTIVE') throw new ForbiddenError('Only the group creator can submit a group borrowing request');
+  if (membership.status !== 'ACTIVE') throw new ForbiddenError('Only active group members can submit a group borrowing request');
   if (!(await financialEligibility(member.id)).eligible) throw new ForbiddenError('Complete minimum share capital and clear personal outstanding loans before group borrowing');
   const amount = Number(req.body.amount); const months = Number(req.body.paymentPeriodMonths); const rate = Number(req.body.interestRate ?? 1);
   const totalDue = Math.round((amount + amount * rate / 100 * months) * 100) / 100;
