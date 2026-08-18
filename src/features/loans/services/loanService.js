@@ -236,24 +236,30 @@ const createLoan = async (data) => {
     };
   });
 
-  if (result.emergency) {
-    if (result.risk?.eligible) {
-      await notificationService.createFinanceEmergencyAutoApprovalNotifications(result.loanId, {
-        riskChecks: result.risk.checks,
-        disbursementDeadline: result.disbursementDeadline,
-      });
-      await notificationService.createMemberLoanDecisionNotification(result.loanId, 'APPROVED', { skipEmail: true });
-    } else {
-      await notificationService.createMemberLoanDecisionNotification(result.loanId, 'REJECTED', {
-        reason: 'Automated emergency eligibility checks failed.',
-      });
-    }
-  }
   const createdLoan = await getLoanById(result.loanId);
-  if (!result.emergency && createdLoan?.Guarantors?.length) {
-    await notificationService.createGuarantorRequestNotifications(result.loanId);
-  } else if (!result.emergency) {
-    await notificationService.createFinanceLoanRequestNotifications(result.loanId);
+  try {
+    if (result.emergency) {
+      if (result.risk?.eligible) {
+        await notificationService.createFinanceEmergencyAutoApprovalNotifications(result.loanId, {
+          riskChecks: result.risk.checks,
+          disbursementDeadline: result.disbursementDeadline,
+        });
+        await notificationService.createMemberLoanDecisionNotification(result.loanId, 'APPROVED', { skipEmail: true });
+      } else {
+        await notificationService.createMemberLoanDecisionNotification(result.loanId, 'REJECTED', {
+          reason: 'Automated emergency eligibility checks failed.',
+        });
+      }
+    } else if (createdLoan?.Guarantors?.length) {
+      await notificationService.createGuarantorRequestNotifications(result.loanId);
+    } else {
+      await notificationService.createFinanceLoanRequestNotifications(result.loanId);
+    }
+  } catch (error) {
+    logger.error('Loan request saved but notification side-effect failed', {
+      loanId: result.loanId,
+      error: error.message,
+    });
   }
 
   return {

@@ -32,6 +32,8 @@ const GroupLoanAllocation = require('./groupLoanAllocation.model');
 const GroupTransaction = require('./groupTransaction.model');
 const LoanTransaction = require('./loanTransaction.model');
 const FinancialLedgerEntry = require('./financialLedgerEntry.model');
+const FinancialYearReport = require('./financialYearReport.model');
+const MemberDividend = require('./memberDividend.model');
 
 const sequelize = require('../shared/config/db');
 
@@ -127,6 +129,10 @@ Member.hasMany(LoanTransaction, { foreignKey: 'memberId' });
 LoanTransaction.belongsTo(Member, { foreignKey: 'memberId' });
 Transaction.hasMany(FinancialLedgerEntry, { foreignKey: 'transactionId', as: 'ledgerEntries' });
 FinancialLedgerEntry.belongsTo(Transaction, { foreignKey: 'transactionId' });
+User.hasMany(MemberDividend, { foreignKey: 'userId' });
+MemberDividend.belongsTo(User, { foreignKey: 'userId' });
+FinancialYearReport.hasMany(MemberDividend, { foreignKey: 'financialYearId', as: 'memberDividends' });
+MemberDividend.belongsTo(FinancialYearReport, { foreignKey: 'financialYearId', as: 'financialYear' });
 
 const db = {
   sequelize,
@@ -164,7 +170,9 @@ const db = {
   GroupLoanAllocation,
   GroupTransaction,
   LoanTransaction,
-  FinancialLedgerEntry
+  FinancialLedgerEntry,
+  FinancialYearReport,
+  MemberDividend
 };
 
 module.exports = db;

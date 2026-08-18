@@ -55,6 +55,17 @@ const getBackendCallbackUrl = (req) => {
   return `${baseUrl}/api/mpesa/callback`;
 };
 
+const normalizeMpesaPhone = (value) => {
+  const digits = String(value || '').replace(/\D/g, '');
+  if (/^07\d{8}$/.test(digits)) return `254${digits.slice(1)}`;
+  if (/^7\d{8}$/.test(digits)) return `254${digits}`;
+  if (/^2547\d{8}$/.test(digits)) return digits;
+  return digits;
+};
+
+const shouldUseLocalStkFallback = () => process.env.NODE_ENV !== 'production'
+  && process.env.MPESA_STK_ALLOW_LOCAL_FALLBACK !== 'false';
+
 const findMemberByUserId = async (userId) => {
   return db.Member.findOne({ where: { userId } });
 };
@@ -1080,6 +1091,64 @@ const getGuarantees = asyncHandler(async (req, res) => {
   return ResponseHandler.success(res, formatted, 'Guarantees retrieved successfully', 200);
 });
 
+const serializeFinancialReportRow = (row) => ({
+  id: row.id,
+  year: row.year,
+  category: row.category,
+  amount: Number(row.amount || 0),
+  percentageUsed: Number(row.percentageUsed || 0),
+  metadata: row.metadata || {},
+});
+
+const getFinancialPortfolio = asyncHandler(async (req, res) => {
+  const year = Number(req.query.year || new Date().getFullYear() - 1);
+  if (!Number.isInteger(year) || year < 2000 || year > new Date().getFullYear() + 1) {
+    throw new ValidationError('Enter a valid financial year');
+  }
+
+  const reports = await db.FinancialYearReport.findAll({
+    where: { year, category: { [Op.ne]: '__YEAR__' } },
+    order: [['category', 'ASC']],
+  });
+  const anchor = await db.FinancialYearReport.findOne({ where: { year, category: '__YEAR__' } });
+  const dividend = anchor ? await db.MemberDividend.findOne({
+    where: { userId: req.user.id, financialYearId: anchor.id },
+  }) : null;
+  const member = await findMemberByUserId(req.user.id);
+  const shareAccount = member ? await db.ShareAccount.findOne({ where: { memberId: member.id } }) : null;
+
+  const metrics = anchor?.metadata?.metrics || {};
+  return ResponseHandler.success(res, {
+    year,
+    portfolio: {
+      id: anchor?.id || null,
+      year,
+      metrics: {
+        totalAmount: Number(metrics.totalAmount || 0),
+        interestEarned: Number(metrics.interestEarned || 0),
+        investments: Number(metrics.investments || 0),
+        memberGrowthRate: Number(metrics.memberGrowthRate || 0),
+      },
+      chartData: Array.isArray(anchor?.metadata?.chartData) ? anchor.metadata.chartData : [],
+      imageUrl: anchor?.metadata?.imageUrl || '',
+      bannerUrl: anchor?.metadata?.bannerUrl || anchor?.metadata?.imageUrl || '',
+      updatedAt: anchor?.updatedAt || null,
+    },
+    reports: reports.map(serializeFinancialReportRow),
+    investmentCategories: reports.map(serializeFinancialReportRow),
+    dividend: dividend ? {
+      id: dividend.id,
+      totalShares: Number(dividend.totalShares || 0),
+      dividendPaid: Number(dividend.dividendPaid || 0),
+      updatedAt: dividend.updatedAt,
+    } : {
+      totalShares: Number(shareAccount?.shares || 0),
+      dividendPaid: 0,
+      updatedAt: null,
+    },
+  }, 'Financial portfolio retrieved', 200);
+});
+
 const searchGuarantors = asyncHandler(async (req, res) => {
   const term = String(req.query.q || '').trim();
   if (term.length < 2) {
@@ -1234,14 +1303,11 @@ const initiateLoanRepaymentStk = asyncHandler(async (req, res) => {
   if (loan.memberId !== member.id) throw new ForbiddenError('You do not own this loan');
   if (!['ACTIVE', 'APPROVED', 'DISBURSED'].includes(String(loan.status).toUpperCase())) throw new ValidationError('Loan is not eligible for repayment');
   const amount = Number(req.body.amount);
-  const phone = String(req.body.phone || '').replace(/\s+/g, '');
-  const principal = Number(loan.principalBalance ?? loan.amount ?? 0);
-  const accrualStart = new Date(loan.lastInterestAccrualAt || loan.decidedAt || loan.createdAt);
-  const accruedDays = Math.max(0, Math.floor((Date.now() - accrualStart.getTime()) / 86400000));
-  const liveInterest = Number(loan.accruedInterest || 0) + principal * (Number(loan.interestRate || 0) / 100 / 30) * accruedDays;
-  const outstanding = principal + liveInterest;
-  if (!Number.isInteger(amount) || amount <= 0 || amount > outstanding) throw new ValidationError(`Enter a whole-shilling amount between KES 1 and KES ${outstanding.toFixed(2)}`);
-  if (!/^(?:254|0)?7\d{8}$/.test(phone)) throw new ValidationError('Enter a valid Kenyan M-Pesa phone number');
+  const phone = normalizeMpesaPhone(req.body.phone);
+  const outstanding = calculateCurrentOutstandingBalance(loan);
+  const maxStkAmount = Math.ceil(outstanding);
+  if (!Number.isInteger(amount) || amount <= 0 || amount > maxStkAmount) throw new ValidationError(`Enter a whole-shilling amount between KES 1 and KES ${maxStkAmount}`);
+  if (!/^2547\d{8}$/.test(phone)) throw new ValidationError('Enter a valid Kenyan M-Pesa phone number');
 
   const internalReference = `LOAN-${loan.id}-${Date.now()}`;
   if (!member.memberNumber) throw new ValidationError('Your member number is required before an M-Pesa loan repayment can be initiated');
@@ -1276,11 +1342,43 @@ const initiateLoanRepaymentStk = asyncHandler(async (req, res) => {
       payload = { message: text || 'M-Pesa returned an invalid response' };
     }
     const checkoutRequestId = payload.checkoutRequestId || payload.CheckoutRequestID;
+    if (!upstream.ok || !checkoutRequestId) {
+      logger.warn('Loan repayment STK upstream failed', {
+        module: 'member',
+        status: upstream.status,
+        loanId: loan.id,
+        transactionId: ledger.id,
+        payload,
+      });
+    }
     if (!upstream.ok || !checkoutRequestId) throw new Error(payload.message || payload.error || 'M-Pesa did not return a checkout request ID');
     await ledger.update({ checkoutRequestId, merchantRequestId: payload.merchantRequestId || payload.MerchantRequestID || null, reference: checkoutRequestId });
     return ResponseHandler.success(res, { transactionId: ledger.id, checkoutRequestId, merchantRequestId: ledger.merchantRequestId, status: 'PENDING' }, 'STK Push Sent!', 200);
   } catch (error) {
     const timedOut = error.name === 'TimeoutError' || error.name === 'AbortError';
+    if (shouldUseLocalStkFallback()) {
+      const checkoutRequestId = `LOCAL-STK-${Date.now()}`;
+      await ledger.update({
+        status: 'PENDING',
+        checkoutRequestId,
+        merchantRequestId: `LOCAL-${ledger.id}`,
+        reference: checkoutRequestId,
+        description: `Local pending STK fallback: ${error.message}`,
+      });
+      logger.warn('Using local STK fallback for loan repayment', {
+        module: 'member',
+        loanId: loan.id,
+        transactionId: ledger.id,
+        error: error.message,
+      });
+      return ResponseHandler.success(res, {
+        transactionId: ledger.id,
+        checkoutRequestId,
+        merchantRequestId: ledger.merchantRequestId,
+        status: 'PENDING',
+        fallback: true,
+      }, 'STK request recorded. M-Pesa worker is unavailable locally; complete via Paybill or retry when STK is online.', 200);
+    }
     await ledger.update({
       status: timedOut ? 'PENDING' : 'FAILED',
       description: timedOut
@@ -1352,26 +1450,42 @@ const depositSavings = asyncHandler(async (req, res) => {
     throw new ValidationError('Deposit amount is required');
   }
 
-  const transaction = await db.Transaction.create({
-    memberId: member.id,
-    type: 'DEPOSIT',
-    amount,
-    method: req.body.method || 'MANUAL',
-    status: 'SUCCESS',
-    reference: req.body.reference || `DEP-${Date.now()}`
+  const result = await db.sequelize.transaction(async (dbTransaction) => {
+    const [savingsAccount] = await db.SavingsAccount.findOrCreate({
+      where: { memberId: member.id },
+      defaults: { balance: 0 },
+      transaction: dbTransaction,
+    });
+    const transaction = await db.Transaction.create({
+      memberId: member.id,
+      type: 'DEPOSIT',
+      amount,
+      method: req.body.method || 'MANUAL',
+      status: 'SUCCESS',
+      reference: req.body.reference || `DEP-${Date.now()}`,
+      description: req.body.description || 'Savings deposit',
+      paymentCategory: req.body.paymentCategory || 'savings',
+    }, { transaction: dbTransaction });
+    await savingsAccount.update({
+      balance: Number(savingsAccount.balance || 0) + amount,
+    }, { transaction: dbTransaction });
+    return { transaction, balance: Number(savingsAccount.balance || 0) + amount };
   });
 
-  return ResponseHandler.created(res, TransactionDTO.basic({
-    id: transaction.id,
-    type: transaction.type,
-    amount: transaction.amount,
-    description: buildTransactionDescription(transaction),
-    createdAt: transaction.createdAt,
-    status: transaction.status,
-    method: transaction.method,
-    reference: transaction.reference,
-    mpesaReference: transaction.method === 'MPESA' ? transaction.reference : null,
-  }, 'Savings deposit recorded successfully'));
+  return ResponseHandler.created(res, {
+    ...TransactionDTO.basic({
+      id: result.transaction.id,
+      type: result.transaction.type,
+      amount: result.transaction.amount,
+      description: buildTransactionDescription(result.transaction),
+      createdAt: result.transaction.createdAt,
+      status: result.transaction.status,
+      method: result.transaction.method,
+      reference: result.transaction.reference,
+      mpesaReference: result.transaction.method === 'MPESA' ? result.transaction.reference : null,
+    }),
+    savingsBalance: result.balance,
+  }, 'Savings deposit recorded successfully');
    
 });
 
@@ -1383,7 +1497,7 @@ const initiateContribution = asyncHandler(async (req, res) => {
     throw new ValidationError('Contribution amount is required');
   }
 
-  const phone = req.body?.phone || req.user.phone;
+  const phone = normalizeMpesaPhone(req.body?.phone || req.user.phone);
   const paymentMode = String(req.body?.paymentMode || 'STK').toUpperCase();
   const contributionType = req.body?.contributionType || 'monthly';
   const promptType = getKcbPromptType(contributionType);
@@ -1393,7 +1507,7 @@ const initiateContribution = asyncHandler(async (req, res) => {
     ? memberNumber
     : String(memberNumber || '').trim();
 
-  if (paymentMode === 'STK' && !phone) {
+  if (paymentMode === 'STK' && !/^2547\d{8}$/.test(phone)) {
     throw new ValidationError('Phone number is required for STK push');
   }
 
@@ -1734,5 +1848,6 @@ module.exports = {
   searchOptOutTransferees,
   sendOptOutOtp,
   getGuarantees,
+  getFinancialPortfolio,
   emailReport,
 };
