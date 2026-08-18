@@ -399,6 +399,23 @@ const ensureGroupProposalTables = async (sequelize) => {
   });
   const loanColumns = await queryInterface.describeTable('GroupLoans');
   if (!loanColumns.proposalId) await queryInterface.addColumn('GroupLoans', 'proposalId', { type: DataTypes.UUID, allowNull: true, unique: true });
+  const borrowingGroupColumns = await queryInterface.describeTable('BorrowingGroups');
+  if (!borrowingGroupColumns.governanceSettings) await queryInterface.addColumn('BorrowingGroups', 'governanceSettings', { type: DataTypes.JSONB, allowNull: false, defaultValue: {} });
+  if (!names.has('GroupGovernanceActions')) await queryInterface.createTable('GroupGovernanceActions', {
+    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
+    groupId: { type: DataTypes.UUID, allowNull: false },
+    proposedByMemberId: { type: DataTypes.UUID, allowNull: false },
+    actionType: { type: DataTypes.STRING(80), allowNull: false },
+    title: { type: DataTypes.STRING(160), allowNull: false },
+    payload: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} },
+    votes: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} },
+    status: { type: DataTypes.ENUM('PENDING', 'APPROVED', 'REJECTED', 'EXPIRED'), allowNull: false, defaultValue: 'PENDING' },
+    executedAt: { type: DataTypes.DATE, allowNull: true },
+    createdAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+    updatedAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
+  });
+  await ensureIndex(sequelize, 'GroupGovernanceActions', ['groupId', 'status'], 'idx_group_governance_group_status');
+  await ensureIndex(sequelize, 'GroupGovernanceActions', ['proposedByMemberId'], 'idx_group_governance_proposer');
 };
 
 const ensureFinancialPortfolioTables = async (sequelize) => {
