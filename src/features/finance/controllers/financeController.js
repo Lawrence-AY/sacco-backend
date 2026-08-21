@@ -413,11 +413,12 @@ const getLoanById = asyncHandler(async (req, res) => {
 });
 
 const approveLoan = asyncHandler(async (req, res) => {
+  const body = req.body || {};
   const loan = await loanService.updateLoanStatus(req.params.loanId, 'APPROVED', {
     approvedById: req.user.id,
-    approvedAmount: req.body.approvedAmount,
-    interestRate: req.body.interestRate,
-    duration: req.body.duration,
+    approvedAmount: body.approvedAmount,
+    interestRate: body.interestRate,
+    duration: body.duration,
   });
   if (!loan) throw new NotFoundError('Loan not found');
   return ResponseHandler.success(res, formatLoan(loan), 'Loan approved successfully', 200);

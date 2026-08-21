@@ -83,11 +83,12 @@ const updateLoan = asyncHandler(async (req, res) => {
  */
 const approveLoan = asyncHandler(async (req, res) => {
   const loanId = req.params.loanId || req.params.id;
+  const body = req.body || {};
   const loan = await loanService.updateLoanStatus(loanId, 'APPROVED', {
     approvedById: req.user.id,
-    interestRate: req.body.interestRate,
-    duration: req.body.duration,
-    approvedAmount: req.body.approvedAmount,
+    interestRate: body.interestRate,
+    duration: body.duration,
+    approvedAmount: body.approvedAmount,
   });
   return ResponseHandler.success(res, LoanDTO.basic(loan, req.user), 'Loan approved successfully', 200);
 });

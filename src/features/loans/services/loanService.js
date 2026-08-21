@@ -164,9 +164,7 @@ const getLoanById = async (id) => {
 };
 
 const createLoan = async (data) => {
-  const result = await db.sequelize.transaction({
-    isolationLevel: db.Sequelize.Transaction.ISOLATION_LEVELS.SERIALIZABLE,
-  }, async (transaction) => {
+  const result = await db.sequelize.transaction(async (transaction) => {
     const existingLoan = await db.Loan.findOne({
       where: { memberId: data.memberId, status: { [db.Sequelize.Op.in]: RESTRICTED_LOAN_STATUSES } },
       transaction,
@@ -336,7 +334,7 @@ const updateLoanStatus = async (id, status, options = {}) => {
   if (!result) return null;
 
   if (result.changed && ['APPROVED', 'REJECTED'].includes(normalized)) {
-    await notificationService.createMemberLoanDecisionNotification(result.loanId, normalized, options)
+    notificationService.createMemberLoanDecisionNotification(result.loanId, normalized, options)
       .catch((error) => logger.error('Loan decision notification failed', {
         module: 'loans',
         loanId: result.loanId,
