@@ -101,7 +101,7 @@ const allowedOrigins = [
 
 const isOriginAllowed = (origin) => {
   if (!origin) return true;
-  if (process.env.NODE_ENV !== 'production' && /^http:\/\/(localhost|127\.0\.0\.1):\d+$/i.test(origin)) {
+  if (/^http:\/\/(localhost|127\.0\.0\.1):\d+$/i.test(origin)) {
     return true;
   }
   const allowAllOrigins = process.env.NODE_ENV !== 'production' && allowedOrigins.includes('*');

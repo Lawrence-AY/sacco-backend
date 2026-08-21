@@ -99,6 +99,23 @@ const formatDividend = (dividend) => ({
   status: dividend.status ?? 'DECLARED',
 });
 
+const formatMemberDividend = (dividend) => ({
+  id: dividend.id,
+  userId: dividend.userId,
+  memberId: dividend.User?.Member?.id || null,
+  memberNumber: dividend.User?.Member?.memberNumber || dividend.metadata?.memberNumber || '',
+  memberName: dividend.User?.name || dividend.User?.email || '',
+  amount: Number(dividend.dividendPaid || 0),
+  totalDistributed: Number(dividend.dividendPaid || 0),
+  totalShares: Number(dividend.totalShares || 0),
+  year: dividend.financialYear?.year || null,
+  sourceSheet: dividend.metadata?.sourceSheet || '',
+  sharePercentage: 0,
+  declaredAt: dividend.updatedAt,
+  declaredDate: dividend.updatedAt,
+  status: 'PUBLISHED',
+});
+
 const scheduledReducingBalanceInterest = (principal, monthlyRatePercent, durationMonths) => {
   const amount = Number(principal || 0);
   const periods = Number(durationMonths || 0);
@@ -464,8 +481,18 @@ const purchaseShares = asyncHandler(async (req, res) => {
 });
 
 const getAllDividends = asyncHandler(async (req, res) => {
-  const dividends = await db.Dividend.findAll({ order: [['createdAt', 'DESC']] });
-  return ResponseHandler.success(res, dividends.map(formatDividend), 'Dividends retrieved successfully', 200);
+  const [memberDividends, declaredDividends] = await Promise.all([
+    db.MemberDividend.findAll({
+      include: [
+        { model: db.FinancialYearReport, as: 'financialYear', attributes: ['id', 'year'] },
+        { model: db.User, attributes: ['id', 'name', 'email'], include: [{ model: db.Member, attributes: ['id', 'memberNumber'] }] },
+      ],
+      order: [[{ model: db.FinancialYearReport, as: 'financialYear' }, 'year', 'DESC'], ['updatedAt', 'DESC']],
+      limit: 2000,
+    }),
+    db.Dividend.findAll({ order: [['createdAt', 'DESC']] }),
+  ]);
+  return ResponseHandler.success(res, [...memberDividends.map(formatMemberDividend), ...declaredDividends.map(formatDividend)], 'Dividends retrieved successfully', 200);
 });
 
 const declareDividend = asyncHandler(async (req, res) => {

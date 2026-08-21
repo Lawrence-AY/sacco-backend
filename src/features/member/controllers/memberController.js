@@ -837,7 +837,7 @@ const getLoans = asyncHandler(async (req, res) => {
         model: db.Member,
         include: [{
           model: db.User,
-          attributes: ['id', 'name', 'fullName', 'email', 'phone'],
+          attributes: ['id', 'name', 'firstName', 'lastName', 'email', 'phone'],
         }],
       }],
     }, {
@@ -885,8 +885,13 @@ const getLoans = asyncHandler(async (req, res) => {
       memberId: guarantor.memberId,
       amount: guarantor.amount,
       status: guarantor.status,
-      name: guarantor.Member?.User?.name || guarantor.Member?.User?.fullName || guarantor.Member?.memberNumber || null,
-      memberName: guarantor.Member?.User?.name || guarantor.Member?.User?.fullName || null,
+      name: guarantor.Member?.User?.name
+        || [guarantor.Member?.User?.firstName, guarantor.Member?.User?.lastName].filter(Boolean).join(' ')
+        || guarantor.Member?.memberNumber
+        || null,
+      memberName: guarantor.Member?.User?.name
+        || [guarantor.Member?.User?.firstName, guarantor.Member?.User?.lastName].filter(Boolean).join(' ')
+        || null,
       memberNumber: guarantor.Member?.memberNumber || null,
       Member: guarantor.Member,
     })),
