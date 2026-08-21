@@ -505,7 +505,10 @@ const markRead = async (user, id) => {
 };
 
 const markAllRead = async (user) => {
-  await db.Notification.update({ readAt: new Date() }, { where: { userId: user.id, readAt: null } });
+  const unread = await db.Notification.findAll({ where: { userId: user.id, readAt: null } });
+  const readAt = new Date();
+  await Promise.all(unread.map((notification) => notification.update({ readAt })));
+  return unread.length;
 };
 
 const createManualNotification = async (sender, payload = {}) => {

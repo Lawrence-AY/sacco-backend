@@ -56,12 +56,15 @@ const getBackendCallbackUrl = (req) => {
 };
 
 const normalizeMpesaPhone = (value) => {
-  const digits = String(value || '').replace(/\D/g, '');
-  if (/^07\d{8}$/.test(digits)) return `254${digits.slice(1)}`;
-  if (/^7\d{8}$/.test(digits)) return `254${digits}`;
-  if (/^2547\d{8}$/.test(digits)) return digits;
+  let digits = String(value || '').replace(/\D/g, '');
+  if (digits.startsWith('2540') && digits.length === 13) digits = `254${digits.slice(4)}`;
+  if (/^0[17]\d{8}$/.test(digits)) return `254${digits.slice(1)}`;
+  if (/^[17]\d{8}$/.test(digits)) return `254${digits}`;
+  if (/^254[17]\d{8}$/.test(digits)) return digits;
   return digits;
 };
+
+const isValidMpesaPhone = (value) => /^254[17]\d{8}$/.test(value);
 
 const shouldUseLocalStkFallback = () => process.env.NODE_ENV !== 'production'
   && process.env.MPESA_STK_ALLOW_LOCAL_FALLBACK !== 'false';
@@ -1350,7 +1353,7 @@ const initiateLoanRepaymentStk = asyncHandler(async (req, res) => {
   const outstanding = calculateCurrentOutstandingBalance(loan);
   const maxStkAmount = Math.ceil(outstanding);
   if (!Number.isInteger(amount) || amount <= 0 || amount > maxStkAmount) throw new ValidationError(`Enter a whole-shilling amount between KES 1 and KES ${maxStkAmount}`);
-  if (!/^2547\d{8}$/.test(phone)) throw new ValidationError('Enter a valid Kenyan M-Pesa phone number');
+  if (!isValidMpesaPhone(phone)) throw new ValidationError('Enter a valid Kenyan M-Pesa phone number');
 
   const internalReference = `LOAN-${loan.id}-${Date.now()}`;
   if (!member.memberNumber) throw new ValidationError('Your member number is required before an M-Pesa loan repayment can be initiated');
@@ -1550,7 +1553,7 @@ const initiateContribution = asyncHandler(async (req, res) => {
     ? memberNumber
     : String(memberNumber || '').trim();
 
-  if (paymentMode === 'STK' && !/^2547\d{8}$/.test(phone)) {
+  if (paymentMode === 'STK' && !isValidMpesaPhone(phone)) {
     throw new ValidationError('Phone number is required for STK push');
   }
 
