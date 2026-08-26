@@ -145,12 +145,55 @@ const isLocalDevelopmentOrigin = (req) => {
   return /^http:\/\/(localhost|127\.0\.0\.1):\d+$/i.test(origin);
 };
 
+const corsAllowedMethods = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'];
+const corsAllowedHeaders = [
+  'Content-Type',
+  'Authorization',
+  'X-Requested-With',
+  'X-Device-Id',
+  'X-Device-Name',
+  'X-Session-Id',
+  'X-Idempotency-Key',
+  'X-CSRF-Token',
+  'Ngrok-Skip-Browser-Warning',
+  'Accept',
+  'Accept-Encoding',
+  'Accept-Language',
+  'Referer',
+  'Referrer-Policy'
+];
+const corsExposedHeaders = ['X-Total-Count', 'X-Rate-Limit-Remaining', 'Referrer-Policy'];
+
+const setCorsHeaders = (req, res) => {
+  const origin = req.get('origin');
+  if (!origin || !isOriginAllowed(origin)) return false;
+
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', corsAllowedMethods.join(','));
+  res.setHeader('Access-Control-Allow-Headers', corsAllowedHeaders.join(','));
+  res.setHeader('Access-Control-Expose-Headers', corsExposedHeaders.join(','));
+  res.setHeader('Access-Control-Max-Age', '86400');
+  return true;
+};
+
 app.use((req, res, next) => {
   const requestId = req.get('X-Request-ID') || crypto.randomUUID();
   req.id = requestId;
   res.setHeader('X-Request-ID', requestId);
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('X-Content-Type-Options', 'nosniff');
+  setCorsHeaders(req, res);
+
+  if (req.method === 'OPTIONS') {
+    if (req.get('origin') && !isOriginAllowed(req.get('origin'))) {
+      logger.warn('CORS blocked preflight request', { origin: req.get('origin'), endpoint: req.originalUrl });
+      return res.sendStatus(403);
+    }
+    return res.sendStatus(204);
+  }
+
   next();
 });
 
@@ -190,24 +233,9 @@ const corsOptions = {
     }
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: [
-    'Content-Type',
-    'Authorization',
-    'X-Requested-With',
-    'X-Device-Id',
-    'X-Device-Name',
-    'X-Session-Id',
-    'X-Idempotency-Key',
-    'X-CSRF-Token',
-    'Ngrok-Skip-Browser-Warning',
-    'Accept',
-    'Accept-Encoding',
-    'Accept-Language',
-    'Referer',
-    'Referrer-Policy'
-  ],
-  exposedHeaders: ['X-Total-Count', 'X-Rate-Limit-Remaining', 'Referrer-Policy'],
+  methods: corsAllowedMethods,
+  allowedHeaders: corsAllowedHeaders,
+  exposedHeaders: corsExposedHeaders,
   maxAge: 86400 // 24 hours
 };
 

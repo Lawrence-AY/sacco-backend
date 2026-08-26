@@ -116,9 +116,21 @@ const getClientIp = (req) => {
 
 const createInvalidAuthError = () => new AppError('Invalid credentials or verification code', 401, 'AUTH_INVALID');
 const createLockedError = () => new AppError('This account is temporarily locked. Please try again later.', 423, 'AUTH_LOCKED');
+const createIdentityBlockedError = () => new AppError('This email is blocked after failed identity verification. Contact support for help.', 423, 'IDENTITY_VERIFICATION_BLOCKED');
 const createOtpInvalidError = () => new AppError('Invalid or expired verification code', 401, 'OTP_INVALID');
 
 const isAccountLocked = (user) => user?.lockedUntil && new Date(user.lockedUntil) > new Date();
+const isIdentityBlocked = async (email) => {
+  if (!email || !db.IdentityVerificationAttempt) return false;
+  const blocked = await db.IdentityVerificationAttempt.findOne({
+    where: {
+      email,
+      blockStatus: true,
+      status: 'BLOCKED',
+    },
+  });
+  return Boolean(blocked);
+};
 
 const recordFailedLogin = async (user) => {
   if (!user) return;
@@ -283,6 +295,10 @@ const loginUser = asyncHandler(async (req, res) => {
   const normalizedEmail = normalizeEmail(email);
   if (!normalizedEmail || !password) {
     throw new ValidationError('Email and password are required');
+  }
+  if (await isIdentityBlocked(normalizedEmail)) {
+    await recordLoginAttempt(req, normalizedEmail, 'IDENTITY_BLOCKED');
+    throw createIdentityBlockedError();
   }
   const user = await User.findOne({ where: { email: normalizedEmail } });
   if (!user) {
@@ -455,6 +471,9 @@ const registerUser = asyncHandler(async (req, res) => {
   const normalizedEmail = normalizeEmail(email);
   if (!firstName || !lastName || !normalizedEmail || !password) {
     throw new ValidationError('Missing required fields');
+  }
+  if (await isIdentityBlocked(normalizedEmail)) {
+    throw createIdentityBlockedError();
   }
   const existingUser = await User.findOne({ where: { email: normalizedEmail } });
   if (existingUser && (existingUser.isVerified || existingUser.role !== 'PENDING')) {

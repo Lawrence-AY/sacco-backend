@@ -35,6 +35,7 @@ const LoanTransaction = require('./loanTransaction.model');
 const FinancialLedgerEntry = require('./financialLedgerEntry.model');
 const FinancialYearReport = require('./financialYearReport.model');
 const MemberDividend = require('./memberDividend.model');
+const IdentityVerificationAttempt = require('./identityVerificationAttempt.model');
 
 const sequelize = require('../shared/config/db');
 
@@ -138,6 +139,8 @@ User.hasMany(MemberDividend, { foreignKey: 'userId' });
 MemberDividend.belongsTo(User, { foreignKey: 'userId' });
 FinancialYearReport.hasMany(MemberDividend, { foreignKey: 'financialYearId', as: 'memberDividends' });
 MemberDividend.belongsTo(FinancialYearReport, { foreignKey: 'financialYearId', as: 'financialYear' });
+User.hasMany(IdentityVerificationAttempt, { foreignKey: 'userId' });
+IdentityVerificationAttempt.belongsTo(User, { foreignKey: 'userId' });
 
 const db = {
   sequelize,
@@ -178,7 +181,8 @@ const db = {
   LoanTransaction,
   FinancialLedgerEntry,
   FinancialYearReport,
-  MemberDividend
+  MemberDividend,
+  IdentityVerificationAttempt
 };
 
 module.exports = db;

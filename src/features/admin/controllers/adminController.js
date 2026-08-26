@@ -2,6 +2,7 @@ const db = require('../../../models');
 const { Op } = require('sequelize');
 const userService = require('../../users/services/userService');
 const applicationService = require('../../applications/services/applicationService');
+const identityVerificationService = require('../../applications/services/identityVerificationService');
 const notificationService = require('../../notifications/services/notificationService');
 const bcrypt = require('bcrypt');
 const asyncHandler = require('../../../shared/utils/asyncHandler');
@@ -632,6 +633,17 @@ const upsertMemberDividends = asyncHandler(async (req, res) => {
   return ResponseHandler.success(res, { year, imported, skipped }, 'Member dividends saved', 200);
 });
 
+const getBlockedIdentityAttempts = asyncHandler(async (req, res) => {
+  const attempts = await identityVerificationService.listBlockedAttempts();
+  return ResponseHandler.success(res, attempts, 'Blocked identity verification attempts retrieved successfully', 200);
+});
+
+const unblockIdentityAttempt = asyncHandler(async (req, res) => {
+  const result = await identityVerificationService.unblockAttempt(req.params.attemptId, req.user);
+  if (!result) throw new NotFoundError('Blocked identity attempt not found');
+  return ResponseHandler.success(res, result, 'Identity verification block reset successfully', 200);
+});
+
 const saveDividendImportRows = async ({ rows, year }) => {
   const imported = [];
   const skipped = [];
@@ -840,6 +852,8 @@ module.exports = {
   getAllUsers,
   getArchivedMembers,
   getAuditLogs,
+  getBlockedIdentityAttempts,
+  unblockIdentityAttempt,
   getUserById,
   updateUserRole,
   updateUserStatus,

@@ -7,6 +7,8 @@ const { sanitizeModel, sanitizeModels } = require('../../../shared/utils/dtos');
 const logger = require('../../../shared/utils/logger');
 const { getFirebaseDb } = require('../../../shared/config/firebase');
 const db = require('../../../models');
+const iprsConfig = require('../../../shared/config/iprs');
+const identityVerificationService = require('../services/identityVerificationService');
 
 const SUCCESSFUL_PAYMENT_STATUSES = new Set(['paid', 'completed', 'success', 'successful']);
 const FAILED_PAYMENT_STATUSES = new Set(['failed', 'cancelled', 'canceled']);
@@ -36,6 +38,42 @@ const normalizeIdentityType = (identityType) => {
   }
   return 'national';
 };
+
+const verifyIdentity = asyncHandler(async (req, res) => {
+  const result = await identityVerificationService.verifyAndTrackIdentity({
+    user: req.user,
+    email: req.body.email || req.user?.email,
+    idNumber: req.body.idNumber || req.body.identityNumber || req.body.nationalId || req.body.passportNumber,
+    documentType: req.body.documentType || req.body.identityType || req.body.idType,
+    firstName: req.body.firstName,
+    surname: req.body.surname || req.body.lastName,
+    ipAddress: req.ip,
+    userAgent: req.get('User-Agent'),
+  });
+
+  const statusCode = result.blocked ? 423 : result.success ? 200 : 400;
+  if (!result.success) {
+    return res.status(statusCode).json({
+      success: false,
+      message: result.message,
+      data: {
+        ...result,
+        iprsEnabled: iprsConfig.enabled,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }
+  return ResponseHandler.success(res, {
+    ...result,
+    iprsEnabled: iprsConfig.enabled,
+  }, result.message, 200);
+});
+
+const getIdentityVerificationConfig = asyncHandler(async (req, res) => {
+  return ResponseHandler.success(res, {
+    iprsEnabled: iprsConfig.enabled,
+  }, 'Identity verification configuration retrieved');
+});
 
 const findRegistration = async (fieldValues) => {
   const registrations = getFirebaseDb().collection('registrations');
@@ -482,6 +520,8 @@ const verifyPayment = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+  verifyIdentity,
+  getIdentityVerificationConfig,
   submitApplication,
   getApplications,
   getApplicationById,
