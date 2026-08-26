@@ -5,6 +5,8 @@ const escapeHtml = (value) => String(value ?? '')
   .replace(/"/g, '&quot;')
   .replace(/'/g, '&#39;');
 
+const { calculateScheduledInstallment } = require('../../features/loans/services/loanCalculationEngine');
+
 const displayLabel = (value) => String(value || '-')
   .replace(/loan_repayments?/gi, 'loan repayment')
   .replace(/_/g, ' ');
@@ -30,6 +32,30 @@ const matchingTransactions = (transactions, tokens) => transactions.filter((tran
   const value = category(transaction);
   return tokens.some((token) => value.includes(token));
 });
+
+const isSavingsTransaction = (transaction) => category(transaction).includes('saving')
+  && !category(transaction).includes('share');
+const isShareCapitalTransaction = (transaction) => {
+  const value = category(transaction);
+  return value.includes('share capital') || value.includes('sharecapital');
+};
+const isMoneyOut = (transaction) => transaction.direction === 'OUT'
+  || String(transaction.type || '').toUpperCase().includes('WITHDRAW')
+  || category(transaction).includes('withdraw')
+  || category(transaction).includes('disbursement');
+const ledgerReportRow = (transaction) => {
+  const outgoing = isMoneyOut(transaction);
+  const amount = Number(outgoing
+    ? (transaction.amount ?? transaction.grossAmount ?? 0)
+    : (transaction.netAmount ?? transaction.amount ?? 0));
+  return {
+    Date: formatDateTime(transaction.createdAt),
+    Activity: displayLabel(transaction.paymentCategory || transaction.description || transaction.type),
+    Amount: `KES ${formatMoney(amount)}`,
+    Status: displayLabel(transaction.status),
+    Reference: transaction.reference || transaction.internalReference || transaction.id || '-',
+  };
+};
 
 const phoneFromCheckoutRequestId = (checkoutRequestId) => {
   const digits = String(checkoutRequestId || '').replace(/\D/g, '');
@@ -86,6 +112,39 @@ const buildReportSections = ({ reportType, transactions, loans, shares }) => {
   const successfulTransactions = transactions || [];
   const loanSections = () => {
     const repayments = matchingTransactions(successfulTransactions, ['repayment', 'loan repayment', 'loan']);
+    const repaymentRows = (loans || []).flatMap((loan) => (
+      loan.loanTransactions || loan.LoanTransactions || []
+    ).map((repayment) => {
+      const metadata = repayment.metadata || {};
+      const remainingPrincipal = Number(repayment.remainingPrincipal || 0);
+      const remainingInterest = Number(metadata.remaining_interest || 0);
+      return {
+        Date: formatDateTime(repayment.createdAt),
+        'Loan Type': displayLabel(loan.type || 'Loan'),
+        'Amount Paid': `KES ${formatMoney(repayment.amount)}`,
+        'Principal Paid': `KES ${formatMoney(repayment.principalPaid)}`,
+        'Interest Paid': `KES ${formatMoney(repayment.interestPaid)}`,
+        'Remaining Principal': `KES ${formatMoney(remainingPrincipal)}`,
+        'Remaining Interest': `KES ${formatMoney(remainingInterest)}`,
+        'Total Remaining': `KES ${formatMoney(metadata.remaining_balance ?? (remainingPrincipal + remainingInterest))}`,
+        'Duration Remaining': metadata.remaining_installments == null
+          ? '-'
+          : `${metadata.remaining_installments} instalment${Number(metadata.remaining_installments) === 1 ? '' : 's'}`,
+        Reference: metadata.receipt || metadata.mpesa_receipt_number || repayment.ledgerTransactionId || '-',
+      };
+    }));
+    const legacyRepaymentRows = repayments.map((transaction) => ({
+      Date: formatDateTime(transaction.createdAt),
+      'Loan Type': displayLabel(transaction.loanType || 'Loan'),
+      'Amount Paid': `KES ${formatMoney(transaction.amount)}`,
+      'Principal Paid': `KES ${formatMoney(transaction.principalPaid)}`,
+      'Interest Paid': `KES ${formatMoney(transaction.interestPaid ?? transaction.interestAmount)}`,
+      'Remaining Principal': `KES ${formatMoney(transaction.remainingPrincipal)}`,
+      'Remaining Interest': `KES ${formatMoney(transaction.remainingInterest)}`,
+      'Total Remaining': `KES ${formatMoney(transaction.remainingBalance ?? transaction.outstandingBalance)}`,
+      'Duration Remaining': transaction.durationRemaining ?? transaction.remainingDuration ?? '-',
+      Reference: transaction.reference || transaction.internalReference || '-',
+    }));
     return [
       {
         title: 'Loans',
@@ -97,21 +156,21 @@ const buildReportSections = ({ reportType, transactions, loans, shares }) => {
           Guarantor: (loan.Guarantors || []).length ? `${loan.Guarantors.length} guarantors` : loan.selfGuaranteed ? 'Self-guaranteed' : '-',
           Status: displayLabel(loan.status),
           'Loan Duration': loan.duration ? `${loan.duration} months` : '-',
-          'Interest to be Paid': `KES ${formatMoney((Number(loan.amount || 0) * Number(loan.interestRate || 0) / 100) * Number(loan.duration || 0))}`,
+          'Interest to be Paid': `KES ${formatMoney(Math.max(
+            (calculateScheduledInstallment({
+              principal: Number(loan.amount || 0),
+              monthlyRatePercent: Number(loan.interestRate || 0),
+              installments: Number(loan.duration || 1),
+            }) * Number(loan.duration || 1)) - Number(loan.amount || 0),
+            0,
+          ))}`,
           Reason: loan.reason || '-',
         })),
       },
       {
         title: 'Loan Repayment',
-        columns: ['Date', 'Amount', 'Balance', 'Duration Remaining', 'Interest', 'Reference'],
-        rows: repayments.map((transaction) => ({
-          Amount: `KES ${formatMoney(transaction.amount)}`,
-          Balance: `KES ${formatMoney(transaction.balance || transaction.outstandingBalance || transaction.remainingBalance || 0)}`,
-          'Duration Remaining': '-',
-          Interest: '-',
-          Reference: transaction.reference || '-',
-          Date: formatDateTime(transaction.createdAt),
-        })),
+        columns: ['Date', 'Loan Type', 'Amount Paid', 'Principal Paid', 'Interest Paid', 'Remaining Principal', 'Remaining Interest', 'Total Remaining', 'Duration Remaining', 'Reference'],
+        rows: repaymentRows.length ? repaymentRows : legacyRepaymentRows,
       },
       {
         title: 'Guarantor',
@@ -155,12 +214,13 @@ const buildReportSections = ({ reportType, transactions, loans, shares }) => {
     guarantor: [loanSections()[2]],
     withdrawals: [loanSections()[3]],
     savings: [{
-      title: 'Savings and Share Capital',
-      columns: ['Date', 'Record', 'Amount', 'Status'],
-      rows: [
-        ...(shares || []).map((share) => ({ Record: 'Share capital', Amount: `KES ${formatMoney((share.shares || 0) * (share.shareValue || 0))}`, Status: 'Active', Date: formatDateTime(share.createdAt) })),
-        ...matchingTransactions(successfulTransactions, ['savings']).map((transaction) => ({ Record: displayLabel(transaction.paymentCategory), Amount: `KES ${formatMoney(transaction.amount)}`, Status: displayLabel(transaction.status), Date: formatDateTime(transaction.createdAt) })),
-      ],
+      title: 'Savings Records',
+      columns: ['Date', 'Activity', 'Amount', 'Status', 'Reference'],
+      rows: successfulTransactions.filter(isSavingsTransaction).map(ledgerReportRow),
+    }, {
+      title: 'Share Capital Records',
+      columns: ['Date', 'Activity', 'Amount', 'Status', 'Reference'],
+      rows: successfulTransactions.filter(isShareCapitalTransaction).map(ledgerReportRow),
     }],
     'payroll-deduction': [{
       title: 'Payroll Deductions',

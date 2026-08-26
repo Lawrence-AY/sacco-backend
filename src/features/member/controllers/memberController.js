@@ -1758,7 +1758,6 @@ const emailReport = asyncHandler(async (req, res) => {
 
   const reportType = req.body?.reportType || 'portfolio';
   const durationMonths = Number(req.body?.duration) || 0;
-  const transactionHeavyReports = new Set(['transactions', 'loans', 'loan-repayment', 'withdrawals', 'portfolio']);
   const member = await findMemberByUserId(req.user.id);
   const isStaffMember = Boolean(String(user.staffId || user.payrollNumber || '').trim());
   if (!isStaffMember && reportType === 'payroll-deduction') {
@@ -1773,18 +1772,24 @@ const emailReport = asyncHandler(async (req, res) => {
         status: { [Op.in]: ['SUCCESS', 'PAID', 'COMPLETED'] },
       },
       order: [['createdAt', 'DESC']],
-      limit: transactionHeavyReports.has(reportType) ? 100 : 20,
     })
     : [];
   const loans = member
     ? await db.Loan.findAll({
-      where: { memberId: member.id, ...dateFilter },
+      where: { memberId: member.id, ...(reportType === 'loans' ? dateFilter : {}) },
       include: [{
         model: db.Guarantor,
         include: [{
           model: db.Member,
           include: [db.User],
         }],
+      }, {
+        model: db.LoanTransaction,
+        as: 'loanTransactions',
+        separate: true,
+        where: dateFilter,
+        required: false,
+        order: [['createdAt', 'DESC']],
       }],
       order: [['createdAt', 'DESC']],
     })
@@ -1805,26 +1810,56 @@ const emailReport = asyncHandler(async (req, res) => {
       ? sum + Number(transaction.amount || 0)
       : sum;
   }, 0);
-  const paidShareCapital = categoryTotal(['share_capital', 'sharecapital', 'share capital']);
+  const signedCategoryTotal = (tokens) => successfulTransactions.reduce((sum, transaction) => {
+    const category = getCategory(transaction);
+    if (!tokens.some((token) => category.includes(token))) return sum;
+    const outgoing = String(transaction.type || '').toUpperCase().includes('WITHDRAW')
+      || category.includes('withdraw') || category.includes('disbursement');
+    return sum + (outgoing ? -Number(transaction.amount || 0) : Number(transaction.amount || 0));
+  }, 0);
+  const paidShareCapital = signedCategoryTotal(['share_capital', 'sharecapital', 'share capital']);
   const shareAccountCapital = shares.reduce((sum, share) => sum + Number((share.shares || 0) * (share.shareValue || 0)), 0);
-  const shareCapital = Math.max(paidShareCapital, shareAccountCapital);
-  const savingsTotal = categoryTotal(['savings']);
-  const outstandingLoans = loans.reduce((sum, loan) => sum + Number(loan.amount || 0), 0);
+  const storedMemberShareCapital = Number(member?.shareCapital || 0);
+  const shareCapital = Math.max(shareAccountCapital, storedMemberShareCapital, paidShareCapital, 0);
+  const savingsTotal = Math.max(signedCategoryTotal(['savings']), 0);
+  const activeLoans = loans.filter((loan) => (
+    ['APPROVED', 'ACTIVE', 'DISBURSED', 'OVERDUE'].includes(String(loan.status || '').toUpperCase())
+  ));
+  const outstandingLoans = activeLoans
+    .reduce((sum, loan) => sum + Number(calculateLoanBalanceQuote(loan).outstandingBalance || 0), 0);
   const transactionTotal = successfulTransactions.reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
   const durationLabel = durationMonths > 0 ? `Last ${durationMonths} month${durationMonths === 1 ? '' : 's'}` : 'All records';
   const memberNumber = member?.memberNumber || user.memberNumber || 'Member';
   const reportName = reportNames[reportType] || 'Portfolio Report';
+  const shareTransferRows = member && ['savings', 'shares-savings', 'portfolio'].includes(reportType)
+    ? (await shareCapitalTransferService.historyForMember(member.id))
+      .filter((transfer) => durationMonths <= 0 || new Date(transfer.createdAt) >= new Date(new Date().setMonth(new Date().getMonth() - durationMonths)))
+      .filter((transfer) => String(transfer.status || 'SUCCESS').toUpperCase() === 'SUCCESS')
+      .map((transfer) => ({
+        id: transfer.id,
+        type: 'SHARE_CAPITAL_TRANSFER',
+        paymentCategory: 'share_capital_transfer',
+        amount: Number(transfer.grossAmount || 0),
+        netAmount: Number(transfer.netAmount || 0),
+        direction: transfer.senderMemberId === member.id ? 'OUT' : 'IN',
+        status: transfer.status || 'SUCCESS',
+        reference: transfer.reference,
+        createdAt: transfer.createdAt,
+        description: transfer.senderMemberId === member.id ? 'Share capital transferred out' : 'Share capital received',
+      }))
+    : [];
   const transactionsWithPhone = successfulTransactions.map((transaction) => ({
     ...transaction.get({ plain: true }),
     phoneNumber: user.phone || null,
-  }));
+  })).concat(shareTransferRows)
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   const sections = buildReportSections({ reportType, transactions: transactionsWithPhone, loans, shares });
   const portfolioSummaryRows = [
     ['Share capital', `KES ${formatMoney(shareCapital)}`],
     ['Savings', `KES ${formatMoney(savingsTotal)}`],
     ['Outstanding loans', `KES ${formatMoney(outstandingLoans)}`],
     ['Successful transaction total', `KES ${formatMoney(transactionTotal)}`],
-    ['Loans', loans.length],
+    ['Active loans', activeLoans.length],
   ];
   const transactionSummaryRows = [
     ['Share capital', `KES ${formatMoney(shareCapital)}`],

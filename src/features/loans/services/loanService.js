@@ -6,7 +6,9 @@ const crypto = require('crypto');
 const GUARANTOR_TOKEN_TTL_MS = 72 * 60 * 60 * 1000;
 
 const isEmergencyLoan = (type) => String(type || '').toUpperCase() === 'EMERGENCY';
-const RESTRICTED_LOAN_STATUSES = ['PENDING', 'PENDING_GUARANTORS', 'UNDER_REVIEW', 'APPROVED', 'ACTIVE', 'DISBURSED'];
+// Prevent duplicate in-flight applications, but allow a member with an active
+// facility to apply for another loan when all product eligibility rules pass.
+const RESTRICTED_LOAN_STATUSES = ['PENDING', 'PENDING_GUARANTORS', 'UNDER_REVIEW'];
 
 const addMonths = (value, months) => {
   const date = new Date(value);
@@ -171,7 +173,7 @@ const createLoan = async (data) => {
       lock: transaction.LOCK.UPDATE,
     });
     if (existingLoan) {
-      const error = new Error('You already have an active or pending loan application');
+      const error = new Error('You already have a loan application awaiting a decision');
       error.statusCode = 409;
       throw error;
     }

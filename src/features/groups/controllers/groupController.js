@@ -39,6 +39,14 @@ const groupInclude = [
   { model: db.GroupGovernanceAction, as: 'governanceActions', include: [{ model: db.Member, as: 'proposedBy', attributes: ['id', 'memberNumber'], include: [{ model: db.User, attributes: ['name'] }] }] },
 ];
 
+// Keep the list endpoint small and fast. Proposals, repayment history and
+// governance actions are loaded only when a member opens a specific group.
+const groupSummaryInclude = [
+  { model: db.Member, as: 'creator', attributes: ['id', 'memberNumber'], include: [{ model: db.User, attributes: ['name'] }] },
+  { model: db.GroupMembership, as: 'memberships', separate: true, include: [memberInclude] },
+  { model: db.GroupLoan, as: 'loans', separate: true, attributes: ['id', 'groupId', 'proposalId', 'amount', 'balance', 'status', 'paymentPeriodMonths', 'interestRate'] },
+];
+
 const reducingBalanceInterest = (principal, monthlyRate, months) => Math.round((principal * (monthlyRate / 100) * months * (months + 1) / (2 * months)) * 100) / 100;
 const notify = (userId, eventKey, title, body, sourceId, metadata = {}) => db.Notification.create({ userId, eventKey, title, body, category: 'group', severity: title.includes('Rejected') ? 'warning' : 'info', actionUrl: '/dashboard/user/groups', sourceType: 'GroupLoanProposal', sourceId, metadata });
 
