@@ -95,6 +95,21 @@ const schemas = {
     message: 'Document back is required for National ID uploads',
     path: ['back'],
   }),
+  identityVerification: strictObject({
+    email: z.string().trim().email().toLowerCase().optional(),
+    firstName: z.string().trim().min(1).max(50),
+    surname: z.string().trim().min(1).max(50),
+    documentType: z.enum(['national', 'passport', 'NATIONAL', 'PASSPORT']).optional(),
+    identityType: z.enum(['national', 'passport', 'NATIONAL', 'PASSPORT']).optional(),
+    idType: z.enum(['national', 'passport']).optional(),
+    idNumber: z.string().trim().max(30).optional(),
+    identityNumber: z.string().trim().max(30).optional(),
+    nationalId: z.string().trim().max(30).optional(),
+    passportNumber: z.string().trim().max(30).optional(),
+  }).refine((data) => Boolean(data.idNumber || data.identityNumber || data.nationalId || data.passportNumber), {
+    message: 'Document number is required',
+    path: ['idNumber'],
+  }),
   roleUpdate: strictObject({
     role: z.enum(['MEMBER', 'FINANCE', 'ADMIN', 'SUPERADMIN', 'member', 'finance', 'admin', 'superadmin'])
       .transform((role) => role.toUpperCase()),

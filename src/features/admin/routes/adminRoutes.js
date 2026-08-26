@@ -17,6 +17,8 @@ router.use(protect, authorize(['ADMIN', 'SUPERADMIN']));
 router.get('/users', adminController.getAllUsers);
 router.get('/members/archived', adminController.getArchivedMembers);
 router.get('/audit-logs', adminController.getAuditLogs);
+router.get('/identity-verification/blocked', adminController.getBlockedIdentityAttempts);
+router.post('/identity-verification/blocked/:attemptId/unblock', adminController.unblockIdentityAttempt);
 router.get('/users/:userId', adminController.getUserById);
 router.put('/users/:userId/role', validate(schemas.roleUpdate), adminController.updateUserRole);
 router.put('/users/:userId/status', validate(schemas.statusUpdate), adminController.updateUserStatus);

@@ -2,12 +2,15 @@
 const express = require('express');
 const router = express.Router();
 const { protect, authorize } = require('../../../shared/middleware/authMiddleware');
+const { validate, schemas } = require('../../../shared/middleware/zodValidation');
 const applicationController = require('../controllers/applicationController');
 
 // ✅ FORCE JSON PARSING FOR THIS SPECIFIC ROUTE
 router.post('/:id/verify-payment', protect, express.json(), applicationController.verifyPayment);
 
 // Public routes (specific paths before generic :id)
+router.get('/identity-verification/config', protect, applicationController.getIdentityVerificationConfig);
+router.post('/identity-verification', protect, validate(schemas.identityVerification), applicationController.verifyIdentity);
 router.post('/', protect, applicationController.submitApplication);
 router.get('/stk-status', applicationController.checkStkStatus);
 router.get('/:id', applicationController.getApplicationById);

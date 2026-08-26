@@ -605,6 +605,35 @@ const createOptOutReviewNotifications = async (requestId) => {
   }));
 };
 
+const createAdminIdentityBlockNotifications = async ({ email, documentNumber, attemptCount, reason, attemptId }) => {
+  const admins = await db.User.findAll({
+    where: { role: { [Op.in]: ['ADMIN', 'SUPERADMIN'] } },
+    attributes: ['id'],
+  });
+
+  const notifications = await Promise.all(admins.map((admin) => upsertNotification({
+    userId: admin.id,
+    eventKey: `identity-block:${attemptId}:${admin.id}`,
+    title: 'Identity verification blocked',
+    body: `${email} was blocked after ${attemptCount} failed IPRS identity verification attempts.`,
+    category: 'security',
+    severity: 'critical',
+    actionUrl: '/dashboard/admin/security',
+    sourceType: 'IdentityVerificationAttempt',
+    sourceId: attemptId,
+    metadata: {
+      subtype: 'identity_verification_block',
+      email,
+      documentNumber,
+      attemptCount,
+      reason,
+      blockedAt: new Date().toISOString(),
+    },
+  })));
+
+  return notifications.map(serialize);
+};
+
 module.exports = {
   listForUser,
   listSentByUser,
@@ -617,4 +646,5 @@ module.exports = {
   createGuarantorRequestNotifications,
   createApplicantGuarantorDecisionNotification,
   createOptOutReviewNotifications,
+  createAdminIdentityBlockNotifications,
 };
