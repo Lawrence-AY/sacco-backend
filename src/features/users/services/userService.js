@@ -15,6 +15,9 @@ const memberProfileFields = [
   'registrationTransactionId',
   'isVerified',
   'nominees',
+  'savings',
+  'shareCapital',
+  'loans',
 ];
 
 const getAllUsers = async () => {

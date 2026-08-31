@@ -256,6 +256,10 @@ async function startServer() {
       projectId: firebase.projectId,
     });
     require('./src/services/email/emailQueue').startEmailWorkers();
+    const overdueMonitor = require('./src/features/notifications/services/notificationService').createOverdueLoanAlerts;
+    overdueMonitor().catch((error) => logger.error('Initial overdue-loan alert scan failed', { error: error.message }));
+    const overdueMonitorTimer = setInterval(() => overdueMonitor().catch((error) => logger.error('Overdue-loan alert scan failed', { error: error.message })), 60 * 60 * 1000);
+    overdueMonitorTimer.unref();
 
   } catch (error) {
     logger.error('Failed to start server:', {
