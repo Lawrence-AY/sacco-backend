@@ -30,6 +30,12 @@ const AuditLog = sequelize.define('AuditLog', {
   },
 }, {
   timestamps: true,
+  hooks: {
+    beforeUpdate: () => { throw new Error('Audit logs are append-only and cannot be updated'); },
+    beforeDestroy: () => { throw new Error('Audit logs are append-only and cannot be deleted'); },
+    beforeBulkUpdate: () => { throw new Error('Audit logs are append-only and cannot be updated'); },
+    beforeBulkDestroy: () => { throw new Error('Audit logs are append-only and cannot be deleted'); },
+  },
   indexes: [
     { fields: ['userId'] },
     { fields: ['action'] },

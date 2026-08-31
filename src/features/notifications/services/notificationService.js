@@ -634,6 +634,37 @@ const createAdminIdentityBlockNotifications = async ({ email, documentNumber, at
   return notifications.map(serialize);
 };
 
+const createOverdueLoanAlerts = async () => {
+  const now = new Date();
+  const loans = await db.Loan.findAll({
+    where: { status: { [Op.in]: ['ACTIVE', 'DISBURSED', 'IN_ARREARS'] } },
+    include: [{ model: db.Member, include: [{ model: db.User, attributes: ['id', 'name', 'firstName', 'lastName', 'email'] }] }],
+  });
+  const staff = await db.User.findAll({ where: { role: { [Op.in]: ['ADMIN', 'SUPERADMIN', 'FINANCE'] } }, attributes: ['id', 'role'] });
+  const created = [];
+  for (const loan of loans) {
+    const outstandingPrincipal = Number(loan.principalBalance ?? loan.amount ?? 0);
+    if (outstandingPrincipal <= 0) continue;
+    const dueDate = loan.nextPaymentDueAt ? new Date(loan.nextPaymentDueAt) : null;
+    const start = new Date(loan.decidedAt || loan.updatedAt || loan.createdAt);
+    const periodEnd = new Date(start); periodEnd.setMonth(periodEnd.getMonth() + Number(loan.duration || 0));
+    const periodElapsed = Number(loan.duration || 0) > 0 && periodEnd < now;
+    const missedPayment = dueDate && dueDate < now;
+    if (!periodElapsed && !missedPayment) continue;
+    const member = loan.Member; const user = member?.User;
+    if (!user) continue;
+    const alertDate = (periodElapsed ? periodEnd : dueDate).toISOString().slice(0, 10);
+    const reason = periodElapsed ? 'The agreed loan repayment period has elapsed' : 'The scheduled monthly payment date has passed without a full scheduled payment';
+    const baseKey = `loan-overdue:${loan.id}:${alertDate}`;
+    const alreadyRecorded = await db.Notification.findOne({ where: { eventKey: `${baseKey}:member` }, attributes: ['id'] });
+    const common = { title: 'Admin loan repayment alert', body: `${reason}. ${loan.type} loan for member ${member.memberNumber}; outstanding principal KES ${outstandingPrincipal.toFixed(2)}.`, category: 'loan', severity: 'critical', sourceType: 'Loan', sourceId: loan.id, metadata: { subtype: periodElapsed ? 'repayment_period_elapsed' : 'missed_monthly_payment', memberId: member.id, memberNumber: member.memberNumber, memberName: formatApplicantName(user, member), loanType: loan.type, dueDate, periodEnd, outstandingPrincipal, generatedBy: 'ADMIN_AUTOMATION' } };
+    created.push(await upsertNotification({ ...common, userId: user.id, eventKey: `${baseKey}:member`, actionUrl: '/dashboard/user/loans' }));
+    for (const recipient of staff) created.push(await upsertNotification({ ...common, userId: recipient.id, eventKey: `${baseKey}:${recipient.id}`, actionUrl: recipient.role === 'FINANCE' ? '/dashboard/finance/notifications' : '/dashboard/admin/notifications' }));
+    if (!alreadyRecorded) await db.AuditLog.create({ userId: null, action: periodElapsed ? 'LOAN_REPAYMENT_PERIOD_ELAPSED' : 'LOAN_MONTHLY_PAYMENT_MISSED', module: 'loans', method: 'SYSTEM', route: '/system/loan-overdue-monitor', statusCode: 200, metadata: { actorRole: 'SYSTEM', actorName: 'Admin Automation', severity: 'CRITICAL', status: 'SUCCESS', targetType: 'LOAN', targetId: loan.id, memberNumber: member.memberNumber, memberName: formatApplicantName(user, member), dueDate, periodEnd, outstandingPrincipal } });
+  }
+  return created.map(serialize);
+};
+
 module.exports = {
   listForUser,
   listSentByUser,
@@ -647,4 +678,5 @@ module.exports = {
   createApplicantGuarantorDecisionNotification,
   createOptOutReviewNotifications,
   createAdminIdentityBlockNotifications,
+  createOverdueLoanAlerts,
 };

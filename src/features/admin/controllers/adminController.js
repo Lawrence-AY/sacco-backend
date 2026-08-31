@@ -194,7 +194,28 @@ const formatAdminMemberRow = (member) => {
 
 const getAllUsers = asyncHandler(async (req, res) => {
   const users = await userService.getAllUsers();
-  return ResponseHandler.success(res, users.map(UserDTO.admin), 'Users retrieved successfully', 200);
+  const applicationIds = users.map((user) => user.Member?.applicationId).filter(Boolean);
+  const applications = applicationIds.length
+    ? await db.MembershipApplication.findAll({ where: { id: applicationIds }, attributes: ['id', 'status', 'feePaid', 'paymentVerifiedAt'] })
+    : [];
+  const applicationMap = new Map(applications.map((application) => [application.id, application]));
+  const result = users.map((user) => {
+    const row = UserDTO.admin(user);
+    const member = row.Member || row.member;
+    const application = member?.applicationId ? applicationMap.get(member.applicationId) : null;
+    return {
+      ...row,
+      membershipComplete: Boolean(
+        row.role === 'MEMBER'
+        && row.isVerified
+        && member?.isVerified
+        && String(member?.status || '').toUpperCase() === 'ACTIVE'
+        && (!member.applicationId || (application?.status === 'APPROVED' && application?.feePaid && application?.paymentVerifiedAt)),
+      ),
+      onboardingStatus: application?.status || (member ? 'IMPORTED_MEMBER' : 'INCOMPLETE'),
+    };
+  });
+  return ResponseHandler.success(res, result, 'Users retrieved successfully', 200);
 });
 
 const getArchivedMembers = asyncHandler(async (req, res) => {
@@ -217,12 +238,80 @@ const getAuditLogs = asyncHandler(async (req, res) => {
   const where = {};
   if (req.query.module) where.module = String(req.query.module);
   if (req.query.action) where.action = String(req.query.action);
+  if (req.query.adminId) where.userId = String(req.query.adminId);
+  if (req.query.dateFrom || req.query.dateTo) {
+    where.createdAt = {};
+    if (req.query.dateFrom) where.createdAt[Op.gte] = new Date(`${req.query.dateFrom}T00:00:00.000Z`);
+    if (req.query.dateTo) where.createdAt[Op.lte] = new Date(`${req.query.dateTo}T23:59:59.999Z`);
+  }
   const logs = await db.AuditLog.findAll({
     where,
     order: [['createdAt', 'DESC']],
     limit,
   });
-  return ResponseHandler.success(res, logs, 'Audit logs retrieved successfully', 200);
+  const actorIds = [...new Set(logs.map((log) => log.userId).filter(Boolean))];
+  const [actors, auditMembers] = await Promise.all([
+    actorIds.length ? db.User.findAll({ where: { id: actorIds }, attributes: ['id', 'name', 'firstName', 'lastName', 'role', 'staffId'] }) : [],
+    db.Member.findAll({ attributes: ['id', 'userId', 'memberNumber'], include: [{ model: db.User, attributes: ['name', 'firstName', 'lastName'] }] }),
+  ]);
+  const actorMap = new Map(actors.map((actor) => [actor.id, actor]));
+  const memberById = new Map(auditMembers.map((member) => [member.id, member]));
+  const memberByUser = new Map(auditMembers.map((member) => [member.userId, member]));
+  const normalized = logs.map((record) => {
+    const log = typeof record.toJSON === 'function' ? record.toJSON() : record;
+    const metadata = log.metadata || {};
+    const actor = actorMap.get(log.userId);
+    const params = metadata.params || {};
+    const body = metadata.body || {};
+    const targetId = metadata.targetId || params.loanId || params.memberId || params.userId || params.id || body.loanId || body.memberId || body.userId || '';
+    const targetType = metadata.targetType || (String(log.route || '').match(/\/(loans|members|users|transactions|applications|roles|dividends|deductions)(?:\/|\?|$)/i)?.[1] || log.module || 'system').replace(/s$/, '').toUpperCase();
+    const status = metadata.status || (log.statusCode >= 500 ? 'FAILED' : log.statusCode === 202 ? 'PENDING_APPROVAL' : log.statusCode >= 400 ? 'FAILED' : 'SUCCESS');
+    const severity = metadata.severity || (log.statusCode >= 500 ? 'CRITICAL' : log.statusCode >= 400 ? 'WARN' : ['DELETE', 'LOAN_APPROVAL', 'PASSWORD_RESET'].some((term) => String(log.action).includes(term)) ? 'WARN' : 'INFO');
+    const oldValue = metadata.oldValue ?? metadata.before ?? null;
+    const newValue = metadata.newValue ?? metadata.after ?? (['POST', 'PUT', 'PATCH'].includes(log.method) ? body : null);
+    const auditMember = memberById.get(body.memberId || params.memberId || targetId) || memberByUser.get(log.userId);
+    const auditMemberName = auditMember?.User?.name || [auditMember?.User?.firstName, auditMember?.User?.lastName].filter(Boolean).join(' ');
+    const category = metadata.category || (['loans', 'guarantors'].includes(String(log.module).toLowerCase()) ? 'Loan Management'
+      : ['finance', 'transactions', 'payments', 'dividends', 'deductions'].includes(String(log.module).toLowerCase()) ? 'Financial'
+        : ['member', 'members', 'applications'].includes(String(log.module).toLowerCase()) ? 'Member KYC'
+          : ['auth', 'roles', 'users', 'admin'].includes(String(log.module).toLowerCase()) ? 'Access Control' : 'System');
+    return {
+      id: log.id,
+      timestamp: new Date(log.createdAt).toISOString(),
+      actorId: log.userId || 'SYSTEM',
+      actorName: metadata.actorName || actor?.name || [actor?.firstName, actor?.lastName].filter(Boolean).join(' ') || 'System',
+      actorRole: metadata.actorRole || actor?.role || 'SYSTEM',
+      staffId: actor?.staffId || '—',
+      sessionRef: metadata.sessionRef || 'Not recorded',
+      event: log.action,
+      category,
+      targetType,
+      targetId,
+      target: targetId ? `${targetType}: ${targetId}` : targetType,
+      memberNumber: metadata.memberNumber || body.memberNumber || auditMember?.memberNumber || '',
+      memberName: metadata.memberName || body.memberName || auditMemberName || '',
+      ipAddress: log.ip || '',
+      device: metadata.device || log.userAgent || '',
+      portal: metadata.portal || (log.route?.startsWith('/api/') ? 'Admin Portal / API' : 'System Job'),
+      endpoint: `${log.method || ''} ${log.route || ''}`.trim(),
+      location: metadata.location || 'Not available',
+      beforeState: oldValue,
+      afterState: newValue,
+      stateDelta: oldValue !== null || newValue !== null ? `${JSON.stringify(oldValue)} → ${JSON.stringify(newValue)}` : 'No state change captured',
+      failureReason: status === 'FAILED' ? (metadata.error || metadata.failureReason || body.error || `Request failed with HTTP ${log.statusCode}`) : null,
+      status,
+      severity,
+      method: log.method,
+      route: log.route,
+    };
+  }).filter((log) => !req.query.severity || log.severity === String(req.query.severity).toUpperCase());
+  const sessions = await db.LoginSession.findAll({
+    where: { status: 'ACTIVE' },
+    include: [{ model: db.User, attributes: ['role'] }],
+    attributes: ['id'],
+  });
+  const activeAdminSessions = sessions.filter((session) => ['ADMIN', 'SUPERADMIN', 'FINANCE'].includes(session.User?.role)).length;
+  return ResponseHandler.success(res, { items: normalized, summary: { activeAdminSessions } }, 'Audit logs retrieved successfully', 200);
 });
 
 const getUserById = asyncHandler(async (req, res) => {
@@ -270,11 +359,20 @@ const getAllApplications = asyncHandler(async (req, res) => {
     : applications;
   const formatted = filtered.map((application) => ({
     id: application.id,
-    applicantName: application.name,
-    applicantEmail: application.email,
-    status: application.status,
-    submittedAt: application.createdAt,
+    name: application.name,
+    email: application.email,
+    phone: application.phone,
+    nationalId: application.nationalId || application.identityNumber,
+    identityType: application.identityType,
+    memberType: application.type,
+    occupation: application.occupation,
+    county: application.county,
+    onboardingStage: application.status === 'PENDING_PAYMENT' ? 'Payment' : application.status === 'PENDING_APPROVAL' ? 'Admin review' : 'Completed',
+    status: ['PENDING_PAYMENT', 'PENDING_APPROVAL'].includes(application.status) ? 'PENDING' : application.status,
+    applicationStatus: application.status,
+    submittedDate: application.createdAt,
     feePaid: application.feePaid,
+    paymentStatus: application.feePaid && application.paymentVerifiedAt ? 'PAID' : 'PENDING',
     paymentVerifiedAt: application.paymentVerifiedAt,
     rejectedReason: application.rejectedReason,
   }));

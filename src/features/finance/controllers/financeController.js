@@ -205,7 +205,7 @@ const formatDeduction = (deduction, member = null) => ({
 
 const getAllTransactions = asyncHandler(async (req, res) => {
   const page = Math.max(Number(req.query.page) || 1, 1);
-  const limit = [10, 25].includes(Number(req.query.limit)) ? Number(req.query.limit) : 25;
+  const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 500);
   const offset = (page - 1) * limit;
   const where = { status: 'SUCCESS' };
   if (req.query.type) {
@@ -214,7 +214,7 @@ const getAllTransactions = asyncHandler(async (req, res) => {
   if (req.query.status && String(req.query.status).toUpperCase() === 'SUCCESS') {
     where.status = 'SUCCESS';
   }
-  const [transactionResult, members, transferResult, loanTransactions] = await Promise.all([
+  const [transactionResult, members, transferResult, loanTransactions, loans] = await Promise.all([
     db.Transaction.findAndCountAll({ where, order: [['createdAt', 'DESC']], limit: page * limit }),
     db.Member.findAll({ include: [{ model: db.User, attributes: ['name', 'firstName', 'lastName'] }] }),
     db.ShareCapitalTransfer.findAndCountAll({
@@ -225,12 +225,18 @@ const getAllTransactions = asyncHandler(async (req, res) => {
       ], order: [['createdAt', 'DESC']], limit: page * limit,
     }),
     db.LoanTransaction.findAll({ order: [['createdAt', 'DESC']], limit: page * limit }),
+    db.Loan.findAll({ attributes: ['id', 'type'] }),
   ]);
   const memberMap = new Map(members.map((member) => [member.id, member]));
+  const loanMap = new Map(loans.map((loan) => [loan.id, loan]));
   const repaymentMap = new Map(loanTransactions.map((entry) => [entry.ledgerTransactionId, entry]));
   const formatted = transactionResult.rows.map((transaction) => {
     const member = memberMap.get(transaction.memberId);
-    const row = formatTransaction(transaction, member, member?.User);
+    const baseRow = formatTransaction(transaction, member, member?.User);
+    const loanType = loanMap.get(transaction.loanId)?.type || null;
+    const row = loanType && ['LOAN_REPAYMENT', 'LOAN_DISBURSEMENT'].includes(baseRow.category)
+      ? { ...baseRow, loanType, category: `${loanType}_${baseRow.category}` }
+      : baseRow;
     const repayment = repaymentMap.get(transaction.id);
     return repayment ? { ...row, transactionType: repayment.transactionType,
       principalPaid: Number(repayment.principalPaid), interestPaid: Number(repayment.interestPaid),
