@@ -67,6 +67,11 @@ const Member = sequelize.define('Member', {
     type: DataTypes.JSONB,
     allowNull: false,
     defaultValue: []
+  },
+  importProfile: {
+    type: DataTypes.JSONB,
+    allowNull: false,
+    defaultValue: {}
   }
 }, {
   timestamps: true,

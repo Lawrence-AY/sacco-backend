@@ -28,7 +28,7 @@ const getUserById = asyncHandler(async (req, res) => {
   if (!user) {
     throw new NotFoundError('User not found');
   }
-  if (req.user.role === 'MEMBER' && req.user.id !== req.params.id) {
+  if (['MEMBER', 'EMPLOYEE'].includes(req.user.role) && req.user.id !== req.params.id) {
     throw new ForbiddenError('You are not allowed to view this user');
   }
   const dto = ['ADMIN', 'SUPERADMIN', 'FINANCE'].includes(req.user.role)

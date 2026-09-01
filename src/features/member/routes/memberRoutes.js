@@ -4,7 +4,7 @@ const { validate, schemas } = require('../../../shared/middleware/zodValidation'
 const memberController = require('../controllers/memberController');
 
 const router = express.Router();
-router.use(protect, authorize(['MEMBER', 'ADMIN']));
+router.use(protect, authorize(['MEMBER', 'EMPLOYEE', 'ADMIN']));
 
 router.get('/profile', memberController.getProfile);
 router.post('/profile/photo', validate(schemas.profilePhotoUpload), memberController.uploadProfilePhoto);

@@ -20,7 +20,7 @@ const profilePhotoDataUrl = dataImageUrl.max(2200000);
 
 const schemas = {
   login: strictObject({
-    email: z.string().trim().email().toLowerCase(),
+    email: z.string().trim().min(3).max(120).toLowerCase(),
     password: z.string().min(1).max(128),
   }),
   register: strictObject({
@@ -34,7 +34,7 @@ const schemas = {
     role: z.string().trim().max(30).optional(),
   }),
   otp: strictObject({
-    email: z.string().trim().email().toLowerCase(),
+    email: z.string().trim().min(3).max(120).toLowerCase(),
     otp: z.string().trim().regex(/^\d{6,8}$/),
   }),
   emailOnly: strictObject({
@@ -111,7 +111,7 @@ const schemas = {
     path: ['idNumber'],
   }),
   roleUpdate: strictObject({
-    role: z.enum(['MEMBER', 'FINANCE', 'ADMIN', 'SUPERADMIN', 'member', 'finance', 'admin', 'superadmin'])
+    role: z.enum(['MEMBER', 'EMPLOYEE', 'FINANCE', 'ADMIN', 'SUPERADMIN', 'member', 'employee', 'finance', 'admin', 'superadmin'])
       .transform((role) => role.toUpperCase()),
   }),
   statusUpdate: strictObject({

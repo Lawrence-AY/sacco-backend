@@ -17,7 +17,7 @@ async function getShareAccountsForUser(user) {
     },
   ];
 
-  if (user.role === 'MEMBER') {
+  if (['MEMBER', 'EMPLOYEE'].includes(user.role)) {
     const member = await findMemberByUserId(user.id);
 
     if (!member) {

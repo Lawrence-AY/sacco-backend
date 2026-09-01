@@ -18,6 +18,10 @@ const memberProfileFields = [
   'savings',
   'shareCapital',
   'loans',
+  'loanRepayment',
+  'interest',
+  'employerContribution',
+  'importProfile',
 ];
 
 const getAllUsers = async () => {
