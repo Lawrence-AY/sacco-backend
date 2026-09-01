@@ -48,6 +48,26 @@ const sanitizeBase = (data) => {
   return sanitized;
 };
 
+const sanitizeMemberForPrivateProfile = (member) => {
+  if (!member) return null;
+  const source = typeof member.toJSON === 'function' ? member.toJSON() : member;
+  const sanitized = sanitizeBase(source);
+  if (sanitized?.importProfile?.raw) {
+    const raw = { ...sanitized.importProfile.raw };
+    Object.keys(raw).forEach((key) => {
+      if (String(key).toLowerCase().replace(/[^a-z0-9]/g, '').includes('membershipfee')) {
+        delete raw[key];
+      }
+    });
+    sanitized.importProfile = { ...sanitized.importProfile, raw };
+  }
+  if (sanitized?.importProfile) {
+    delete sanitized.importProfile.membershipFee;
+  }
+  delete sanitized.membershipFee;
+  return sanitized;
+};
+
 /**
  * User DTO - controls what user data is exposed based on context
  */
@@ -106,7 +126,7 @@ const UserDTO = {
       isVerified: user.isVerified,
       consentGiven: user.consentGiven,
       consentGivenAt: user.consentGivenAt,
-      Member: user.Member || user.member || null,
+      Member: sanitizeMemberForPrivateProfile(user.Member || user.member || null),
       createdAt: user.createdAt,
       updatedAt: user.updatedAt
     });
@@ -324,6 +344,7 @@ module.exports = {
   MemberDTO,
   TransactionDTO,
   LoanDTO,
+  sanitizeMemberForPrivateProfile,
   sanitizeModel,
   sanitizeModels,
   SENSITIVE_FIELDS,

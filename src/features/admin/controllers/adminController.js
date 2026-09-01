@@ -130,6 +130,8 @@ const buildImportReference = ({ member, data = {}, category, amount, rowNumber }
   normalizeImportReferencePart(Number(amount || 0).toFixed(2)),
 ].join('-').slice(0, 255);
 
+const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object || {}, key);
+
 const createBalanceDeltaTransaction = async ({ memberId, loanId, type, amount, category, description, rowNumber, transaction, reference = null, metadata = null }) => {
   const normalizedAmount = Math.abs(Number(amount || 0));
   if (!normalizedAmount) return null;
@@ -147,6 +149,40 @@ const createBalanceDeltaTransaction = async ({ memberId, loanId, type, amount, c
   }, { transaction });
 };
 
+const syncImportedMembershipFee = async ({ member, data, rowNumber, transaction }) => {
+  const amount = Number(data.membershipFee || 0);
+  if (!amount) return null;
+  const reference = buildImportReference({ member, data, category: 'membership_fee', amount, rowNumber });
+  const existing = await db.Transaction.findOne({
+    where: {
+      memberId: member.id,
+      type: 'MEMBERSHIP_FEE',
+      amount,
+      paymentCategory: 'membership_fee',
+      reference,
+    },
+    transaction,
+  });
+  if (existing) {
+    await existing.update({
+      status: 'SUCCESS',
+      description: 'Imported membership fee',
+    }, { transaction });
+    return existing;
+  }
+  return createBalanceDeltaTransaction({
+    memberId: member.id,
+    type: 'MEMBERSHIP_FEE',
+    amount,
+    category: 'membership_fee',
+    description: 'Imported membership fee',
+    rowNumber,
+    reference,
+    metadata: { source: 'membership_fee_sheet', rowNumber, sheetName: data.sheetName || data.statementSheet || 'Bio data' },
+    transaction,
+  });
+};
+
 const syncImportedMemberBalances = async ({ member, data, rowNumber, transaction }) => {
   const [savingsAccount] = await db.SavingsAccount.findOrCreate({
     where: { memberId: member.id },
@@ -161,23 +197,17 @@ const syncImportedMemberBalances = async ({ member, data, rowNumber, transaction
 
   const shareValue = Number(shareAccount.shareValue || 100);
   const adjustments = [
-    { key: 'savings', amount: Number(data.savings || 0), type: 'DEPOSIT', category: 'historical_savings', description: 'Imported member statement savings balance adjustment' },
-    { key: 'shareCapital', amount: Number(data.shareCapital || 0), type: 'DEPOSIT', category: 'share_capital', description: 'Imported member statement share capital balance adjustment' },
-    { key: 'employerContribution', amount: Number(data.employerContribution || 0), type: 'DEPOSIT', category: 'employer_contribution', description: 'Imported member statement employer contribution balance adjustment' },
+    { key: 'savings', target: Number(data.savings || 0), current: Number(savingsAccount.balance || 0), type: 'DEPOSIT', category: 'historical_savings', description: 'Imported member statement savings balance adjustment' },
+    { key: 'shareCapital', target: Number(data.shareCapital || 0), current: Number(shareAccount.shares || 0) * shareValue, type: 'DEPOSIT', category: 'share_capital', description: 'Imported member statement share capital balance adjustment' },
+    { key: 'employerContribution', target: Number(data.employerContribution || 0), current: Number(member.employerContribution || 0), type: 'DEPOSIT', category: 'employer_contribution', description: 'Imported member statement employer contribution balance adjustment' },
   ];
 
-  let savingsBalance = Number(savingsAccount.balance || 0);
-  let shareCapitalBalance = Number(shareAccount.shares || 0) * shareValue;
-  let employerContributionBalance = Number(member.employerContribution || 0);
-
   for (const adjustment of adjustments) {
-    if (!adjustment.amount) continue;
-    const reference = buildImportReference({ member, data, category: adjustment.category, amount: adjustment.amount, rowNumber });
+    const delta = adjustment.target - adjustment.current;
+    const reference = buildImportReference({ member, data, category: adjustment.category, amount: adjustment.target, rowNumber });
     const duplicate = await db.Transaction.findOne({
       where: {
         memberId: member.id,
-        type: adjustment.type,
-        amount: Math.abs(adjustment.amount),
         paymentCategory: adjustment.category,
         reference,
       },
@@ -187,10 +217,11 @@ const syncImportedMemberBalances = async ({ member, data, rowNumber, transaction
       await duplicate.update({ status: 'SUCCESS', description: adjustment.description }, { transaction });
       continue;
     }
+    if (!delta) continue;
     await createBalanceDeltaTransaction({
       memberId: member.id,
-      type: adjustment.type,
-      amount: adjustment.amount,
+      type: delta >= 0 ? 'DEPOSIT' : 'WITHDRAWAL',
+      amount: delta,
       category: adjustment.category,
       description: adjustment.description,
       rowNumber,
@@ -198,17 +229,17 @@ const syncImportedMemberBalances = async ({ member, data, rowNumber, transaction
       metadata: { source: 'financial_import', rowNumber, sheetName: data.sheetName || data.statementSheet || null },
       transaction,
     });
-    if (adjustment.key === 'savings') savingsBalance += adjustment.amount;
-    if (adjustment.key === 'shareCapital') shareCapitalBalance += adjustment.amount;
-    if (adjustment.key === 'employerContribution') employerContributionBalance += adjustment.amount;
   }
 
-  await savingsAccount.update({ balance: savingsBalance }, { transaction });
-  await shareAccount.update({ shares: shareCapitalBalance / shareValue }, { transaction });
+  const targetSavings = hasOwn(data, 'savings') ? Number(data.savings || 0) : Number(savingsAccount.balance || 0);
+  const targetShareCapital = hasOwn(data, 'shareCapital') ? Number(data.shareCapital || 0) : (Number(shareAccount.shares || 0) * shareValue);
+  const targetEmployerContribution = hasOwn(data, 'employerContribution') ? Number(data.employerContribution || 0) : Number(member.employerContribution || 0);
+  await savingsAccount.update({ balance: targetSavings }, { transaction });
+  await shareAccount.update({ shares: targetShareCapital / shareValue }, { transaction });
   await member.update({
-    shareCapital: shareCapitalBalance,
-    savings: savingsBalance,
-    employerContribution: employerContributionBalance,
+    shareCapital: targetShareCapital,
+    savings: targetSavings,
+    employerContribution: targetEmployerContribution,
   }, { transaction });
 };
 
@@ -237,14 +268,13 @@ const syncImportedLoanLiability = async ({ member, data, rowNumber, transaction 
     decidedAt: new Date(),
   }, { transaction });
   let currentBalance = Number(loan.principalBalance ?? loan.amount ?? 0);
-  if (importedLoanBalance) {
+  if (hasOwn(data, 'loans')) {
+    const delta = importedLoanBalance - currentBalance;
     const reference = buildImportReference({ member, data, category: 'account_liability_statement', amount: importedLoanBalance, rowNumber });
     const duplicate = await db.Transaction.findOne({
       where: {
         memberId: member.id,
         loanId: loan.id,
-        type: 'LOAN_DISBURSEMENT',
-        amount: importedLoanBalance,
         paymentCategory: 'account_liability_statement',
         reference,
       },
@@ -252,13 +282,12 @@ const syncImportedLoanLiability = async ({ member, data, rowNumber, transaction 
     });
     if (duplicate) {
       await duplicate.update({ status: 'SUCCESS', description: 'Imported account liability statement loan balance adjustment' }, { transaction });
-    } else {
-      currentBalance += importedLoanBalance;
+    } else if (delta) {
       await createBalanceDeltaTransaction({
         memberId: member.id,
         loanId: loan.id,
-        type: 'LOAN_DISBURSEMENT',
-        amount: importedLoanBalance,
+        type: delta >= 0 ? 'LOAN_DISBURSEMENT' : 'LOAN_REPAYMENT',
+        amount: delta,
         category: 'account_liability_statement',
         description: 'Imported account liability statement loan balance adjustment',
         rowNumber,
@@ -267,6 +296,7 @@ const syncImportedLoanLiability = async ({ member, data, rowNumber, transaction 
         transaction,
       });
     }
+    currentBalance = importedLoanBalance;
   }
   if (importedRepayment > 0) {
     const repaymentAmount = importedRepayment;
@@ -317,7 +347,8 @@ const mapMemberImportRow = (row) => {
   const memberNumber = pick(row, ['memberNumber', 'member number', 'memberNo', 'member no', 'memberNo.', 'member no.', 'registrationNumber', 'registration number', 'registrationNo', 'registration no', 'memberId', 'memberID']);
   const staffId = pick(row, ['staffId', 'staffID', 'payrollNumber', 'employeeId']);
   const status = normalizeMemberStatus(pick(row, ['status']) || 'ACTIVE');
-  const shareCapital = toNumber(pick(row, ['shareCapital', 'share capital', 'currentShareCapital', 'current share capital', 'shares', 'membershipFee', 'membership fee']));
+  const shareCapital = toNumber(pick(row, ['shareCapital', 'share capital', 'currentShareCapital', 'current share capital', 'shares']));
+  const membershipFee = toNumber(pick(row, ['membershipFee', 'membership fee', 'registrationFee', 'registration fee']));
   const savings = toNumber(pick(row, ['savings', 'personalSavings', 'personal savings', 'totalPersonalSavings', 'total personal savings', 'savingsBalance', 'savings balance']));
   const employerContribution = toNumber(pick(row, ['employerContribution', 'employer contribution', 'employerContrib']));
   const loans = toNumber(pick(row, ['loans', 'loanBalance', 'loan balance', 'liability', 'liabilityAmount', 'liability amount']));
@@ -343,6 +374,7 @@ const mapMemberImportRow = (row) => {
       memberNumber,
       staffId,
       shareCapital,
+      membershipFee,
       savings,
       employerContribution,
       loans,
@@ -1115,6 +1147,7 @@ const commitMemberCsvImport = asyncHandler(async (req, res) => {
             employmentTag: EMPLOYEE_TAG,
           }, { transaction });
         }
+        await syncImportedMembershipFee({ member: existingMember, data, rowNumber: row.rowNumber, transaction });
         await syncImportedMemberBalances({ member: existingMember, data, rowNumber: row.rowNumber, transaction });
         await syncImportedLoanLiability({ member: existingMember, data, rowNumber: row.rowNumber, transaction });
       });
@@ -1147,6 +1180,7 @@ const commitMemberCsvImport = asyncHandler(async (req, res) => {
           dateJoined: data.joinDate ? new Date(data.joinDate) : new Date(),
           importProfile: mergeImportProfile(null, data, status),
         }, { transaction });
+        await syncImportedMembershipFee({ member: archivedMember, data, rowNumber: row.rowNumber, transaction });
         await syncImportedMemberBalances({ member: archivedMember, data, rowNumber: row.rowNumber, transaction });
         await syncImportedLoanLiability({ member: archivedMember, data, rowNumber: row.rowNumber, transaction });
         return archivedMember;
@@ -1214,6 +1248,7 @@ const commitMemberCsvImport = asyncHandler(async (req, res) => {
         },
       }, { transaction });
       await member.update({ importProfile: mergeImportProfile(member, data, status) }, { transaction });
+      await syncImportedMembershipFee({ member, data, rowNumber: row.rowNumber, transaction });
       await syncImportedMemberBalances({ member, data, rowNumber: row.rowNumber, transaction });
       await syncImportedLoanLiability({ member, data, rowNumber: row.rowNumber, transaction });
       return { user, member };
