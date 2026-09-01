@@ -6,7 +6,7 @@ const shareService = require('../../shares/services/shareService');
 const asyncHandler = require('../../../shared/utils/asyncHandler');
 const ResponseHandler = require('../../../shared/utils/response');
 const { NotFoundError, ValidationError, ForbiddenError } = require('../../../shared/utils/errors');
-const { UserDTO, LoanDTO, TransactionDTO } = require('../../../shared/utils/dtos');
+const { UserDTO, LoanDTO, TransactionDTO, sanitizeMemberForPrivateProfile } = require('../../../shared/utils/dtos');
 const logger = require('../../../shared/utils/logger');
 const notificationService = require('../../notifications/services/notificationService');
 const nodemailer = require('nodemailer');
@@ -424,7 +424,7 @@ const getProfile = asyncHandler(async (req, res) => {
     throw new NotFoundError('User not found');
   }
   const member = await findMemberByUserId(req.user.id);
-  return ResponseHandler.success(res, { ...UserDTO.private(user), Member: user.Member || member, nominees: member?.nominees || [] }, 'Profile retrieved successfully');
+  return ResponseHandler.success(res, { ...UserDTO.private(user), Member: sanitizeMemberForPrivateProfile(user.Member || member), nominees: member?.nominees || [] }, 'Profile retrieved successfully');
 });
 
 const parseProfilePhotoDataUrl = (dataUrl) => {
@@ -568,7 +568,7 @@ const updateProfile = asyncHandler(async (req, res) => {
   if (nominees !== undefined && member) await member.update({ nominees });
   updated = await userService.getUserById(req.user.id);
   const refreshedMember = updated?.Member || member;
-  return ResponseHandler.success(res, { ...UserDTO.private(updated), Member: refreshedMember, nominees: refreshedMember?.nominees || [] }, 'Profile updated successfully', 200);
+  return ResponseHandler.success(res, { ...UserDTO.private(updated), Member: sanitizeMemberForPrivateProfile(refreshedMember), nominees: refreshedMember?.nominees || [] }, 'Profile updated successfully', 200);
 });
 
 const transferShareCapital = asyncHandler(async (req, res) => {
