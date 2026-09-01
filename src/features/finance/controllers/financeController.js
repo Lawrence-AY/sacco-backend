@@ -567,7 +567,8 @@ const getAllMembers = asyncHandler(async (req, res) => {
 
   const formatted = members.map((member) => {
     const user = member.User || {};
-    const name = user.name || [user.firstName, user.lastName].filter(Boolean).join(' ') || member.memberNumber || member.id;
+    const importProfile = member.importProfile || {};
+    const name = user.name || [user.firstName, user.lastName].filter(Boolean).join(' ') || importProfile.fullName || member.memberNumber || member.id;
     const memberTransactions = transactions.filter((transaction) => transaction.memberId === member.id);
     const memberLoans = loans.filter((loan) => loan.memberId === member.id);
     const shareAccount = shareAccounts.find((account) => account.memberId === member.id);
@@ -593,12 +594,12 @@ const getAllMembers = asyncHandler(async (req, res) => {
       memberId: member.id,
       userId: member.userId,
       name,
-      phone: user.phone,
-      email: user.email,
+      phone: user.phone || importProfile.phone || null,
+      email: user.email || importProfile.email || null,
       company: user.employer || null,
       salary: Number(user.monthlyIncome || 0),
       deduction: 0,
-      staffId: user.staffId || null,
+      staffId: user.staffId || importProfile.staffId || null,
       isWhitelisted: Boolean(user.isWhitelisted),
       savings: Math.max(Number(member.savings || 0), Math.max(savingsDeposits - withdrawals, 0)),
       loans: outstandingLoans,
@@ -608,7 +609,7 @@ const getAllMembers = asyncHandler(async (req, res) => {
       employerContribution: Number(member.employerContribution || user.employerContribution || 0),
       shareCapitalBalance: Math.max(MINIMUM_SHARE_CAPITAL - shareCapital, 0),
       risk: memberLoans.some((loan) => ['OVERDUE', 'DEFAULTED', 'WRITTEN_OFF'].includes(String(loan.status || '').toUpperCase())) ? 'High' : 'Low',
-      status: member.isVerified ? 'Active' : 'Pending',
+      status: member.status || (member.isVerified ? 'Active' : 'Pending'),
       createdAt: member.createdAt,
     };
   });

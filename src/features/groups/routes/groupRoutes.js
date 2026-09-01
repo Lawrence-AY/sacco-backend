@@ -3,7 +3,7 @@ const { protect, authorize } = require('../../../shared/middleware/authMiddlewar
 const { validate, schemas } = require('../../../shared/middleware/zodValidation');
 const controller = require('../controllers/groupController');
 const router = express.Router();
-router.use(protect, authorize(['MEMBER', 'ADMIN']));
+router.use(protect, authorize(['MEMBER', 'EMPLOYEE', 'ADMIN']));
 router.get('/', controller.listGroups);
 router.post('/', validate(schemas.groupCreate), controller.createGroup);
 router.get('/member-search', controller.searchEligibleMembers);

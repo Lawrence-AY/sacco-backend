@@ -8,7 +8,9 @@ router.use(protect, authorize(['ADMIN', 'FINANCE']));
 
 router.get('/transactions', financeController.getAllTransactions);
 router.post('/transactions', financeController.createTransaction);
-// Finance CSV import maps periodic financial postings to existing members.
+// Finance imports can create employee member accounts and post periodic financial records.
+router.post('/members/import/preview', adminController.previewMemberCsvImport);
+router.post('/members/import/commit', adminController.commitMemberCsvImport);
 router.post('/financial-import/preview', adminController.previewFinancialCsvImport);
 router.post('/financial-import/commit', adminController.commitFinancialCsvImport);
 router.post('/transactions/:transactionId/verify', financeController.verifyTransaction);

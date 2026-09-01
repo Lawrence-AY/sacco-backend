@@ -79,32 +79,48 @@ const pick = (row, aliases) => {
 };
 
 const toNumber = (value) => {
-  const number = Number(String(value || '').replace(/,/g, ''));
+  const number = Number(String(value || '').replace(/,/g, '').replace(/-/g, '').trim());
   return Number.isFinite(number) ? number : 0;
 };
 
 const hasStaffId = (value) => Boolean(String(value || '').trim());
+const normalizeMemberStatus = (status) => String(status || 'ACTIVE').trim().toUpperCase();
+const isExitedMemberStatus = (status) => ['EXITED', 'INACTIVE', 'CLOSED', 'RESIGNED', 'WITHDRAWN', 'DECEASED'].includes(normalizeMemberStatus(status));
+const shouldCreateMemberAccount = (status) => normalizeMemberStatus(status) === 'ACTIVE';
+const parseJsonCell = (value) => {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+};
 
 const mapMemberImportRow = (row) => {
-  const fullName = pick(row, ['name', 'fullName', 'memberName', 'memberNameFull']);
-  const email = pick(row, ['email', 'emailAddress', 'username']).toLowerCase();
-  const phone = pick(row, ['phone', 'phoneNumber', 'mobile', 'mobileNumber', 'telephone']);
-  const nationalId = pick(row, ['nationalId', 'nationalID', 'idNumber', 'nationalIdentificationNumber']);
-  const memberNumber = pick(row, ['memberNumber', 'registrationNumber', 'memberNo', 'memberId', 'memberID']);
+  const importedName = pick(row, ['name', 'fullName', 'full name', 'memberName', 'member name', 'memberNameFull', 'employeeName', 'employee name']);
+  const email = pick(row, ['email', 'emailAddress', 'email address', 'username']).toLowerCase();
+  const phone = pick(row, ['phone', 'phoneNumber', 'phone number', 'mobile', 'mobileNumber', 'mobile number', 'mobilePhoneNumber', 'mobile phone number', 'telephone']);
+  const nationalId = pick(row, ['nationalId', 'nationalID', 'national id', 'idNumber', 'id number', 'idNo', 'id no', 'nationalIdentificationNumber', 'national identification number']);
+  const memberNumber = pick(row, ['memberNumber', 'member number', 'memberNo', 'member no', 'memberNo.', 'member no.', 'registrationNumber', 'registration number', 'registrationNo', 'registration no', 'memberId', 'memberID']);
   const staffId = pick(row, ['staffId', 'staffID', 'payrollNumber', 'employeeId']);
-  const status = pick(row, ['status']) || 'ACTIVE';
-  const shareCapital = toNumber(pick(row, ['shareCapital', 'share capital', 'shares']));
-  const savings = toNumber(pick(row, ['savings', 'savingsBalance']));
-  const joinDate = pick(row, ['joinDate', 'joinedDate', 'dateJoined', 'joiningDate']);
+  const status = normalizeMemberStatus(pick(row, ['status']) || 'ACTIVE');
+  const shareCapital = toNumber(pick(row, ['shareCapital', 'share capital', 'currentShareCapital', 'current share capital', 'shares', 'membershipFee', 'membership fee']));
+  const savings = toNumber(pick(row, ['savings', 'personalSavings', 'personal savings', 'totalPersonalSavings', 'total personal savings', 'savingsBalance', 'savings balance']));
+  const employerContribution = toNumber(pick(row, ['employerContribution', 'employer contribution', 'employerContrib']));
+  const joinDate = pick(row, ['joinDate', 'join date', 'joinedDate', 'joined date', 'dateJoined', 'date joined', 'joiningDate', 'joining date']);
+  const statementSheet = pick(row, ['statementSheet', 'statement sheet', 'sheet']);
+  const statementDetails = parseJsonCell(pick(row, ['statementDetails', 'statement details']));
+  const fullName = importedName || statementDetails?.name || memberNumber || nationalId || 'Imported Employee';
+  const createsAccount = shouldCreateMemberAccount(status);
   const missing = [];
-  if (!fullName) missing.push('name');
-  if (!email || !/^\S+@\S+\.\S+$/.test(email)) missing.push('email');
-  if (!phone) missing.push('phone');
+  if (email && !/^\S+@\S+\.\S+$/.test(email)) missing.push('email');
   if (!nationalId) missing.push('nationalId');
+  if (!memberNumber) missing.push('memberNumber');
   return {
     rowNumber: row.rowNumber,
     ready: missing.length === 0,
     missing,
+    action: createsAccount ? 'CREATE_ACCOUNT' : 'RECORD_ONLY',
     data: {
       fullName,
       email,
@@ -114,10 +130,16 @@ const mapMemberImportRow = (row) => {
       staffId,
       shareCapital,
       savings,
+      employerContribution,
       joinDate,
-      status: status.toUpperCase(),
+      status,
+      exited: isExitedMemberStatus(status),
+      createsAccount,
+      statementSheet,
+      statementDetails,
       company: 'Ayedos',
       isWhitelisted: true,
+      raw: row.raw,
     },
   };
 };
@@ -206,7 +228,7 @@ const getAllUsers = asyncHandler(async (req, res) => {
     return {
       ...row,
       membershipComplete: Boolean(
-        row.role === 'MEMBER'
+        ['MEMBER', 'EMPLOYEE'].includes(row.role)
         && row.isVerified
         && member?.isVerified
         && String(member?.status || '').toUpperCase() === 'ACTIVE'
@@ -403,7 +425,7 @@ const reviewApplication = asyncHandler(async (req, res) => {
 });
 
 const getSystemStats = asyncHandler(async (req, res) => {
-  const totalMembers = await db.User.count({ where: { role: 'MEMBER' } });
+  const totalMembers = await db.User.count({ where: { role: { [Op.in]: ['MEMBER', 'EMPLOYEE'] } } });
   const pendingApplications = await db.MembershipApplication.count({ where: { status: { [Op.in]: ['PENDING_PAYMENT', 'PENDING_APPROVAL'] } } });
   const activeLoans = await db.Loan.count({ where: { status: 'ACTIVE' } });
   const totalSharesValueResult = await db.ShareAccount.findAll({ attributes: ['shares', 'shareValue'] });
@@ -804,26 +826,88 @@ const commitMemberCsvImport = asyncHandler(async (req, res) => {
   const skipped = [];
   for (const row of readyRows) {
     const { data } = row;
-    const existingUser = await db.User.findOne({ where: { email: data.email } });
+    const existingMember = await db.Member.findOne({
+      where: {
+        [Op.or]: [
+          ...(data.memberNumber ? [{ memberNumber: data.memberNumber }] : []),
+          { nationalId: data.nationalId },
+        ],
+      },
+    });
+    if (existingMember) {
+      skipped.push({ rowNumber: row.rowNumber, memberNumber: data.memberNumber, reason: 'Member already exists' });
+      continue;
+    }
+
+    const status = normalizeMemberStatus(data.status);
+    const createsAccount = shouldCreateMemberAccount(status);
+    if (!createsAccount) {
+      const member = await db.sequelize.transaction(async (transaction) => {
+        const archivedMember = await db.Member.create({
+          userId: null,
+          memberNumber: data.memberNumber || `EXITED-${Date.now()}-${row.rowNumber}`,
+          type: 'EMPLOYEE',
+          nationalId: data.nationalId,
+          shareCapital: data.shareCapital,
+          savings: data.savings,
+          employerContribution: data.employerContribution,
+          status,
+          isVerified: false,
+          dateJoined: data.joinDate ? new Date(data.joinDate) : new Date(),
+          importProfile: {
+            fullName: data.fullName,
+            email: data.email || null,
+            phone: data.phone || null,
+            staffId: data.staffId || null,
+            status,
+            statementSheet: data.statementSheet || null,
+            statementDetails: data.statementDetails || null,
+            source: 'bulk_member_import',
+            raw: data.raw || {},
+          },
+        }, { transaction });
+        await db.SavingsAccount.create({ memberId: archivedMember.id, balance: data.savings }, { transaction });
+        await db.ShareAccount.create({ memberId: archivedMember.id, shares: data.shareCapital / 100, shareValue: 100 }, { transaction });
+        return archivedMember;
+      });
+      imported.push({
+        rowNumber: row.rowNumber,
+        memberId: member.id,
+        memberNumber: member.memberNumber,
+        status,
+        accountCreated: false,
+      });
+      continue;
+    }
+
+    const existingUser = await db.User.findOne({
+      where: {
+        [Op.or]: [
+          ...(data.email ? [{ email: data.email }] : []),
+          { nationalId: data.nationalId },
+          ...(data.phone ? [{ phone: data.phone }] : []),
+        ],
+      },
+    });
     if (existingUser) {
-      skipped.push({ rowNumber: row.rowNumber, email: data.email, reason: 'Email already exists' });
+      skipped.push({ rowNumber: row.rowNumber, email: data.email, reason: 'Email, National ID or phone already exists' });
       continue;
     }
     const password = '12345678';
     const hashedPassword = await bcrypt.hash(password, 10);
-    const isStaffMember = hasStaffId(data.staffId);
     const result = await db.sequelize.transaction(async (transaction) => {
       const user = await db.User.create({
         name: data.fullName,
-        email: data.email,
-        phone: data.phone,
+        email: data.email || null,
+        phone: data.phone || null,
         nationalId: data.nationalId,
         password: hashedPassword,
-        role: 'MEMBER',
+        role: 'EMPLOYEE',
         isVerified: true,
         employer: 'Ayedos',
         staffId: data.staffId || null,
         payrollNumber: data.staffId || null,
+        employerContribution: data.employerContribution,
         mustChangePassword: true,
         isWhitelisted: true,
         consentGiven: true,
@@ -832,13 +916,20 @@ const commitMemberCsvImport = asyncHandler(async (req, res) => {
       const member = await db.Member.create({
         userId: user.id,
         memberNumber: data.memberNumber || `AYEDOS-${Date.now()}-${String(user.id).slice(0, 6).toUpperCase()}`,
-        type: isStaffMember ? 'EMPLOYEE' : 'NON_EMPLOYEE',
+        type: 'EMPLOYEE',
         nationalId: data.nationalId,
         shareCapital: data.shareCapital,
         savings: data.savings,
-        status: data.status || 'ACTIVE',
+        employerContribution: data.employerContribution,
+        status,
         isVerified: true,
         dateJoined: data.joinDate ? new Date(data.joinDate) : new Date(),
+        importProfile: {
+          source: 'bulk_member_import',
+          statementSheet: data.statementSheet || null,
+          statementDetails: data.statementDetails || null,
+          raw: data.raw || {},
+        },
       }, { transaction });
       await db.SavingsAccount.create({ memberId: member.id, balance: data.savings }, { transaction });
       await db.ShareAccount.create({ memberId: member.id, shares: data.shareCapital / 100, shareValue: 100 }, { transaction });
@@ -850,6 +941,8 @@ const commitMemberCsvImport = asyncHandler(async (req, res) => {
       memberId: result.member.id,
       memberNumber: result.member.memberNumber,
       email: data.email,
+      status,
+      accountCreated: true,
     });
   }
 

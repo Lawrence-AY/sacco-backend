@@ -56,6 +56,21 @@ const assertOtpRateLimit = (purpose, email, req) => {
 };
 
 const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
+const normalizeLoginIdentifier = (identifier) => String(identifier || '').trim().toLowerCase();
+
+const findUserByLoginIdentifier = async (identifier) => {
+  const normalized = normalizeLoginIdentifier(identifier);
+  if (!normalized) return null;
+  return User.findOne({
+    where: {
+      [db.Sequelize.Op.or]: [
+        { email: normalized },
+        { nationalId: normalized },
+        { phone: normalized },
+      ],
+    },
+  });
+};
 
 const serializeUser = (user) => {
   if (!user) return null;
@@ -235,7 +250,7 @@ const protect = asyncHandler(async (req, res, next) => {
       }
     }
     const path = String(req.originalUrl || req.path || '');
-    const passwordResetAllowedPaths = ['/api/auth/change-password', '/api/users/me', '/api/auth/logout'];
+    const passwordResetAllowedPaths = ['/api/auth/change-password', '/api/member/profile', '/api/users/me', '/api/auth/logout'];
     if (user.mustChangePassword && !passwordResetAllowedPaths.some((allowedPath) => path.startsWith(allowedPath))) {
       throw new ForbiddenError('Password reset required before continuing');
     }
@@ -266,7 +281,7 @@ const authorize = (allowedRoles = []) => {
 
 const admin = authorize(['ADMIN']);
 const finance = authorize(['ADMIN', 'FINANCE']);
-const member = authorize(['MEMBER', 'ADMIN']);
+const member = authorize(['MEMBER', 'EMPLOYEE', 'ADMIN']);
 
 /**
  * =========================
@@ -292,27 +307,27 @@ const verifyPassword = async (password, hashedPassword) => {
  */
 const loginUser = asyncHandler(async (req, res) => {
   const { email, password } = req.body || {};
-  const normalizedEmail = normalizeEmail(email);
-  if (!normalizedEmail || !password) {
-    throw new ValidationError('Email and password are required');
+  const loginIdentifier = normalizeLoginIdentifier(email);
+  if (!loginIdentifier || !password) {
+    throw new ValidationError('Email, National ID or phone number and password are required');
   }
-  if (await isIdentityBlocked(normalizedEmail)) {
-    await recordLoginAttempt(req, normalizedEmail, 'IDENTITY_BLOCKED');
+  if (await isIdentityBlocked(loginIdentifier)) {
+    await recordLoginAttempt(req, loginIdentifier, 'IDENTITY_BLOCKED');
     throw createIdentityBlockedError();
   }
-  const user = await User.findOne({ where: { email: normalizedEmail } });
+  const user = await findUserByLoginIdentifier(loginIdentifier);
   if (!user) {
-    await recordLoginAttempt(req, normalizedEmail, 'INVALID_CREDENTIALS');
+    await recordLoginAttempt(req, loginIdentifier, 'INVALID_CREDENTIALS');
     throw createInvalidAuthError();
   }
   if (isAccountLocked(user)) {
-    await recordLoginAttempt(req, normalizedEmail, 'LOCKED');
+    await recordLoginAttempt(req, loginIdentifier, 'LOCKED');
     throw createLockedError();
   }
   const isValid = await verifyPassword(password, user.password);
   if (!isValid) {
     await recordFailedLogin(user);
-    await recordLoginAttempt(req, normalizedEmail, 'INVALID_CREDENTIALS');
+    await recordLoginAttempt(req, loginIdentifier, 'INVALID_CREDENTIALS');
     throw createInvalidAuthError();
   }
 
@@ -320,6 +335,9 @@ const loginUser = asyncHandler(async (req, res) => {
   const loginSession = await sessionService.createOtpSession(user, req, idempotencyKey);
   let otpSession = await otpService.getActiveOtpSession({ userId: user.id, loginSessionId: loginSession.id, purpose: 'LOGIN' });
   if (!otpSession) {
+    if (!user.email && !user.phone) {
+      throw new ValidationError('Email address or mobile phone number is required before login verification codes can be sent. Please contact an administrator to update this account.');
+    }
     const otp = generateOTP();
     otpSession = await otpService.createOtpSession({ userId: user.id, loginSessionId: loginSession.id, purpose: 'LOGIN', otp });
     const emailJobId = await queueOtpDelivery({ user, email: user.email, phone: user.phone, otp, purpose: 'LOGIN', req });
@@ -327,7 +345,7 @@ const loginUser = asyncHandler(async (req, res) => {
   } else {
     logger.info('Active login OTP session reused', { module: 'auth', userId: user.id, requestId: req.id, loginSessionId: loginSession.id, otpSessionId: otpSession.id });
   }
-  await recordLoginAttempt(req, normalizedEmail, 'OTP_QUEUED');
+  await recordLoginAttempt(req, loginIdentifier, 'OTP_QUEUED');
 
   return ResponseHandler.success(
     res,
@@ -345,12 +363,12 @@ const loginUser = asyncHandler(async (req, res) => {
 
 const verifyLoginOTP = asyncHandler(async (req, res) => {
   const { email, otp } = req.body || {};
-  const normalizedEmail = normalizeEmail(email);
-  if (!normalizedEmail || !otp) {
-    throw new ValidationError('Email and OTP required');
+  const loginIdentifier = normalizeLoginIdentifier(email);
+  if (!loginIdentifier || !otp) {
+    throw new ValidationError('Email, National ID or phone number and OTP required');
   }
 
-  const user = await User.findOne({ where: { email: normalizedEmail } });
+  const user = await findUserByLoginIdentifier(loginIdentifier);
   if (!user) {
     throw createOtpInvalidError();
   }
@@ -379,7 +397,7 @@ const verifyLoginOTP = asyncHandler(async (req, res) => {
     sessionId: loginSession.id
   });
   await sessionService.setRefreshToken(loginSession.id, tokens.refreshToken);
-  await recordLoginAttempt(req, normalizedEmail, 'SUCCESS');
+  await recordLoginAttempt(req, loginIdentifier, 'SUCCESS');
   logger.info('Login OTP verified and tokens issued', { module: 'auth', userId: user.id, requestId: req.id, loginSessionId: loginSession.id });
   setAuthCookies(res, tokens, loginSession.id);
 
@@ -398,6 +416,14 @@ const verifyLoginOTP = asyncHandler(async (req, res) => {
         'paymentReference',
         'registrationTransactionId',
         'isVerified',
+        'shareCapital',
+        'savings',
+        'loans',
+        'loanRepayment',
+        'interest',
+        'employerContribution',
+        'nominees',
+        'importProfile',
       ],
     }],
   });
