@@ -53,6 +53,7 @@ const schemas = {
   changePassword: strictObject({
     currentPassword: z.string().min(1).max(128),
     newPassword: z.string().min(8).max(128),
+    confirmPassword: z.string().min(8).max(128),
   }),
   profileUpdate: strictObject({
     firstName: z.string().trim().min(1).max(50).optional(),

@@ -166,15 +166,21 @@ const clearFailedLogin = async (user, req) => {
 };
 
 const queueOtpDelivery = async ({ user, email, phone, otp, purpose, req, logContext = {} }) => {
-  const emailJobId = await enqueueEmail(QUEUES.OTP, 'OTP', { to: email, otp }, { immediate: true });
-  sendOtpSms({ to: phone || user?.phone, otp, purpose })
-    .catch((error) => logger.error('OTP SMS delivery failed', {
-      module: 'auth',
-      userId: user?.id,
-      requestId: req?.id,
-      purpose,
-      error: error.message,
-    }));
+  const emailRecipient = email || user?.email || null;
+  const phoneRecipient = phone || user?.phone || null;
+  const emailJobId = emailRecipient
+    ? await enqueueEmail(QUEUES.OTP, 'OTP', { to: emailRecipient, otp }, { immediate: true })
+    : null;
+  if (phoneRecipient) {
+    sendOtpSms({ to: phoneRecipient, otp, purpose })
+      .catch((error) => logger.error('OTP SMS delivery failed', {
+        module: 'auth',
+        userId: user?.id,
+        requestId: req?.id,
+        purpose,
+        error: error.message,
+      }));
+  }
   return emailJobId;
 };
 
@@ -336,7 +342,56 @@ const loginUser = asyncHandler(async (req, res) => {
   let otpSession = await otpService.getActiveOtpSession({ userId: user.id, loginSessionId: loginSession.id, purpose: 'LOGIN' });
   if (!otpSession) {
     if (!user.email && !user.phone) {
-      throw new ValidationError('Email address or mobile phone number is required before login verification codes can be sent. Please contact an administrator to update this account.');
+      if (!user.mustChangePassword) {
+        throw new ValidationError('Email address or mobile phone number is required before login verification codes can be sent. Please contact an administrator to update this account.');
+      }
+      await clearFailedLogin(user, req);
+      const activeSession = await sessionService.activateSession(user, req);
+      const tokens = jwtUtils.generateTokens(user.id, {
+        role: user.role,
+        sessionId: activeSession.id
+      });
+      await sessionService.setRefreshToken(activeSession.id, tokens.refreshToken);
+      await recordLoginAttempt(req, loginIdentifier, 'FIRST_LOGIN_SETUP_REQUIRED');
+      setAuthCookies(res, tokens, activeSession.id);
+      const authenticatedUser = await db.User.findByPk(user.id, {
+        include: [{
+          model: db.Member,
+          attributes: [
+            'id',
+            'userId',
+            'memberNumber',
+            'type',
+            'nationalId',
+            'status',
+            'dateJoined',
+            'applicationId',
+            'paymentReference',
+            'registrationTransactionId',
+            'isVerified',
+            'shareCapital',
+            'savings',
+            'loans',
+            'loanRepayment',
+            'interest',
+            'employerContribution',
+            'nominees',
+            'importProfile',
+          ],
+        }],
+      });
+      return ResponseHandler.success(
+        res,
+        {
+          user: serializeUser(authenticatedUser || user),
+          tokens: exposeTokensForEnvironment(tokens),
+          sessionId: activeSession.id,
+          newDevice: activeSession.isNewDevice,
+          setupRequired: true
+        },
+        'First-time account setup required',
+        200
+      );
     }
     const otp = generateOTP();
     otpSession = await otpService.createOtpSession({ userId: user.id, loginSessionId: loginSession.id, purpose: 'LOGIN', otp });

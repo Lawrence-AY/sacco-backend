@@ -854,10 +854,14 @@ const getLoans = asyncHandler(async (req, res) => {
   const formatted = loans.map((loan) => {
     const quote = calculateLoanBalanceQuote(loan);
     const outstandingBalance = quote.outstandingBalance;
+    const isImportedLiabilityStatement = loan.reason === 'Imported account liability statement';
     return ({
     id: loan.id,
     memberId: loan.memberId,
     type: loan.type,
+    source: isImportedLiabilityStatement ? 'AccountLiabilityStatement' : 'Loan',
+    sourceLabel: isImportedLiabilityStatement ? 'Account liability statement' : null,
+    isImportedLiabilityStatement,
     principal: loan.amount,
     principalBalance: Number(loan.principalBalance ?? loan.amount ?? 0),
     accruedInterest: Number(loan.accruedInterest || 0),
@@ -879,6 +883,8 @@ const getLoans = asyncHandler(async (req, res) => {
     autoApproved: loan.type === 'EMERGENCY' && loan.status === 'APPROVED',
     auditTimestamp: loan.decidedAt,
     status: loan.status,
+    reason: loan.reason,
+    purpose: loan.reason,
     approvedAt: loan.updatedAt,
     createdAt: loan.createdAt,
     selfGuaranteed: loan.selfGuaranteed,
@@ -1061,6 +1067,9 @@ const getTransactions = asyncHandler(async (req, res) => {
 
   const visibleTransactions = transactions.filter((transaction) => (
     ['SUCCESS', 'PAID', 'COMPLETED'].includes(String(transaction.status || '').toUpperCase())
+    && String(transaction.type || '').toUpperCase() !== 'MEMBERSHIP_FEE'
+    && !String(transaction.paymentCategory || '').toLowerCase().includes('registration')
+    && !String(transaction.description || '').toLowerCase().includes('membership')
   ));
 
   const formatted = visibleTransactions.map((transaction) => ({
@@ -1759,7 +1768,9 @@ const emailReport = asyncHandler(async (req, res) => {
   const reportType = req.body?.reportType || 'portfolio';
   const durationMonths = Number(req.body?.duration) || 0;
   const member = await findMemberByUserId(req.user.id);
-  const isStaffMember = Boolean(String(user.staffId || user.payrollNumber || '').trim());
+  const isStaffMember = Boolean(String(user.staffId || user.payrollNumber || '').trim())
+    || String(user.employmentTag || '').toUpperCase() === 'EMPLOYEE'
+    || String(user.role || '').toUpperCase() === 'EMPLOYEE';
   if (!isStaffMember && reportType === 'payroll-deduction') {
     throw new ForbiddenError('Payroll deduction reports are available to staff members only');
   }

@@ -30,6 +30,7 @@ const User = sequelize.define('User', {
   monthlyIncome: DataTypes.DECIMAL(14, 2),
   payrollNumber: DataTypes.STRING,
   staffId: DataTypes.STRING,
+  employmentTag: DataTypes.STRING,
   isWhitelisted: {
     type: DataTypes.BOOLEAN,
     defaultValue: false

@@ -95,6 +95,219 @@ const parseJsonCell = (value) => {
     return null;
   }
 };
+const optionalStringField = (key, value) => {
+  const normalized = String(value || '').trim();
+  return normalized ? { [key]: normalized } : {};
+};
+const EMPLOYEE_TAG = 'EMPLOYEE';
+
+const mergeImportProfile = (member, data, status) => ({
+  ...(member?.importProfile || {}),
+  fullName: data.fullName,
+  email: data.email || member?.importProfile?.email || null,
+  phone: data.phone || member?.importProfile?.phone || null,
+  staffId: data.staffId || member?.importProfile?.staffId || null,
+  status,
+  statementSheet: data.statementSheet || member?.importProfile?.statementSheet || null,
+  statementDetails: data.statementDetails || member?.importProfile?.statementDetails || null,
+  source: 'bulk_member_import',
+  raw: data.raw || member?.importProfile?.raw || {},
+  lastImportedAt: new Date().toISOString(),
+});
+
+const normalizeImportReferencePart = (value) => String(value || '')
+  .trim()
+  .replace(/[^a-z0-9]+/gi, '-')
+  .replace(/^-+|-+$/g, '')
+  .toUpperCase() || 'NA';
+
+const buildImportReference = ({ member, data = {}, category, amount, rowNumber }) => [
+  'IMPORT',
+  normalizeImportReferencePart(member.memberNumber || member.id),
+  normalizeImportReferencePart(category),
+  normalizeImportReferencePart(data.sheetName || data.statementSheet || data.raw?.['Statement Sheet']),
+  normalizeImportReferencePart(rowNumber),
+  normalizeImportReferencePart(Number(amount || 0).toFixed(2)),
+].join('-').slice(0, 255);
+
+const createBalanceDeltaTransaction = async ({ memberId, loanId, type, amount, category, description, rowNumber, transaction, reference = null, metadata = null }) => {
+  const normalizedAmount = Math.abs(Number(amount || 0));
+  if (!normalizedAmount) return null;
+  return db.Transaction.create({
+    memberId,
+    loanId: loanId || null,
+    type,
+    amount: normalizedAmount,
+    method: 'MANUAL',
+    status: 'SUCCESS',
+    reference: reference || `IMPORT-${memberId}-${category}-${Date.now()}-${rowNumber}`,
+    description,
+    paymentCategory: category,
+    internalReference: metadata ? JSON.stringify(metadata).slice(0, 255) : null,
+  }, { transaction });
+};
+
+const syncImportedMemberBalances = async ({ member, data, rowNumber, transaction }) => {
+  const [savingsAccount] = await db.SavingsAccount.findOrCreate({
+    where: { memberId: member.id },
+    defaults: { balance: 0 },
+    transaction,
+  });
+  const [shareAccount] = await db.ShareAccount.findOrCreate({
+    where: { memberId: member.id },
+    defaults: { shares: 0, shareValue: 100 },
+    transaction,
+  });
+
+  const shareValue = Number(shareAccount.shareValue || 100);
+  const adjustments = [
+    { key: 'savings', amount: Number(data.savings || 0), type: 'DEPOSIT', category: 'historical_savings', description: 'Imported member statement savings balance adjustment' },
+    { key: 'shareCapital', amount: Number(data.shareCapital || 0), type: 'DEPOSIT', category: 'share_capital', description: 'Imported member statement share capital balance adjustment' },
+    { key: 'employerContribution', amount: Number(data.employerContribution || 0), type: 'DEPOSIT', category: 'employer_contribution', description: 'Imported member statement employer contribution balance adjustment' },
+  ];
+
+  let savingsBalance = Number(savingsAccount.balance || 0);
+  let shareCapitalBalance = Number(shareAccount.shares || 0) * shareValue;
+  let employerContributionBalance = Number(member.employerContribution || 0);
+
+  for (const adjustment of adjustments) {
+    if (!adjustment.amount) continue;
+    const reference = buildImportReference({ member, data, category: adjustment.category, amount: adjustment.amount, rowNumber });
+    const duplicate = await db.Transaction.findOne({
+      where: {
+        memberId: member.id,
+        type: adjustment.type,
+        amount: Math.abs(adjustment.amount),
+        paymentCategory: adjustment.category,
+        reference,
+      },
+      transaction,
+    });
+    if (duplicate) {
+      await duplicate.update({ status: 'SUCCESS', description: adjustment.description }, { transaction });
+      continue;
+    }
+    await createBalanceDeltaTransaction({
+      memberId: member.id,
+      type: adjustment.type,
+      amount: adjustment.amount,
+      category: adjustment.category,
+      description: adjustment.description,
+      rowNumber,
+      reference,
+      metadata: { source: 'financial_import', rowNumber, sheetName: data.sheetName || data.statementSheet || null },
+      transaction,
+    });
+    if (adjustment.key === 'savings') savingsBalance += adjustment.amount;
+    if (adjustment.key === 'shareCapital') shareCapitalBalance += adjustment.amount;
+    if (adjustment.key === 'employerContribution') employerContributionBalance += adjustment.amount;
+  }
+
+  await savingsAccount.update({ balance: savingsBalance }, { transaction });
+  await shareAccount.update({ shares: shareCapitalBalance / shareValue }, { transaction });
+  await member.update({
+    shareCapital: shareCapitalBalance,
+    savings: savingsBalance,
+    employerContribution: employerContributionBalance,
+  }, { transaction });
+};
+
+const syncImportedLoanLiability = async ({ member, data, rowNumber, transaction }) => {
+  const importedLoanBalance = Number(data.loans || 0);
+  const importedRepayment = Number(data.loanRepayment || 0);
+  const existingLoan = await db.Loan.findOne({
+    where: {
+      memberId: member.id,
+      reason: 'Imported account liability statement',
+    },
+    transaction,
+  });
+  if (!importedLoanBalance && !importedRepayment && !existingLoan) return null;
+  const loan = existingLoan || await db.Loan.create({
+    memberId: member.id,
+    amount: 0,
+    principalBalance: 0,
+    accruedInterest: 0,
+    interestRate: 0,
+    duration: 1,
+    reason: 'Imported account liability statement',
+    status: 'ACTIVE',
+    type: 'DEVELOPMENT',
+    approvalStage: 'FINANCE',
+    decidedAt: new Date(),
+  }, { transaction });
+  let currentBalance = Number(loan.principalBalance ?? loan.amount ?? 0);
+  if (importedLoanBalance) {
+    const reference = buildImportReference({ member, data, category: 'account_liability_statement', amount: importedLoanBalance, rowNumber });
+    const duplicate = await db.Transaction.findOne({
+      where: {
+        memberId: member.id,
+        loanId: loan.id,
+        type: 'LOAN_DISBURSEMENT',
+        amount: importedLoanBalance,
+        paymentCategory: 'account_liability_statement',
+        reference,
+      },
+      transaction,
+    });
+    if (duplicate) {
+      await duplicate.update({ status: 'SUCCESS', description: 'Imported account liability statement loan balance adjustment' }, { transaction });
+    } else {
+      currentBalance += importedLoanBalance;
+      await createBalanceDeltaTransaction({
+        memberId: member.id,
+        loanId: loan.id,
+        type: 'LOAN_DISBURSEMENT',
+        amount: importedLoanBalance,
+        category: 'account_liability_statement',
+        description: 'Imported account liability statement loan balance adjustment',
+        rowNumber,
+        reference,
+        metadata: { source: 'account_liability_statement', rowNumber, sheetName: data.sheetName || data.statementSheet || null },
+        transaction,
+      });
+    }
+  }
+  if (importedRepayment > 0) {
+    const repaymentAmount = importedRepayment;
+    const reference = buildImportReference({ member, data, category: 'loan_repayment', amount: repaymentAmount, rowNumber });
+    const duplicate = await db.Transaction.findOne({
+      where: {
+        memberId: member.id,
+        loanId: loan.id,
+        type: 'LOAN_REPAYMENT',
+        amount: repaymentAmount,
+        paymentCategory: 'loan_repayment',
+        reference,
+      },
+      transaction,
+    });
+    if (duplicate) {
+      await duplicate.update({ status: 'SUCCESS', description: `${data.sheetName ? `${data.sheetName} ` : ''}import loan repayment` }, { transaction });
+    } else {
+      currentBalance = Math.max(currentBalance - repaymentAmount, 0);
+      await createBalanceDeltaTransaction({
+        memberId: member.id,
+        loanId: loan.id,
+        type: 'LOAN_REPAYMENT',
+        amount: repaymentAmount,
+        category: 'loan_repayment',
+        description: `${data.sheetName ? `${data.sheetName} ` : ''}import loan repayment`,
+        rowNumber,
+        reference,
+        metadata: { source: 'financial_import', rowNumber, sheetName: data.sheetName || null },
+        transaction,
+      });
+    }
+  }
+  await loan.update({
+    amount: Math.max(Number(loan.amount || 0), currentBalance),
+    principalBalance: currentBalance,
+    status: currentBalance > 0 ? 'ACTIVE' : 'PAID',
+  }, { transaction });
+  await member.update({ loans: currentBalance }, { transaction });
+  return loan;
+};
 
 const mapMemberImportRow = (row) => {
   const importedName = pick(row, ['name', 'fullName', 'full name', 'memberName', 'member name', 'memberNameFull', 'employeeName', 'employee name']);
@@ -107,6 +320,7 @@ const mapMemberImportRow = (row) => {
   const shareCapital = toNumber(pick(row, ['shareCapital', 'share capital', 'currentShareCapital', 'current share capital', 'shares', 'membershipFee', 'membership fee']));
   const savings = toNumber(pick(row, ['savings', 'personalSavings', 'personal savings', 'totalPersonalSavings', 'total personal savings', 'savingsBalance', 'savings balance']));
   const employerContribution = toNumber(pick(row, ['employerContribution', 'employer contribution', 'employerContrib']));
+  const loans = toNumber(pick(row, ['loans', 'loanBalance', 'loan balance', 'liability', 'liabilityAmount', 'liability amount']));
   const joinDate = pick(row, ['joinDate', 'join date', 'joinedDate', 'joined date', 'dateJoined', 'date joined', 'joiningDate', 'joining date']);
   const statementSheet = pick(row, ['statementSheet', 'statement sheet', 'sheet']);
   const statementDetails = parseJsonCell(pick(row, ['statementDetails', 'statement details']));
@@ -131,6 +345,7 @@ const mapMemberImportRow = (row) => {
       shareCapital,
       savings,
       employerContribution,
+      loans,
       joinDate,
       status,
       exited: isExitedMemberStatus(status),
@@ -825,17 +1040,94 @@ const commitMemberCsvImport = asyncHandler(async (req, res) => {
   const imported = [];
   const skipped = [];
   for (const row of readyRows) {
-    const { data } = row;
-    const existingMember = await db.Member.findOne({
+    try {
+      const { data } = row;
+      const existingMember = await db.Member.findOne({
       where: {
         [Op.or]: [
           ...(data.memberNumber ? [{ memberNumber: data.memberNumber }] : []),
           { nationalId: data.nationalId },
         ],
       },
+      include: [{ model: db.User }],
     });
     if (existingMember) {
-      skipped.push({ rowNumber: row.rowNumber, memberNumber: data.memberNumber, reason: 'Member already exists' });
+      const status = normalizeMemberStatus(data.status);
+      let createdUser = null;
+      if (!existingMember.User && shouldCreateMemberAccount(status)) {
+        const existingUserForImport = await db.User.findOne({
+          where: {
+            [Op.or]: [
+              ...(data.email ? [{ email: data.email }] : []),
+              { nationalId: data.nationalId },
+              ...(data.phone ? [{ phone: data.phone }] : []),
+            ],
+          },
+        });
+        if (existingUserForImport) {
+          skipped.push({ rowNumber: row.rowNumber, memberNumber: data.memberNumber, reason: 'Matching user account already exists' });
+          continue;
+        }
+        const hashedPassword = await bcrypt.hash('12345678', 10);
+        createdUser = {
+          name: data.fullName,
+          ...optionalStringField('email', data.email),
+          ...optionalStringField('phone', data.phone),
+          nationalId: data.nationalId,
+          password: hashedPassword,
+          role: 'EMPLOYEE',
+          isVerified: true,
+          employer: 'Ayedos',
+          staffId: data.staffId || null,
+          payrollNumber: data.staffId || null,
+          employmentTag: EMPLOYEE_TAG,
+          employerContribution: data.employerContribution,
+          mustChangePassword: true,
+          isWhitelisted: true,
+          consentGiven: true,
+          consentGivenAt: new Date(),
+        };
+      }
+      await db.sequelize.transaction(async (transaction) => {
+        if (createdUser) {
+          const user = await db.User.create(createdUser, { transaction });
+          existingMember.userId = user.id;
+          existingMember.User = user;
+        }
+        await existingMember.update({
+          userId: existingMember.userId || null,
+          memberNumber: data.memberNumber || existingMember.memberNumber,
+          type: 'EMPLOYEE',
+          nationalId: data.nationalId || existingMember.nationalId,
+          status,
+          dateJoined: data.joinDate ? new Date(data.joinDate) : existingMember.dateJoined,
+          importProfile: mergeImportProfile(existingMember, data, status),
+        }, { transaction });
+        if (existingMember.User) {
+          await existingMember.User.update({
+            name: data.fullName || existingMember.User.name,
+            ...(data.email ? { email: data.email } : {}),
+            ...(data.phone ? { phone: data.phone } : {}),
+            nationalId: data.nationalId || existingMember.User.nationalId,
+            employerContribution: data.employerContribution,
+            staffId: data.staffId || existingMember.User.staffId,
+            payrollNumber: data.staffId || existingMember.User.payrollNumber,
+            employmentTag: EMPLOYEE_TAG,
+          }, { transaction });
+        }
+        await syncImportedMemberBalances({ member: existingMember, data, rowNumber: row.rowNumber, transaction });
+        await syncImportedLoanLiability({ member: existingMember, data, rowNumber: row.rowNumber, transaction });
+      });
+      imported.push({
+        rowNumber: row.rowNumber,
+        userId: existingMember.userId || null,
+        memberId: existingMember.id,
+        memberNumber: existingMember.memberNumber,
+        status,
+        accountCreated: Boolean(existingMember.userId),
+        accountCreatedNow: Boolean(createdUser),
+        updated: true,
+      });
       continue;
     }
 
@@ -844,7 +1136,6 @@ const commitMemberCsvImport = asyncHandler(async (req, res) => {
     if (!createsAccount) {
       const member = await db.sequelize.transaction(async (transaction) => {
         const archivedMember = await db.Member.create({
-          userId: null,
           memberNumber: data.memberNumber || `EXITED-${Date.now()}-${row.rowNumber}`,
           type: 'EMPLOYEE',
           nationalId: data.nationalId,
@@ -854,20 +1145,10 @@ const commitMemberCsvImport = asyncHandler(async (req, res) => {
           status,
           isVerified: false,
           dateJoined: data.joinDate ? new Date(data.joinDate) : new Date(),
-          importProfile: {
-            fullName: data.fullName,
-            email: data.email || null,
-            phone: data.phone || null,
-            staffId: data.staffId || null,
-            status,
-            statementSheet: data.statementSheet || null,
-            statementDetails: data.statementDetails || null,
-            source: 'bulk_member_import',
-            raw: data.raw || {},
-          },
+          importProfile: mergeImportProfile(null, data, status),
         }, { transaction });
-        await db.SavingsAccount.create({ memberId: archivedMember.id, balance: data.savings }, { transaction });
-        await db.ShareAccount.create({ memberId: archivedMember.id, shares: data.shareCapital / 100, shareValue: 100 }, { transaction });
+        await syncImportedMemberBalances({ member: archivedMember, data, rowNumber: row.rowNumber, transaction });
+        await syncImportedLoanLiability({ member: archivedMember, data, rowNumber: row.rowNumber, transaction });
         return archivedMember;
       });
       imported.push({
@@ -898,8 +1179,8 @@ const commitMemberCsvImport = asyncHandler(async (req, res) => {
     const result = await db.sequelize.transaction(async (transaction) => {
       const user = await db.User.create({
         name: data.fullName,
-        email: data.email || null,
-        phone: data.phone || null,
+        ...optionalStringField('email', data.email),
+        ...optionalStringField('phone', data.phone),
         nationalId: data.nationalId,
         password: hashedPassword,
         role: 'EMPLOYEE',
@@ -907,6 +1188,7 @@ const commitMemberCsvImport = asyncHandler(async (req, res) => {
         employer: 'Ayedos',
         staffId: data.staffId || null,
         payrollNumber: data.staffId || null,
+        employmentTag: EMPLOYEE_TAG,
         employerContribution: data.employerContribution,
         mustChangePassword: true,
         isWhitelisted: true,
@@ -931,8 +1213,9 @@ const commitMemberCsvImport = asyncHandler(async (req, res) => {
           raw: data.raw || {},
         },
       }, { transaction });
-      await db.SavingsAccount.create({ memberId: member.id, balance: data.savings }, { transaction });
-      await db.ShareAccount.create({ memberId: member.id, shares: data.shareCapital / 100, shareValue: 100 }, { transaction });
+      await member.update({ importProfile: mergeImportProfile(member, data, status) }, { transaction });
+      await syncImportedMemberBalances({ member, data, rowNumber: row.rowNumber, transaction });
+      await syncImportedLoanLiability({ member, data, rowNumber: row.rowNumber, transaction });
       return { user, member };
     });
     imported.push({
@@ -944,6 +1227,21 @@ const commitMemberCsvImport = asyncHandler(async (req, res) => {
       status,
       accountCreated: true,
     });
+    } catch (error) {
+      skipped.push({
+        rowNumber: row.rowNumber,
+        memberNumber: row.data?.memberNumber || null,
+        nationalId: row.data?.nationalId || null,
+        reason: error?.message || 'Failed to import row',
+      });
+      logger.error('Member import row failed', {
+        module: 'admin',
+        rowNumber: row.rowNumber,
+        memberNumber: row.data?.memberNumber,
+        nationalId: row.data?.nationalId,
+        error: error?.message,
+      });
+    }
   }
 
   return ResponseHandler.success(res, { imported, skipped }, 'Members imported successfully', 201);
@@ -991,48 +1289,39 @@ const commitFinancialCsvImport = asyncHandler(async (req, res) => {
       continue;
     }
 
-    const isStaffMember = hasStaffId(member.User?.staffId || data.staffId);
+    const isStaffMember = true;
     const employerContribution = isStaffMember ? data.employerContribution : 0;
     await db.sequelize.transaction(async (transaction) => {
       await member.update({
-        shareCapital: data.shareCapital,
-        savings: data.savings,
         loans: data.loans,
         loanRepayment: data.loanRepayment,
         interest: data.interest,
-        employerContribution,
+        importProfile: {
+          ...(member.importProfile || {}),
+          lastFinancialImport: {
+            sheetName: data.sheetName || null,
+            loans: data.loans,
+            loanRepayment: data.loanRepayment,
+            interest: data.interest,
+            importedAt: new Date().toISOString(),
+          },
+        },
       }, { transaction });
       if (member.User) {
         await member.User.update({
           employerContribution,
           staffId: isStaffMember ? (data.staffId || member.User.staffId) : null,
           payrollNumber: isStaffMember ? (data.staffId || member.User.payrollNumber) : null,
+          employmentTag: EMPLOYEE_TAG,
         }, { transaction });
       }
-      const [savingsAccount] = await db.SavingsAccount.findOrCreate({ where: { memberId: member.id }, defaults: { balance: 0 }, transaction });
-      await savingsAccount.update({ balance: data.savings }, { transaction });
-      const [shareAccount] = await db.ShareAccount.findOrCreate({ where: { memberId: member.id }, defaults: { shares: 0, shareValue: 100 }, transaction });
-      await shareAccount.update({ shares: data.shareCapital / Number(shareAccount.shareValue || 100) }, { transaction });
-
-      const importReference = `CSV-${member.memberNumber}-${Date.now()}-${row.rowNumber}`;
-      const transactionRows = [
-        ['DEPOSIT', data.savings, 'historical_savings'],
-        ['DEPOSIT', data.shareCapital, 'share_capital'],
-        ['DEPOSIT', employerContribution, 'employer_contribution'],
-        ['LOAN_REPAYMENT', data.loanRepayment, 'loan_repayment'],
-      ].filter(([, amount]) => Number(amount) > 0);
-      for (const [type, amount, category] of transactionRows) {
-        await db.Transaction.create({
-          memberId: member.id,
-          type,
-          amount,
-          method: 'MANUAL',
-          status: 'SUCCESS',
-          reference: `${importReference}-${category}`,
-          description: `${data.sheetName ? `${data.sheetName} ` : ''}import ${category}`,
-          paymentCategory: category,
-        }, { transaction });
-      }
+      await syncImportedMemberBalances({
+        member,
+        data: { ...data, employerContribution },
+        rowNumber: row.rowNumber,
+        transaction,
+      });
+      await syncImportedLoanLiability({ member, data, rowNumber: row.rowNumber, transaction });
     });
     imported.push({ rowNumber: row.rowNumber, sheetName: data.sheetName, memberId: member.id, memberNumber: member.memberNumber });
   }
