@@ -11,6 +11,7 @@ const requiredFirebaseVariables = [
 const getFirebaseConfigStatus = () => ({
   configured: requiredFirebaseVariables.every((key) => Boolean(process.env[key])),
   projectId: process.env.FIREBASE_PROJECT_ID || null,
+  databaseId: process.env.FIRESTORE_DATABASE_ID || '(default)',
   missing: requiredFirebaseVariables.filter((key) => !process.env[key]),
 });
 
@@ -51,7 +52,7 @@ const testFirebaseConnection = async () => {
   };
 };
 
-const getFirebaseDb = () => getFirestore(getFirebaseApp());
+const getFirebaseDb = () => getFirestore(getFirebaseApp(), process.env.FIRESTORE_DATABASE_ID || '(default)');
 const getFirebaseStorage = () => getStorage(getFirebaseApp());
 
 module.exports = {

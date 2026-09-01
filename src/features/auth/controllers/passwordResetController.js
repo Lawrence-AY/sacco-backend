@@ -164,9 +164,14 @@ const changePassword = async (req, res, next) => {
   try {
     const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
     const newPassword = typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
+    const confirmPassword = typeof req.body?.confirmPassword === 'string' ? req.body.confirmPassword : '';
 
     if (!currentPassword || !newPassword) {
       throw new ValidationError('Current password and new password are required');
+    }
+
+    if (newPassword !== confirmPassword) {
+      throw new ValidationError('New password and confirmation do not match');
     }
 
     const passwordIssues = validatePasswordStrength(newPassword);

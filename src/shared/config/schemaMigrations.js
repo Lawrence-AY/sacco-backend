@@ -8,6 +8,7 @@ const userColumns = {
   monthlyIncome: { type: DataTypes.DECIMAL(14, 2), allowNull: true },
   payrollNumber: { type: DataTypes.STRING, allowNull: true },
   staffId: { type: DataTypes.STRING, allowNull: true },
+  employmentTag: { type: DataTypes.STRING, allowNull: true },
   isWhitelisted: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
   employerContribution: { type: DataTypes.DECIMAL(14, 2), allowNull: false, defaultValue: 0 },
   kraPin: { type: DataTypes.STRING, allowNull: true },

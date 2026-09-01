@@ -83,6 +83,15 @@ const transactionKind = (transaction) => {
   return displayLabel(transaction.paymentCategory || transaction.kcbEndpoint || transaction.type);
 };
 
+const payrollKind = (transaction) => {
+  const value = category(transaction);
+  if (value.includes('employer')) return 'Employer Contribution';
+  if (value.includes('loan') || value.includes('repay')) return 'Loan Repayment';
+  if (value.includes('saving')) return 'Savings';
+  if (value.includes('share')) return 'Share Capital';
+  return 'Personal Contribution';
+};
+
 const transactionDetails = (transaction) => {
   const value = category(transaction);
   if (value.includes('withdraw')) return `Withdrawn from ${transaction.sourceAccount || transaction.accountName || transaction.walletName || 'member account'}`;
@@ -224,8 +233,14 @@ const buildReportSections = ({ reportType, transactions, loans, shares }) => {
     }],
     'payroll-deduction': [{
       title: 'Payroll Deductions',
-      columns: ['Date', 'Reference', 'Amount', 'Status'],
-      rows: matchingTransactions(successfulTransactions, ['payroll', 'salary', 'employer']).map((transaction) => ({ Date: formatDateTime(transaction.createdAt), Reference: transaction.reference || '-', Amount: `KES ${formatMoney(transaction.amount)}`, Status: displayLabel(transaction.status) })),
+      columns: ['Date', 'Category', 'Reference', 'Amount', 'Status'],
+      rows: matchingTransactions(successfulTransactions, ['payroll', 'salary', 'employer', 'contribution', 'loan', 'repay', 'saving', 'deduction']).map((transaction) => ({
+        Date: formatDateTime(transaction.createdAt),
+        Category: payrollKind(transaction),
+        Reference: transaction.reference || '-',
+        Amount: `KES ${formatMoney(transaction.amount)}`,
+        Status: displayLabel(transaction.status),
+      })),
     }],
   };
   sectionsByType['shares-savings'] = sectionsByType.savings;

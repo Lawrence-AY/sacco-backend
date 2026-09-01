@@ -15,6 +15,7 @@ const connection = REDIS_URL ? { url: REDIS_URL, maxRetriesPerRequest: null } : 
 const queues = new Map();
 let workersStarted = false;
 let pollTimer = null;
+let outboxUnavailableLogged = false;
 
 const encryptionKey = () => crypto
   .createHash('sha256')
@@ -160,10 +161,19 @@ const startEmailWorkers = () => {
   } else {
     logger.warn('REDIS_URL is not configured; using single-process email outbox worker');
   }
-  pollTimer = setInterval(() => pollOutbox().catch((error) => logger.error('Email outbox poll failed', {
-    module: 'email', error: error.message,
-  })), 5000);
-  pollOutbox().catch(() => {});
+  pollTimer = setInterval(() => pollOutbox().catch((error) => {
+    const unavailable = error?.code === 'FIRESTORE_DATABASE_NOT_FOUND' || String(error?.message || '').includes('Firestore database was not found');
+    if (unavailable && outboxUnavailableLogged) return;
+    if (unavailable) outboxUnavailableLogged = true;
+    logger.error('Email outbox poll failed', {
+      module: 'email', error: error.message,
+    });
+  }), 5000);
+  pollOutbox().catch((error) => {
+    const unavailable = error?.code === 'FIRESTORE_DATABASE_NOT_FOUND' || String(error?.message || '').includes('Firestore database was not found');
+    if (!unavailable) logger.error('Email outbox poll failed', { module: 'email', error: error.message });
+    else outboxUnavailableLogged = true;
+  });
 };
 
 module.exports = { QUEUES, enqueueEmail, processEmailJob, startEmailWorkers };

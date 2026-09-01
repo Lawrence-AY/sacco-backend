@@ -1,6 +1,27 @@
 const crypto = require('crypto');
 const { getFirebaseDb } = require('../config/firebase');
 
+const normalizeFirestoreError = (error) => {
+  if (error?.code === 5 || String(error?.message || '').includes('5 NOT_FOUND')) {
+    const databaseId = process.env.FIRESTORE_DATABASE_ID || '(default)';
+    const wrapped = new Error(
+      `Firestore database was not found for project "${process.env.FIREBASE_PROJECT_ID || 'unknown'}" and database "${databaseId}". Create/enable Firestore for this Firebase project or set FIRESTORE_DATABASE_ID to the correct database id.`
+    );
+    wrapped.cause = error;
+    wrapped.code = 'FIRESTORE_DATABASE_NOT_FOUND';
+    return wrapped;
+  }
+  return error;
+};
+
+const firestoreCall = async (operation) => {
+  try {
+    return await operation();
+  } catch (error) {
+    throw normalizeFirestoreError(error);
+  }
+};
+
 const operatorName = (key) => typeof key === 'symbol'
   ? (Symbol.keyFor(key) || key.description || '').replace(/^sequelize\./, '')
   : key;
@@ -181,7 +202,7 @@ class FirestoreModel {
       createdAt: values.createdAt || now,
       updatedAt: values.updatedAt || now,
     });
-    await this._document(record.id).set(record);
+    await firestoreCall(() => this._document(record.id).set(record));
     return this._instance(record);
   }
 
@@ -191,7 +212,7 @@ class FirestoreModel {
 
   async findByPk(id, options = {}) {
     if (id == null) return null;
-    const snapshot = await this._document(id).get();
+    const snapshot = await firestoreCall(() => this._document(id).get());
     if (!snapshot.exists) return null;
     let record = { id: snapshot.id, ...plainValue(snapshot.data()) };
     record = await this._withIncludes(record, options.include);
@@ -221,7 +242,7 @@ class FirestoreModel {
         .slice(0, 32);
     const document = this._document(id);
 
-    return getFirebaseDb().runTransaction(async (transaction) => {
+    return firestoreCall(() => getFirebaseDb().runTransaction(async (transaction) => {
       const snapshot = await transaction.get(document);
       if (snapshot.exists) {
         return [this._instance({ id: snapshot.id, ...plainValue(snapshot.data()) }), false];
@@ -252,7 +273,7 @@ class FirestoreModel {
       });
       transaction.create(document, record);
       return [this._instance(record), true];
-    });
+    }));
   }
 
   async findAll(options = {}) {
@@ -267,7 +288,7 @@ class FirestoreModel {
     if (simpleEquality !== undefined) {
       query = query.where(String(simpleEquality), '==', options.where[simpleEquality]);
     }
-    const snapshot = await query.get();
+    const snapshot = await firestoreCall(() => query.get());
     let records = snapshot.docs.map((doc) => ({ id: doc.id, ...plainValue(doc.data()) }));
     if (options.include) {
       records = await Promise.all(records.map((record) => this._withIncludes(record, options.include)));
