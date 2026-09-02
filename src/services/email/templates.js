@@ -12,7 +12,7 @@ const escapeHtml = (value) => String(value ?? '')
   .replace(/'/g, '&#39;');
 
 // Email runs from the backend, while the approved logo assets live in the web app.
-const resolveLogoPath = (fileName) => path.resolve(__dirname, '../../../../Ayedos-Sacco_Web_App/src/assets', fileName);
+const resolveLogoPath = (fileName) => path.resolve(__dirname, '../../../../ayedos-webapp/src/assets', fileName);
 
 const getBrandLogoAttachments = () => [
   { fileName: 'logo-light.png', cid: BRAND_LOGO_CID },
@@ -35,8 +35,8 @@ const brandEmailStyles = `
       .ayedos-email-body { background:#0f172a !important; }
       .ayedos-email-card { background:#111827 !important; border-color:#243044 !important; }
       .ayedos-email-panel { background:#172033 !important; border-color:#2a3a53 !important; }
-      .ayedos-email-code-panel,
-      .ayedos-email-notice { background:#172033 !important; border-color:#2a3a53 !important; }
+      .ayedos-email-code-panel { background:#172033 !important; border-color:#2a3a53 !important; }
+      .ayedos-email-notice { background:transparent !important; }
       .ayedos-email-code-box { background:#0f172a !important; border-color:#334155 !important; color:#e2e8f0 !important; }
       .ayedos-email-title { color:#93b6d9 !important; }
       .ayedos-email-text { color:#cbd5e1 !important; }
@@ -77,19 +77,26 @@ const buildBrandedEmail = ({ children, footer = 'This is an automated email. Rep
   </div>
 `;
 
-const buildOtpEmail = ({ otp }) => {
+const buildOtpEmail = ({ otp, recipientName }) => {
   const safeOtp = escapeHtml(otp);
+  const safeRecipientName = escapeHtml(recipientName || 'Member');
 
   return buildBrandedEmail({
-    footer: 'This is an automated verification email. Replies to this address are not monitored.',
+    footer: 'This is an automated verification email. Replies to this address are not monitored. © 2026 CMPL. All rights reserved.',
     children: `
             <tr>
-              <td style="padding:0 40px 24px">
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" class="ayedos-email-code-panel" style="border-collapse:separate;border-spacing:0;border-radius:28px;background:#f7f9fc;border:1px solid #e6edf5">
+              <td style="padding:8px 40px 24px">
+                <p class="ayedos-email-strong" style="margin:0 0 16px;font-size:15px;line-height:1.55;color:#24384d">Hello ${safeRecipientName},</p>
+                <p class="ayedos-email-text" style="margin:0;font-size:15px;line-height:1.65;color:#5f748c">Use the verification code below to continue. For your security, this code expires in 10 minutes.</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 40px 20px">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" class="ayedos-email-code-panel" style="border-collapse:separate;border-spacing:0;border-radius:28px;background:#f7f9fc;border:1px solid #d8dee7">
                   <tr>
-                    <td align="center" style="padding:40px 24px 36px">
-                      <div class="ayedos-email-title" style="font-size:16px;font-weight:800;letter-spacing:0.18em;text-transform:uppercase;color:#5b82aa">Verification Code (OTP)</div>
-                      <div class="ayedos-email-code-box" style="display:inline-block;margin-top:18px;padding:18px 31px;border-radius:12px;background:#ffffff;border:1px solid #d8e3ef;color:#163046;font-size:28px;line-height:1;font-weight:800;letter-spacing:10px">${safeOtp}</div>
+                    <td align="center" style="padding:25px 24px 24px">
+                      <div class="ayedos-email-text" style="font-size:14px;font-weight:500;color:#5f748c">Verification Code (OTP)</div>
+                      <div class="ayedos-email-code-box" style="display:inline-block;margin-top:17px;padding:16px 28px;border-radius:12px;background:#ffffff;border:1px solid #9aa8b8;color:#101827;font-size:28px;line-height:1;font-weight:800;letter-spacing:10px">${safeOtp}</div>
                     </td>
                   </tr>
                 </table>
@@ -97,11 +104,11 @@ const buildOtpEmail = ({ otp }) => {
             </tr>
             <tr>
               <td style="padding:0 40px 34px">
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" class="ayedos-email-notice" style="border-collapse:separate;border-spacing:0;border-radius:18px;background:#f0f5fa">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" class="ayedos-email-notice" style="border-collapse:separate;border-spacing:0;background:transparent">
                   <tr>
-                    <td align="center" style="padding:25px 30px 22px">
-                      <p class="ayedos-email-strong" style="margin:0 0 14px;font-size:15px;line-height:1.55;font-weight:800;color:#2f4358">For your security, do not share this code with anyone.</p>
-                      <p class="ayedos-email-text" style="margin:0;font-size:15px;line-height:1.55;color:#5f748c"><strong style="color:#164a73">Didn't request this?</strong> If you didn't attempt to verify your email, you can safely ignore this message. No action is required.</p>
+                    <td align="center" style="padding:0 20px">
+                      <p class="ayedos-email-text" style="margin:0 0 18px;font-size:13px;line-height:1.55;color:#5f748c">For your security, do not share this code with anyone.</p>
+                      <p class="ayedos-email-text" style="margin:0;font-size:13px;line-height:1.55;color:#5f748c"><strong class="ayedos-email-strong" style="color:#24384d">Didn't request this?</strong> If you didn't attempt to verify your email, you can safely ignore this message. No action is required.</p>
                     </td>
                   </tr>
                 </table>

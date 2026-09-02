@@ -40,7 +40,7 @@ const KYC_DOCUMENT_TYPES = {
 
 const DEFAULT_KCB_PAYBILL_NUMBER = '522522';
 const LOAN_REPAYMENT_STK_TIMEOUT_MS = Number(process.env.LOAN_REPAYMENT_STK_TIMEOUT_MS || 45000);
-const MINIMUM_LOAN_SHARE_CAPITAL = 25000;
+const MINIMUM_LOAN_SHARE_CAPITAL = 20000;
 const LOAN_ELIGIBILITY_MESSAGE = 'You are not yet eligible to apply for a loan. Please complete the minimum required share capital purchase before submitting a loan application.';
 const SELF_GUARANTEE_MULTIPLIER = Number(process.env.SELF_GUARANTEE_SAVINGS_MULTIPLIER || 1);
 
@@ -716,7 +716,7 @@ const sendOptOutOtp = asyncHandler(async (req, res) => {
 
   const otp = generateOTP();
   await otpService.createOtpSession({ userId: user.id, purpose: 'OPT_OUT', otp });
-  await enqueueEmail(QUEUES.OTP, 'OTP', { to: user.email, otp }, { immediate: true }).catch((error) => {
+  await enqueueEmail(QUEUES.OTP, 'OTP', { to: user.email, otp, recipientName: user.name || [user.firstName, user.lastName].filter(Boolean).join(' ') || 'Member' }, { immediate: true }).catch((error) => {
     logger.error('Opt-out OTP email delivery failed', { module: 'member', userId: user.id, error: error.message });
   });
   sendOtpSms({ to: user.phone, otp, purpose: 'OPT_OUT' }).catch((error) => {

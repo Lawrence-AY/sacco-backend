@@ -20,7 +20,7 @@ async function financialEligibility(memberId) {
     return map;
   }, new Map());
   const outstandingLoans = loans.reduce((sum, loan) => sum + Math.max(Number(loan.amount || 0) - (repayments.get(loan.id) || 0), 0), 0);
-  const minimumShareCapital = Number(config?.shareCapital || 25000);
+  const minimumShareCapital = Number(config?.shareCapital || 20000);
   const shareCapital = Math.max(accountCapital, paidCapital);
   const member = await db.Member.findByPk(memberId, { attributes: ['userId'], include: [{ model: db.User, attributes: ['shareCapitalStatus'] }] });
   const shareCapitalStatus = shareCapital >= minimumShareCapital ? 'COMPLETED' : 'INCOMPLETE';

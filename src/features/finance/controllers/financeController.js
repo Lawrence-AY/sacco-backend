@@ -8,7 +8,7 @@ const ResponseHandler = require('../../../shared/utils/response');
 const { ValidationError, NotFoundError, ForbiddenError } = require('../../../shared/utils/errors');
 const { LoanDTO } = require('../../../shared/utils/dtos');
 const { formatEAT } = require('../../../shared/utils/eatDateTime');
-const MINIMUM_SHARE_CAPITAL = 25000;
+const MINIMUM_SHARE_CAPITAL = 20000;
 
 const classifyTransaction = (transaction) => {
   const source = [
