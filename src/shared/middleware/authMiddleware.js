@@ -31,6 +31,12 @@ const LOGIN_LOCK_MAX_ATTEMPTS = Number(process.env.LOGIN_LOCK_MAX_ATTEMPTS || 5)
 const LOGIN_LOCK_WINDOW_MS = Number(process.env.LOGIN_LOCK_WINDOW_MS || 15 * 60 * 1000);
 const otpRequestBuckets = new Map();
 
+const GROUP_ROLE_PERMISSIONS = {
+  MEMBER: ['can_repay'],
+  ADMIN: ['can_request_loan', 'can_borrow', 'can_repay'],
+  CREATOR: ['can_request_loan', 'can_borrow', 'can_repay'],
+};
+
 const normalizeOtpKey = (purpose, email, req) => {
   const ip = req.ip || req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown';
   return `${purpose}:${String(email || '').trim().toLowerCase()}:${ip}`;
@@ -827,5 +833,6 @@ module.exports = {
   resendOTP,
   logoutUser,
   getSessions,
-  revokeSession
+  revokeSession,
+  GROUP_ROLE_PERMISSIONS
 };

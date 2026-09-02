@@ -5,7 +5,7 @@ const GroupMembership = sequelize.define('GroupMembership', {
   id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
   groupId: { type: DataTypes.UUID, allowNull: false },
   memberId: { type: DataTypes.UUID, allowNull: false },
-  role: { type: DataTypes.ENUM('CREATOR', 'MEMBER'), allowNull: false, defaultValue: 'MEMBER' },
+  role: { type: DataTypes.ENUM('CREATOR', 'ADMIN', 'MEMBER'), allowNull: false, defaultValue: 'MEMBER' },
   status: { type: DataTypes.ENUM('INVITED', 'ACTIVE', 'REJECTED', 'LEFT', 'REMOVED'), allowNull: false, defaultValue: 'INVITED' },
   invitedByMemberId: { type: DataTypes.UUID, allowNull: false },
   respondedAt: { type: DataTypes.DATE, allowNull: true },
