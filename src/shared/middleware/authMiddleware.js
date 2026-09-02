@@ -169,7 +169,7 @@ const queueOtpDelivery = async ({ user, email, phone, otp, purpose, req, logCont
   const emailRecipient = email || user?.email || null;
   const phoneRecipient = phone || user?.phone || null;
   const emailJobId = emailRecipient
-    ? await enqueueEmail(QUEUES.OTP, 'OTP', { to: emailRecipient, otp }, { immediate: true })
+    ? await enqueueEmail(QUEUES.OTP, 'OTP', { to: emailRecipient, otp, recipientName: user?.name || [user?.firstName, user?.lastName].filter(Boolean).join(' ') || 'Member' }, { immediate: true })
     : null;
   if (phoneRecipient) {
     sendOtpSms({ to: phoneRecipient, otp, purpose })

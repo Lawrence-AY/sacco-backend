@@ -19,13 +19,13 @@ async function createMember(data) {
       const match = /^29903-(\d+)$/.exec(String(member.memberNumber || ''));
       return match ? Math.max(max, Number(match[1])) : max;
     }, 0);
-    const memberNumber = `${PREFIX}-${String(highest + 1).padStart(3, '0')}`;
+    const memberNumber = `${PREFIX}-${String(highest + 1).padStart(5, '0')}`;
     return db.Member.create({ ...data, memberNumber }, { transaction });
   });
 }
 
 // Reset is intentionally safe: it is permitted only when no formatted IDs
-// exist. Test data can be cleared and the next create naturally returns 001.
+// exist. Test data can be cleared and the next create naturally returns 00001.
 async function canResetToOne() {
   return db.Member.count({ where: { memberNumber: { [db.Sequelize.Op.like]: `${PREFIX}-%` } } }).then((count) => count === 0);
 }

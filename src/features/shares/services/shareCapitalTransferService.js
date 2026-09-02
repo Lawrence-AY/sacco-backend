@@ -4,7 +4,7 @@ const { Op } = require('sequelize');
 const { ValidationError, NotFoundError } = require('../../../shared/utils/errors');
 
 const FEE_RATE = 0.05;
-const DEFAULT_MINIMUM = 25000;
+const DEFAULT_MINIMUM = 20000;
 
 async function accountBalance(memberId, transaction) {
   const account = await db.ShareAccount.findOne({ where: { memberId }, transaction, lock: transaction.LOCK.UPDATE });
