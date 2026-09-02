@@ -80,6 +80,22 @@ const ROLE_PERMISSIONS = {
   ]
 };
 
+const GROUP_ROLE_PERMISSIONS = {
+  MEMBER: [
+    'can_repay'
+  ],
+  ADMIN: [
+    'can_request_loan',
+    'can_borrow',
+    'can_repay'
+  ],
+  CREATOR: [
+    'can_request_loan',
+    'can_borrow',
+    'can_repay'
+  ]
+};
+
 /**
  * Generate access token
  */
@@ -464,5 +480,6 @@ module.exports = {
   createLoginSession,
   invalidateLoginSession,
   ROLE_HIERARCHY,
-  ROLE_PERMISSIONS
+  ROLE_PERMISSIONS,
+  GROUP_ROLE_PERMISSIONS
 };

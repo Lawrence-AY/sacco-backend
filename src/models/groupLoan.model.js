@@ -1,6 +1,8 @@
 const { DataTypes } = require('sequelize');
 const sequelize = require('../shared/config/db');
 
+const FIXED_GROUP_LOAN_MONTHLY_INTEREST_RATE = 1;
+
 const GroupLoan = sequelize.define('GroupLoan', {
   id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
   groupId: { type: DataTypes.UUID, allowNull: false },
@@ -12,6 +14,14 @@ const GroupLoan = sequelize.define('GroupLoan', {
   totalDue: { type: DataTypes.DECIMAL(14, 2), allowNull: false },
   balance: { type: DataTypes.DECIMAL(14, 2), allowNull: false },
   status: { type: DataTypes.ENUM('ACTIVE', 'REPAID'), allowNull: false, defaultValue: 'ACTIVE' },
-}, { timestamps: true, indexes: [{ fields: ['groupId', 'status'] }] });
+}, {
+  timestamps: true,
+  indexes: [{ fields: ['groupId', 'status'] }],
+  hooks: {
+    beforeValidate: (loan) => {
+      loan.interestRate = FIXED_GROUP_LOAN_MONTHLY_INTEREST_RATE;
+    },
+  },
+});
 
 module.exports = GroupLoan;

@@ -337,7 +337,7 @@ const ensureBorrowingGroupTables = async (sequelize) => {
   });
   if (!names.has('GroupMemberships')) await queryInterface.createTable('GroupMemberships', {
     id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true }, groupId: { type: DataTypes.UUID, allowNull: false }, memberId: { type: DataTypes.UUID, allowNull: false },
-    role: { type: DataTypes.ENUM('CREATOR', 'MEMBER'), allowNull: false, defaultValue: 'MEMBER' }, status: { type: DataTypes.ENUM('INVITED', 'ACTIVE', 'REJECTED', 'LEFT', 'REMOVED'), allowNull: false, defaultValue: 'INVITED' },
+    role: { type: DataTypes.ENUM('CREATOR', 'ADMIN', 'MEMBER'), allowNull: false, defaultValue: 'MEMBER' }, status: { type: DataTypes.ENUM('INVITED', 'ACTIVE', 'REJECTED', 'LEFT', 'REMOVED'), allowNull: false, defaultValue: 'INVITED' },
     invitedByMemberId: { type: DataTypes.UUID, allowNull: false }, respondedAt: { type: DataTypes.DATE, allowNull: true },
     createdAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW }, updatedAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
   });
@@ -373,7 +373,7 @@ const ensureGroupProposalTables = async (sequelize) => {
   if (!userColumns.shareCapitalStatus) await queryInterface.addColumn('Users', 'shareCapitalStatus', { type: DataTypes.ENUM('COMPLETED', 'INCOMPLETE'), allowNull: false, defaultValue: 'INCOMPLETE' });
   if (!names.has('GroupLoanProposals')) await queryInterface.createTable('GroupLoanProposals', {
     id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true }, groupId: { type: DataTypes.UUID, allowNull: false }, createdBy: { type: DataTypes.UUID, allowNull: false },
-    totalAmount: { type: DataTypes.DECIMAL(14, 2), allowNull: false }, durationMonths: { type: DataTypes.INTEGER, allowNull: false }, interestRate: { type: DataTypes.DECIMAL(6, 3), allowNull: false },
+    totalAmount: { type: DataTypes.DECIMAL(14, 2), allowNull: false }, durationMonths: { type: DataTypes.INTEGER, allowNull: false }, interestRate: { type: DataTypes.DECIMAL(6, 3), allowNull: false, defaultValue: 1 },
     status: { type: DataTypes.ENUM('DRAFT', 'PENDING_MEMBER_APPROVAL', 'APPROVED', 'REJECTED', 'DISBURSED'), allowNull: false, defaultValue: 'DRAFT' }, approvedAt: DataTypes.DATE, disbursedAt: DataTypes.DATE,
     createdAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW }, updatedAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
   });

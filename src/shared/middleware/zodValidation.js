@@ -17,6 +17,9 @@ const optionalEmptyableString = (max) => z.string().trim().max(max).optional().o
 const optionalNullableString = (max) => z.string().trim().max(max).optional().nullable().transform((value) => value ?? undefined);
 const dataImageUrl = z.string().trim().regex(/^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/=]+$/i);
 const profilePhotoDataUrl = dataImageUrl.max(2200000);
+const fixedGroupLoanInterestRate = z.coerce.number().refine((value) => value === 1, {
+  message: 'Group loan interest rate is fixed at 1% per month',
+}).optional();
 
 const schemas = {
   login: strictObject({
@@ -216,12 +219,12 @@ const schemas = {
   groupLoan: strictObject({
     amount: z.coerce.number().positive().max(100000000),
     paymentPeriodMonths: z.coerce.number().int().positive().max(120),
-    interestRate: z.coerce.number().min(0).max(100).optional(),
+    interestRate: fixedGroupLoanInterestRate,
   }),
   groupLoanProposal: strictObject({
     totalAmount: z.coerce.number().positive().max(100000000),
     durationMonths: z.coerce.number().int().positive().max(120),
-    interestRate: z.coerce.number().min(0).max(100),
+    interestRate: fixedGroupLoanInterestRate,
     allocations: z.array(strictObject({
       memberId: z.string().uuid(),
       allocatedPercentage: z.coerce.number().positive().max(100),

@@ -1,6 +1,8 @@
 const crypto = require('crypto');
 const { Op } = require('sequelize');
 const db = require('../../../models');
+const eventBus = require('../../../services/realtime/eventBus');
+const { GROUP_ROLE_PERMISSIONS } = require('../../../shared/middleware/authMiddleware');
 const asyncHandler = require('../../../shared/utils/asyncHandler');
 const ResponseHandler = require('../../../shared/utils/response');
 const { ValidationError, NotFoundError, ForbiddenError } = require('../../../shared/utils/errors');
@@ -31,6 +33,7 @@ async function financialEligibility(memberId) {
 }
 
 const memberInclude = { model: db.Member, as: 'member', attributes: ['id', 'memberNumber', 'userId'], include: [{ model: db.User, attributes: ['name', 'email', 'phone'] }] };
+const FIXED_GROUP_LOAN_MONTHLY_INTEREST_RATE = 1;
 const groupInclude = [
   { model: db.Member, as: 'creator', attributes: ['id', 'memberNumber'], include: [{ model: db.User, attributes: ['name'] }] },
   { model: db.GroupMembership, as: 'memberships', include: [memberInclude] },
@@ -47,11 +50,26 @@ const groupSummaryInclude = [
   { model: db.GroupLoan, as: 'loans', separate: true, attributes: ['id', 'groupId', 'proposalId', 'amount', 'balance', 'status', 'paymentPeriodMonths', 'interestRate'] },
 ];
 
-const reducingBalanceInterest = (principal, monthlyRate, months) => Math.round((principal * (monthlyRate / 100) * months * (months + 1) / (2 * months)) * 100) / 100;
+const reducingBalanceInterest = (principal, monthlyRate = FIXED_GROUP_LOAN_MONTHLY_INTEREST_RATE, months) => Math.round((principal * (monthlyRate / 100) * months * (months + 1) / (2 * months)) * 100) / 100;
 const notify = (userId, eventKey, title, body, sourceId, metadata = {}) => db.Notification.create({ userId, eventKey, title, body, category: 'group', severity: title.includes('Rejected') ? 'warning' : 'info', actionUrl: '/dashboard/user/groups', sourceType: 'GroupLoanProposal', sourceId, metadata });
+const publishGroupRoleUpdated = (payload) => eventBus.publish('GROUP_ROLE_UPDATED', payload, [`user:${payload.userId}`]);
+const publishGroupRoleUpdates = (payloads = []) => payloads.filter((payload) => payload?.userId).forEach(publishGroupRoleUpdated);
 
 const isValidOddCircleSize = (count) => count >= 3 && count <= 13 && count % 2 === 1;
-const canManageGroupBorrowing = (group, memberId) => group?.creatorMemberId === memberId || group?.governanceSettings?.leaderMemberId === memberId;
+const activeGroupAuthorityMemberId = (group) => group?.governanceSettings?.leaderMemberId || group?.creatorMemberId;
+const canManageGroupBorrowing = (group, memberId) => Boolean(memberId && activeGroupAuthorityMemberId(group) === memberId);
+
+const groupLoanPermissionsFor = (group, membership) => {
+  const active = membership?.status === 'ACTIVE';
+  const authority = active && canManageGroupBorrowing(group, membership?.memberId);
+  const role = authority ? (membership?.role === 'CREATOR' ? 'CREATOR' : 'ADMIN') : 'MEMBER';
+  const rolePermissions = active ? GROUP_ROLE_PERMISSIONS[role] || [] : [];
+  return {
+    can_request_loan: rolePermissions.includes('can_request_loan'),
+    can_borrow: rolePermissions.includes('can_borrow'),
+    can_repay: rolePermissions.includes('can_repay'),
+  };
+};
 
 async function groupBorrowingCap(groupId, transaction = null) {
   const active = await db.GroupMembership.findAll({ where: { groupId, status: 'ACTIVE' }, transaction });
@@ -84,6 +102,7 @@ const serializeGroup = (group, viewerMemberId) => {
   });
   const activeCount = (row.memberships || []).filter((item) => item.status === 'ACTIVE').length;
   return { ...row, isCreator: row.creatorMemberId === viewerMemberId, viewerMembershipId: viewerMembership?.id || null, viewerStatus: uiMembershipStatus(viewerMembership?.status) || null,
+    permissions: groupLoanPermissionsFor(row, viewerMembership),
     governance: { settings: row.governanceSettings || {}, activeCount, validOddMembership: isValidOddCircleSize(activeCount), actions: (row.governanceActions || []).map((action) => ({ id: action.id, actionType: action.actionType, title: action.title, payload: action.payload || {}, votes: action.votes || {}, status: action.status, executedAt: action.executedAt, createdAt: action.createdAt, proposedBy: action.proposedBy?.User?.name || action.proposedBy?.memberNumber || null })) },
     repaymentProgress,
     members: (row.memberships || []).map((item) => ({ id: item.id, memberId: item.memberId, memberNumber: item.member?.memberNumber,
@@ -155,9 +174,9 @@ const createProposal = asyncHandler(async (req, res) => {
   const activeIds = new Set(active.map((item) => item.memberId));
   if (!req.body.allocations.every((item) => activeIds.has(item.memberId))) throw new ValidationError('All allocated members must be active group members');
   const proposal = await db.sequelize.transaction(async (transaction) => {
-    const created = await db.GroupLoanProposal.create({ groupId: group.id, createdBy: creator.id, totalAmount: req.body.totalAmount, durationMonths: req.body.durationMonths, interestRate: req.body.interestRate, status: 'PENDING_MEMBER_APPROVAL' }, { transaction });
+    const created = await db.GroupLoanProposal.create({ groupId: group.id, createdBy: creator.id, totalAmount: req.body.totalAmount, durationMonths: req.body.durationMonths, interestRate: FIXED_GROUP_LOAN_MONTHLY_INTEREST_RATE, status: 'PENDING_MEMBER_APPROVAL' }, { transaction });
     const allocationMap = new Map(req.body.allocations.map((item) => [item.memberId, Number(item.allocatedPercentage)]));
-    await db.GroupLoanAllocation.bulkCreate(active.map((item) => { const percentage = allocationMap.get(item.memberId) || 0; const principalAmount = Math.round(req.body.totalAmount * percentage) / 100; return { proposalId: created.id, memberId: item.memberId, allocatedPercentage: percentage, principalAmount, interestAmount: reducingBalanceInterest(principalAmount, req.body.interestRate, req.body.durationMonths) }; }), { transaction });
+    await db.GroupLoanAllocation.bulkCreate(active.map((item) => { const percentage = allocationMap.get(item.memberId) || 0; const principalAmount = Math.round(req.body.totalAmount * percentage) / 100; return { proposalId: created.id, memberId: item.memberId, allocatedPercentage: percentage, principalAmount, interestAmount: reducingBalanceInterest(principalAmount, FIXED_GROUP_LOAN_MONTHLY_INTEREST_RATE, req.body.durationMonths) }; }), { transaction });
     return created;
   });
   await Promise.all(active.map((row) => notify(row.member.userId, `group-proposal:${proposal.id}:${row.memberId}`, 'Group loan proposal vote', `${group.name} requested KES ${Number(req.body.totalAmount).toLocaleString()}. Every active member must approve before disbursement.`, proposal.id, { groupId: group.id, actionRequired: true })));
@@ -191,7 +210,7 @@ const voteProposal = asyncHandler(async (req, res) => {
       const allocations = await db.GroupLoanAllocation.findAll({ where: { proposalId: proposal.id }, transaction });
       const totalInterest = allocations.reduce((sum, item) => sum + Number(item.interestAmount), 0);
       await proposal.update({ status, approvedAt: new Date(), disbursedAt: new Date() }, { transaction });
-      await db.GroupLoan.create({ proposalId: proposal.id, groupId: proposal.groupId, requestedByMemberId: proposal.createdBy, amount: proposal.totalAmount, interestRate: proposal.interestRate, paymentPeriodMonths: proposal.durationMonths, totalDue: Number(proposal.totalAmount) + totalInterest, balance: Number(proposal.totalAmount) + totalInterest }, { transaction });
+      await db.GroupLoan.create({ proposalId: proposal.id, groupId: proposal.groupId, requestedByMemberId: proposal.createdBy, amount: proposal.totalAmount, interestRate: FIXED_GROUP_LOAN_MONTHLY_INTEREST_RATE, paymentPeriodMonths: proposal.durationMonths, totalDue: Number(proposal.totalAmount) + totalInterest, balance: Number(proposal.totalAmount) + totalInterest }, { transaction });
       await db.GroupLoanAllocation.update({ repaymentStatus: 'ACTIVE' }, { where: { proposalId: proposal.id }, transaction });
       return { proposal, allocation, allocations, status, replayed: false };
     }
@@ -209,12 +228,15 @@ const voteProposal = asyncHandler(async (req, res) => {
 });
 
 const disburseProposal = asyncHandler(async (req, res) => {
-  const creator = await memberForUser(req.user.id);
-  const proposal = await db.GroupLoanProposal.findOne({ where: { id: req.params.proposalId, groupId: req.params.groupId, createdBy: creator?.id, status: 'APPROVED' }, include: [{ model: db.GroupLoanAllocation, as: 'allocations', include: [memberInclude] }] });
+  const authority = await memberForUser(req.user.id);
+  const group = await db.BorrowingGroup.findByPk(req.params.groupId);
+  if (!group) throw new NotFoundError('Group not found');
+  if (!canManageGroupBorrowing(group, authority?.id)) throw new ForbiddenError('Only the active group authority can disburse approved group loans');
+  const proposal = await db.GroupLoanProposal.findOne({ where: { id: req.params.proposalId, groupId: req.params.groupId, status: 'APPROVED' }, include: [{ model: db.GroupLoanAllocation, as: 'allocations', include: [memberInclude] }] });
   if (!proposal) throw new NotFoundError('Approved proposal not found');
   await db.sequelize.transaction(async (transaction) => {
     const totalInterest = proposal.allocations.reduce((sum, item) => sum + Number(item.interestAmount), 0);
-    await db.GroupLoan.create({ proposalId: proposal.id, groupId: proposal.groupId, requestedByMemberId: creator.id, amount: proposal.totalAmount, interestRate: proposal.interestRate, paymentPeriodMonths: proposal.durationMonths, totalDue: Number(proposal.totalAmount) + totalInterest, balance: Number(proposal.totalAmount) + totalInterest }, { transaction });
+    await db.GroupLoan.create({ proposalId: proposal.id, groupId: proposal.groupId, requestedByMemberId: authority.id, amount: proposal.totalAmount, interestRate: FIXED_GROUP_LOAN_MONTHLY_INTEREST_RATE, paymentPeriodMonths: proposal.durationMonths, totalDue: Number(proposal.totalAmount) + totalInterest, balance: Number(proposal.totalAmount) + totalInterest }, { transaction });
     await proposal.update({ status: 'DISBURSED', disbursedAt: new Date() }, { transaction });
     await db.GroupLoanAllocation.update({ repaymentStatus: 'ACTIVE' }, { where: { proposalId: proposal.id }, transaction });
   });
@@ -243,6 +265,45 @@ const validateGovernanceLeader = async (groupId, payload, transaction) => {
   if (!leaderMembership) throw new ValidationError('Selected group admin must be an active group member');
 };
 
+const transferGroupAdminRole = async (group, leaderMemberId, transaction) => {
+  const previousAdmins = await db.GroupMembership.findAll({ where: { groupId: group.id, role: 'ADMIN' }, include: [memberInclude], transaction });
+  if (!leaderMemberId) {
+    await db.GroupMembership.update({ role: 'MEMBER' }, { where: { groupId: group.id, role: 'ADMIN' }, transaction });
+    return previousAdmins.map((membership) => ({
+      groupId: group.id,
+      memberId: membership.memberId,
+      membershipId: membership.id,
+      userId: membership.member?.userId,
+      role: 'MEMBER',
+      label: 'Group Member',
+      permissions: groupLoanPermissionsFor(group, { memberId: membership.memberId, role: 'MEMBER', status: membership.status }),
+    }));
+  }
+  const leaderMembership = await db.GroupMembership.findOne({ where: { groupId: group.id, memberId: leaderMemberId, status: 'ACTIVE' }, include: [memberInclude], transaction, lock: transaction?.LOCK?.UPDATE });
+  if (!leaderMembership) throw new ValidationError('Selected group admin must be an active group member');
+  await db.GroupMembership.update({ role: 'MEMBER' }, { where: { groupId: group.id, role: 'ADMIN', memberId: { [Op.ne]: leaderMemberId } }, transaction });
+  const role = group.creatorMemberId === leaderMemberId ? 'CREATOR' : 'ADMIN';
+  await leaderMembership.update({ role, status: 'ACTIVE' }, { transaction });
+  const demotions = previousAdmins.filter((membership) => membership.memberId !== leaderMemberId).map((membership) => ({
+    groupId: group.id,
+    memberId: membership.memberId,
+    membershipId: membership.id,
+    userId: membership.member?.userId,
+    role: 'MEMBER',
+    label: 'Group Member',
+    permissions: groupLoanPermissionsFor(group, { memberId: membership.memberId, role: 'MEMBER', status: membership.status }),
+  }));
+  return [...demotions, {
+    groupId: group.id,
+    memberId: leaderMemberId,
+    membershipId: leaderMembership.id,
+    userId: leaderMembership.member?.userId,
+    role,
+    label: role === 'CREATOR' ? 'Group Creator' : 'Group Admin',
+    permissions: groupLoanPermissionsFor(group, { memberId: leaderMemberId, role, status: 'ACTIVE' }),
+  }];
+};
+
 const applyGovernanceAction = async (group, action, transaction) => {
   if (action.actionType !== 'SETTINGS_UPDATE') return;
   const payload = allowedGovernancePayload(action.payload || {});
@@ -251,6 +312,11 @@ const applyGovernanceAction = async (group, action, transaction) => {
   if (payload.description !== undefined) update.description = payload.description;
   if (payload.governanceSettings) update.governanceSettings = { ...(group.governanceSettings || {}), ...payload.governanceSettings };
   if (Object.keys(update).length) await group.update(update, { transaction });
+  let roleUpdates = [];
+  if (payload.governanceSettings && Object.prototype.hasOwnProperty.call(payload.governanceSettings, 'leaderMemberId')) {
+    roleUpdates = await transferGroupAdminRole(group, payload.governanceSettings.leaderMemberId, transaction);
+  }
+  return { roleUpdates };
 };
 
 const proposeGovernanceAction = asyncHandler(async (req, res) => {
@@ -294,16 +360,17 @@ const voteGovernanceAction = asyncHandler(async (req, res) => {
     const approvals = Object.values(votes).filter((vote) => vote === 'ACCEPTED').length;
     const status = approvals >= activeCount ? 'APPROVED' : 'PENDING';
     await action.update({ votes, status, executedAt: status === 'APPROVED' ? new Date() : action.executedAt }, { transaction });
-    if (status === 'APPROVED') await applyGovernanceAction(group, action, transaction);
-    return { action, status };
+    const applied = status === 'APPROVED' ? await applyGovernanceAction(group, action, transaction) : null;
+    return { action, status, roleUpdates: applied?.roleUpdates || [] };
   });
+  publishGroupRoleUpdates(result.roleUpdates);
   return ResponseHandler.success(res, { id: result.action.id, status: result.status }, result.status === 'APPROVED' ? 'Governance edit approved and applied' : 'Governance vote recorded');
 });
 
 const inviteMember = asyncHandler(async (req, res) => {
   const creator = await memberForUser(req.user.id); const group = await db.BorrowingGroup.findByPk(req.params.groupId);
   if (!group) throw new NotFoundError('Group not found');
-  if (group.creatorMemberId !== creator?.id) throw new ForbiddenError('Only the group creator can add members');
+  if (!canManageGroupBorrowing(group, creator?.id)) throw new ForbiddenError('Only the active group authority can add members');
   const invited = await db.Member.findOne({ where: { memberNumber: req.body.memberNumber.trim().toUpperCase(), status: 'ACTIVE' }, include: [db.User] });
   if (!invited) throw new NotFoundError('Member not found');
   if (!(await financialEligibility(invited.id)).eligible) throw new ValidationError('This member is not currently eligible for group borrowing');
@@ -326,7 +393,7 @@ const respondInvitation = asyncHandler(async (req, res) => {
 const removeMember = asyncHandler(async (req, res) => {
   const creator = await memberForUser(req.user.id); const group = await db.BorrowingGroup.findByPk(req.params.groupId);
   if (!group) throw new NotFoundError('Group not found');
-  if (group.creatorMemberId !== creator?.id) throw new ForbiddenError('Only the group creator can remove members');
+  if (!canManageGroupBorrowing(group, creator?.id)) throw new ForbiddenError('Only the active group authority can remove members');
   const membership = await db.GroupMembership.findOne({ where: { id: req.params.membershipId, groupId: group.id, role: 'MEMBER', status: { [Op.in]: ['INVITED', 'ACTIVE'] } } });
   if (!membership) throw new NotFoundError('Group member not found');
   await membership.update({ status: 'REMOVED', respondedAt: new Date() });
@@ -346,7 +413,7 @@ const borrow = asyncHandler(async (req, res) => {
   if (membership.status !== 'ACTIVE') throw new ForbiddenError('Only active group members can submit a group borrowing request');
   if (!canManageGroupBorrowing(group, member.id)) throw new ForbiddenError('Only the group admin or voted leader can submit group borrowing requests');
   if (!(await financialEligibility(member.id)).eligible) throw new ForbiddenError('Complete minimum share capital and clear personal outstanding loans before group borrowing');
-  const amount = Number(req.body.amount); const months = Number(req.body.paymentPeriodMonths); const rate = Number(req.body.interestRate ?? 1);
+  const amount = Number(req.body.amount); const months = Number(req.body.paymentPeriodMonths); const rate = FIXED_GROUP_LOAN_MONTHLY_INTEREST_RATE;
   const totalDue = Math.round((amount + amount * rate / 100 * months) * 100) / 100;
   const loan = await db.sequelize.transaction(async (transaction) => {
     const created = await db.GroupLoan.create({ groupId: group.id, requestedByMemberId: member.id, amount, interestRate: rate, paymentPeriodMonths: months, totalDue, balance: totalDue }, { transaction });
