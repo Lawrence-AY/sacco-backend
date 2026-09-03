@@ -16,6 +16,7 @@ const queues = new Map();
 let workersStarted = false;
 let pollTimer = null;
 let outboxUnavailableLogged = false;
+let nextOutboxErrorLogAt = 0;
 
 const encryptionKey = () => crypto
   .createHash('sha256')
@@ -148,6 +149,39 @@ const pollOutbox = async () => {
   });
 };
 
+const isOutboxStoreUnavailable = (error) => {
+  const message = String(error?.message || '');
+  return error?.code === 'FIRESTORE_DATABASE_NOT_FOUND'
+    || error?.code === 14
+    || message.includes('Firestore database was not found')
+    || message.includes('14 UNAVAILABLE')
+    || message.includes('No connection established')
+    || message.includes('ENETUNREACH')
+    || message.includes('ECONNREFUSED')
+    || message.includes('ETIMEDOUT')
+    || message.includes('EAI_AGAIN');
+};
+
+const logOutboxPollError = (error) => {
+  if (isOutboxStoreUnavailable(error)) {
+    if (outboxUnavailableLogged) return;
+    outboxUnavailableLogged = true;
+    logger.warn('Email outbox polling paused until the backing store is reachable', {
+      module: 'email',
+      error: error.message,
+    });
+    return;
+  }
+
+  const now = Date.now();
+  if (now < nextOutboxErrorLogAt) return;
+  nextOutboxErrorLogAt = now + 60_000;
+  logger.error('Email outbox poll failed', {
+    module: 'email',
+    error: error.message,
+  });
+};
+
 const startEmailWorkers = () => {
   if (workersStarted) return;
   workersStarted = true;
@@ -161,19 +195,8 @@ const startEmailWorkers = () => {
   } else {
     logger.warn('REDIS_URL is not configured; using single-process email outbox worker');
   }
-  pollTimer = setInterval(() => pollOutbox().catch((error) => {
-    const unavailable = error?.code === 'FIRESTORE_DATABASE_NOT_FOUND' || String(error?.message || '').includes('Firestore database was not found');
-    if (unavailable && outboxUnavailableLogged) return;
-    if (unavailable) outboxUnavailableLogged = true;
-    logger.error('Email outbox poll failed', {
-      module: 'email', error: error.message,
-    });
-  }), 5000);
-  pollOutbox().catch((error) => {
-    const unavailable = error?.code === 'FIRESTORE_DATABASE_NOT_FOUND' || String(error?.message || '').includes('Firestore database was not found');
-    if (!unavailable) logger.error('Email outbox poll failed', { module: 'email', error: error.message });
-    else outboxUnavailableLogged = true;
-  });
+  pollTimer = setInterval(() => pollOutbox().catch(logOutboxPollError), 5000);
+  pollOutbox().catch(logOutboxPollError);
 };
 
 module.exports = { QUEUES, enqueueEmail, processEmailJob, startEmailWorkers };

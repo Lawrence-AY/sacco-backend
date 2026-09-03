@@ -69,9 +69,30 @@ const normalizeSequelizeError = (err) => {
   return null;
 };
 
+const isFirestoreUnavailableError = (err) => {
+  const message = String(err?.message || '');
+  return err?.code === 14
+    || message.includes('14 UNAVAILABLE')
+    || message.includes('No connection established')
+    || message.includes('ENETUNREACH')
+    || message.includes('ECONNREFUSED')
+    || message.includes('ETIMEDOUT')
+    || message.includes('EAI_AGAIN')
+    || message.includes('Client network socket disconnected before secure TLS connection was established')
+    || message.includes('Total timeout of API google.firestore.v1.Firestore exceeded');
+};
+
 const normalizeError = (err) => {
   const dbError = normalizeSequelizeError(err);
   if (dbError) return dbError;
+
+  if (isFirestoreUnavailableError(err)) {
+    return {
+      statusCode: 503,
+      errorCode: 'SERVICE_UNAVAILABLE',
+      message: 'Database service is temporarily unavailable. Please check your network connection and try again.',
+    };
+  }
 
   if (err.name === 'JsonWebTokenError') {
     return { statusCode: 401, errorCode: 'TOKEN_INVALID', message: 'Authentication failed' };

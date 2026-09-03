@@ -1,5 +1,5 @@
 const { getApps, initializeApp, cert } = require('firebase-admin/app');
-const { getFirestore } = require('firebase-admin/firestore');
+const { getFirestore, initializeFirestore } = require('firebase-admin/firestore');
 const { getStorage } = require('firebase-admin/storage');
 
 const requiredFirebaseVariables = [
@@ -38,6 +38,8 @@ const getFirebaseApp = () => {
   });
 };
 
+const firestoreClients = new Map();
+
 const testFirebaseConnection = async () => {
   const app = getFirebaseApp();
 
@@ -52,7 +54,19 @@ const testFirebaseConnection = async () => {
   };
 };
 
-const getFirebaseDb = () => getFirestore(getFirebaseApp(), process.env.FIRESTORE_DATABASE_ID || '(default)');
+const getFirebaseDb = () => {
+  const app = getFirebaseApp();
+  const databaseId = process.env.FIRESTORE_DATABASE_ID || '(default)';
+  const cacheKey = `${app.name}:${databaseId}`;
+  if (firestoreClients.has(cacheKey)) return firestoreClients.get(cacheKey);
+
+  const useRest = process.env.FIRESTORE_PREFER_REST !== 'false';
+  const db = useRest
+    ? initializeFirestore(app, { preferRest: true }, databaseId)
+    : getFirestore(app, databaseId);
+  firestoreClients.set(cacheKey, db);
+  return db;
+};
 const getFirebaseStorage = () => getStorage(getFirebaseApp());
 
 module.exports = {

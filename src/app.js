@@ -51,6 +51,7 @@ const groupRoutes = require('./features/groups/routes/groupRoutes');
 const optOutRoutes = require('./features/optout/routes/optOutRoutes');
 const paymentRoutes = require('./features/payments/routes/paymentRoutes');
 const eventRoutes = require('./features/events/routes/eventRoutes');
+const supportRoutes = require('./features/support/routes/supportRoutes');
 
 const applicationController = require('./features/applications/controllers/applicationController');
 const memberController = require('./features/member/controllers/memberController');
@@ -60,6 +61,7 @@ const { loginUser, verifyLoginOTP, refreshToken, logoutUser, registerUser, verif
 const app = express();
 app.locals.apiReady = false;
 app.locals.apiStartupError = null;
+let firebaseHealthWarningLogged = false;
 
 // Railway terminates TLS and forwards the original client IP in proxy headers.
 // This must be set before express-rate-limit reads req.ip.
@@ -144,6 +146,30 @@ const isLocalDevelopmentOrigin = (req) => {
   const origin = req.get('origin') || '';
   return /^http:\/\/(localhost|127\.0\.0\.1):\d+$/i.test(origin);
 };
+
+const isFirebaseUnavailableError = (error) => {
+  const message = String(error?.message || '');
+  return error?.code === 14
+    || message.includes('14 UNAVAILABLE')
+    || message.includes('No connection established')
+    || message.includes('ENETUNREACH')
+    || message.includes('ECONNREFUSED')
+    || message.includes('ETIMEDOUT')
+    || message.includes('EAI_AGAIN')
+    || message.includes('Client network socket disconnected before secure TLS connection was established')
+    || message.includes('Total timeout of API google.firestore.v1.Firestore exceeded');
+};
+
+const withTimeout = (promise, timeoutMs, label) => Promise.race([
+  promise.catch((error) => { throw error; }),
+  new Promise((_, reject) => {
+    setTimeout(() => {
+      const error = new Error(`${label} timed out after ${timeoutMs}ms`);
+      error.code = 'HEALTH_CHECK_TIMEOUT';
+      reject(error);
+    }, timeoutMs);
+  }),
+]);
 
 const corsAllowedMethods = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'];
 const corsAllowedHeaders = [
@@ -401,18 +427,22 @@ const healthHandler = async (req, res) => {
   let statusCode = 200;
 
   try {
-    await db.sequelize.authenticate();
-    firebase = await testFirebaseConnection();
+    await withTimeout(db.sequelize.authenticate(), 3000, 'Firestore health check');
+    firebase = await withTimeout(testFirebaseConnection(), 3000, 'Firebase credential check');
+    firebaseHealthWarningLogged = false;
   } catch (error) {
     firebase = {
       connected: false,
       projectId: getFirebaseConfigStatus().projectId,
     };
     statusCode = 503;
-    logger.error('Health Firebase check failed', {
-      error: error.message,
-      requestId: req.id,
-    });
+    if (!firebaseHealthWarningLogged || !isFirebaseUnavailableError(error)) {
+      firebaseHealthWarningLogged = true;
+      logger.warn('Health Firebase check failed', {
+        error: error.message,
+        requestId: req.id,
+      });
+    }
   }
 
   const ready = Boolean(app.locals.apiReady);
@@ -558,6 +588,7 @@ app.use('/api/finance', financeRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/search', searchRoutes);
+app.use('/api/support', supportRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/mpesa', mpesaRoutes);
 app.get('/api/portfolio/latest', protect, memberController.getFinancialPortfolio);
