@@ -50,6 +50,17 @@ process.on('SIGINT', () => {
 
 let server;
 
+const withStartupTimeout = (promise, timeoutMs, label) => Promise.race([
+  promise.catch((error) => { throw error; }),
+  new Promise((_, reject) => {
+    setTimeout(() => {
+      const error = new Error(`${label} timed out after ${timeoutMs}ms`);
+      error.code = 'STARTUP_CHECK_TIMEOUT';
+      reject(error);
+    }, timeoutMs);
+  }),
+]);
+
 function shutdown() {
   if (server) {
     logger.info('Closing HTTP server...');
@@ -173,7 +184,7 @@ async function startServer() {
     const { testFirebaseConnection } = require('./src/shared/config/firebase');
     let firebase;
     try {
-      firebase = await testFirebaseConnection();
+      firebase = await withStartupTimeout(testFirebaseConnection(), 3000, 'Firebase credential check');
       logger.info('Firebase connection successful', {
         projectId: firebase.projectId,
         service: firebase.service,

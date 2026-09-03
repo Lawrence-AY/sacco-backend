@@ -119,6 +119,16 @@ const executeMpesaB2C = async ({ transactionId }) => {
   return { success: true, resultCode: 0, receipt };
 };
 
+const executeBankTransfer = async ({ transactionId, bank }) => {
+  const receipt = `KCB${sha256(`${transactionId}:${bank?.code || 'BANK'}`).slice(0, 9).toUpperCase()}`;
+  return { success: true, resultCode: 0, receipt };
+};
+
+const executeSendwavePayout = async ({ transactionId }) => {
+  const receipt = `SWV${sha256(transactionId).slice(0, 9).toUpperCase()}`;
+  return { success: true, resultCode: 0, receipt };
+};
+
 const mintBlock = async (walletTransaction) => {
   const latestBlocks = await db.BlockchainBlock.findAll({
     order: [['blockNumber', 'DESC']],
@@ -162,9 +172,41 @@ const mintBlock = async (walletTransaction) => {
   });
 };
 
-const withdrawMpesa = async ({ member_id, wallet_id, phone_number, amount, currency = 'KES', telemetry = {} }) => {
-  if (!member_id || !wallet_id || !phone_number || !amount) {
-    const error = new Error('member_id, wallet_id, phone_number, and amount are required');
+const withdraw = async ({
+  member_id,
+  wallet_id,
+  amount,
+  currency = 'KES',
+  telemetry = {},
+  channel = 'MPESA',
+  phone_number,
+  bank = null,
+  beneficiary = null,
+}) => {
+  if (!member_id || !wallet_id || !amount) {
+    const error = new Error('member_id, wallet_id, and amount are required');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const normalizedChannel = String(channel || 'MPESA').toUpperCase();
+  if (normalizedChannel === 'MPESA' && !phone_number) {
+    const error = new Error('phone_number is required for M-Pesa withdrawals');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (normalizedChannel === 'BANK' && (!bank?.name || !bank?.code || !beneficiary?.accountNumber || !beneficiary?.accountName)) {
+    const error = new Error('bank name, bank code, account number, and account holder name are required');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (normalizedChannel === 'SENDWAVE' && (!beneficiary?.accountNumber || !beneficiary?.accountName)) {
+    const error = new Error('Sendwave recipient account/reference and account holder name are required');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (!['MPESA', 'BANK', 'SENDWAVE'].includes(normalizedChannel)) {
+    const error = new Error('Unsupported withdrawal channel');
     error.statusCode = 400;
     throw error;
   }
@@ -209,6 +251,7 @@ const withdrawMpesa = async ({ member_id, wallet_id, phone_number, amount, curre
       amount: requestedAmount,
       telemetry,
     });
+    const paymentMethod = normalizedChannel === 'MPESA' ? 'MPESA_B2C' : 'BANK_TRANSFER';
 
     if (risk.riskScore >= 50) {
       const rejected = await db.WalletTransaction.create({
@@ -223,7 +266,7 @@ const withdrawMpesa = async ({ member_id, wallet_id, phone_number, amount, curre
         newDepositedBalance: prevDeposited,
         prevWithdrawableBalance: prevWithdrawable,
         newWithdrawableBalance: prevWithdrawable,
-        paymentMethod: 'MPESA_B2C',
+        paymentMethod,
         status: 'REJECTED',
         deviceId: telemetry.device_id,
         ipAddress: telemetry.ip_address,
@@ -239,7 +282,11 @@ const withdrawMpesa = async ({ member_id, wallet_id, phone_number, amount, curre
       return { rejected, risk };
     }
 
-    const payout = await executeMpesaB2C({ transactionId, phoneNumber: phone_number, amount: requestedAmount });
+    const payout = normalizedChannel === 'MPESA'
+      ? await executeMpesaB2C({ transactionId, phoneNumber: phone_number, amount: requestedAmount })
+      : normalizedChannel === 'BANK'
+        ? await executeBankTransfer({ transactionId, bank, beneficiary, amount: requestedAmount })
+        : await executeSendwavePayout({ transactionId, beneficiary, amount: requestedAmount });
     if (!payout.success) {
       const failed = await db.WalletTransaction.create({
         id: transactionId,
@@ -253,7 +300,7 @@ const withdrawMpesa = async ({ member_id, wallet_id, phone_number, amount, curre
         newDepositedBalance: prevDeposited,
         prevWithdrawableBalance: prevWithdrawable,
         newWithdrawableBalance: prevWithdrawable,
-        paymentMethod: 'MPESA_B2C',
+        paymentMethod,
         status: 'FAILED',
         riskScore: risk.riskScore,
         amlCheckPassed: risk.amlCheckPassed,
@@ -277,7 +324,7 @@ const withdrawMpesa = async ({ member_id, wallet_id, phone_number, amount, curre
       newDepositedBalance: prevDeposited,
       prevWithdrawableBalance: prevWithdrawable,
       newWithdrawableBalance: newWithdrawable,
-      paymentMethod: 'MPESA_B2C',
+      paymentMethod,
       externalReference: payout.receipt,
       status: 'VERIFIED',
       deviceId: telemetry.device_id,
@@ -303,11 +350,13 @@ const withdrawMpesa = async ({ member_id, wallet_id, phone_number, amount, curre
       memberId: member?.id || null,
       type: 'WITHDRAWAL',
       amount: requestedAmount,
-      method: 'MPESA',
+      method: normalizedChannel === 'MPESA' ? 'MPESA' : 'MANUAL',
       status: 'SUCCESS',
       reference: payout.receipt,
-      description: `Wallet withdrawal ${transactionId}`,
-      paymentCategory: 'wallet_withdrawal',
+      description: normalizedChannel === 'MPESA'
+        ? `Wallet withdrawal ${transactionId}`
+        : `${normalizedChannel === 'BANK' ? 'Bank transfer' : 'Sendwave payout'} ${transactionId} to ${beneficiary?.accountName || 'beneficiary'}`,
+      paymentCategory: normalizedChannel === 'MPESA' ? 'wallet_withdrawal' : normalizedChannel === 'BANK' ? 'wallet_bank_withdrawal' : 'wallet_sendwave_withdrawal',
       internalReference: transactionId,
     }, { transaction });
 
@@ -315,6 +364,8 @@ const withdrawMpesa = async ({ member_id, wallet_id, phone_number, amount, curre
     return { verified, risk, block };
   });
 };
+
+const withdrawMpesa = (payload) => withdraw({ ...payload, channel: 'MPESA' });
 
 const getSummary = async (walletId) => {
   const wallet = await db.Wallet.findOne({ where: { walletId } });
@@ -336,6 +387,7 @@ const getSummary = async (walletId) => {
 };
 
 module.exports = {
+  withdraw,
   withdrawMpesa,
   getSummary,
 };

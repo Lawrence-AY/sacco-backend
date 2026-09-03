@@ -130,6 +130,17 @@ const schemas = {
     purpose: z.string().trim().max(500).optional(),
     selfGuarantee: z.boolean().optional().default(false),
     selfGuaranteedAmount: z.coerce.number().positive().max(10000000).optional(),
+    payoutDestination: strictObject({
+      channel: z.enum(['MPESA', 'BANK', 'SENDWAVE']),
+      phoneNumber: z.string().trim().max(30).optional(),
+      bankName: z.string().trim().max(120).optional(),
+      bankCode: z.string().trim().max(30).optional(),
+      branchCode: z.string().trim().max(30).optional(),
+      swiftCode: z.string().trim().max(30).optional(),
+      accountNumber: z.string().trim().max(60).optional(),
+      accountName: z.string().trim().max(120).optional(),
+      otp: z.string().trim().min(4).max(8).optional(),
+    }).optional(),
     guarantors: z.array(strictObject({
       memberId: z.string().uuid(),
       amount: z.coerce.number().positive(),
@@ -190,6 +201,15 @@ const schemas = {
       'payroll-deduction',
     ]).default('portfolio'),
     duration: z.coerce.number().int().positive().max(120).optional(),
+  }),
+  supportInquiry: strictObject({
+    name: z.string().trim().min(1).max(120),
+    email: z.string().trim().email().toLowerCase(),
+    phone: z.string().trim().max(30).optional().or(z.literal('')),
+    type: z.string().trim().min(1).max(80),
+    subject: z.string().trim().min(1).max(160),
+    message: z.string().trim().min(1).max(800),
+    roleLabel: z.string().trim().max(40).optional().or(z.literal('')),
   }),
   memberOptOutRequest: strictObject({
     reason: z.string().trim().min(1, 'Reason for leaving is required').max(1000),

@@ -25,6 +25,7 @@ const { generateOTP } = require('../../../shared/utils/generateOTP');
 const otpService = require('../../../services/otpService');
 const { enqueueEmail, QUEUES } = require('../../../services/email/emailQueue');
 const { sendOtpSms } = require('../../../services/sms/smsService');
+const walletService = require('../../wallet/services/walletService');
 const PROFILE_PHOTO_MAX_BYTES = 1.5 * 1024 * 1024;
 const PROFILE_PHOTO_TYPES = {
   'image/jpeg': 'jpg',
@@ -43,6 +44,46 @@ const LOAN_REPAYMENT_STK_TIMEOUT_MS = Number(process.env.LOAN_REPAYMENT_STK_TIME
 const MINIMUM_LOAN_SHARE_CAPITAL = 20000;
 const LOAN_ELIGIBILITY_MESSAGE = 'You are not yet eligible to apply for a loan. Please complete the minimum required share capital purchase before submitting a loan application.';
 const SELF_GUARANTEE_MULTIPLIER = Number(process.env.SELF_GUARANTEE_SAVINGS_MULTIPLIER || 1);
+
+const KENYA_PAYOUT_BANKS = [
+  { name: 'KCB Bank Kenya', code: '01', swiftCode: 'KCBLKENX', branchCode: '01000' },
+  { name: 'Standard Chartered Bank Kenya', code: '02', swiftCode: 'SCBLKENX', branchCode: '02000' },
+  { name: 'Absa Bank Kenya', code: '03', swiftCode: 'BARCKENX', branchCode: '03000' },
+  { name: 'Bank of Baroda Kenya', code: '06', swiftCode: 'BARBKENA', branchCode: '06000' },
+  { name: 'NCBA Bank Kenya', code: '07', swiftCode: 'CBAFKENX', branchCode: '07000' },
+  { name: 'Prime Bank', code: '10', swiftCode: 'PRIEKENX', branchCode: '10000' },
+  { name: 'Co-operative Bank of Kenya', code: '11', swiftCode: 'KCOOKENA', branchCode: '11000' },
+  { name: 'National Bank of Kenya', code: '12', swiftCode: 'NBKEKENX', branchCode: '12000' },
+  { name: 'M-Oriental Bank', code: '14', swiftCode: 'MORBKENA', branchCode: '14000' },
+  { name: 'Citibank Kenya', code: '16', swiftCode: 'CITIKENA', branchCode: '16000' },
+  { name: 'Habib Bank AG Zurich', code: '17', swiftCode: 'HBZUKENA', branchCode: '17000' },
+  { name: 'Middle East Bank Kenya', code: '18', swiftCode: 'MIEKKENA', branchCode: '18000' },
+  { name: 'Bank of Africa Kenya', code: '19', swiftCode: 'AFRIKENX', branchCode: '19000' },
+  { name: 'Consolidated Bank of Kenya', code: '23', swiftCode: 'CONKKENA', branchCode: '23000' },
+  { name: 'Credit Bank', code: '25', swiftCode: 'CRBTKENA', branchCode: '25000' },
+  { name: 'Access Bank Kenya', code: '26', swiftCode: 'ABNGKENA', branchCode: '26000' },
+  { name: 'Stanbic Bank Kenya', code: '31', swiftCode: 'SBICKENX', branchCode: '31000' },
+  { name: 'African Banking Corporation Kenya', code: '35', swiftCode: 'ABCLKENA', branchCode: '35000' },
+  { name: 'Spire Bank', code: '49', swiftCode: 'EQBLKENA', branchCode: '49000' },
+  { name: 'Paramount Bank', code: '50', swiftCode: 'PAUTKENA', branchCode: '50000' },
+  { name: 'Kingdom Bank', code: '51', swiftCode: 'CIFIKENA', branchCode: '51000' },
+  { name: 'Guaranty Trust Bank Kenya', code: '53', swiftCode: 'GTBIKENA', branchCode: '53000' },
+  { name: 'Victoria Commercial Bank', code: '54', swiftCode: 'VICMKENA', branchCode: '54000' },
+  { name: 'Guardian Bank', code: '55', swiftCode: 'GUARKENA', branchCode: '55000' },
+  { name: 'I&M Bank Kenya', code: '57', swiftCode: 'IMBLKENA', branchCode: '57000' },
+  { name: 'Development Bank of Kenya', code: '59', swiftCode: 'DEVKKENA', branchCode: '59000' },
+  { name: 'Sidian Bank', code: '66', swiftCode: 'SIDNKENA', branchCode: '66000' },
+  { name: 'Equity Bank Kenya', code: '68', swiftCode: 'EQBLKENA', branchCode: '68000' },
+  { name: 'Family Bank', code: '70', swiftCode: 'FABLKENA', branchCode: '70000' },
+  { name: 'Gulf African Bank', code: '72', swiftCode: 'GAFRKENA', branchCode: '72000' },
+  { name: 'First Community Bank', code: '74', swiftCode: 'IFCBKENA', branchCode: '74000' },
+  { name: 'DIB Bank Kenya', code: '75', swiftCode: 'DUIBKENA', branchCode: '75000' },
+  { name: 'UBA Kenya Bank', code: '76', swiftCode: 'UNAFKENA', branchCode: '76000' },
+  { name: 'KWFT Bank', code: '78', swiftCode: 'KWFTKENA', branchCode: '78000' },
+  { name: 'Faulu Microfinance Bank', code: '79', swiftCode: 'FAUMKENA', branchCode: '79000' },
+  { name: 'Choice Microfinance Bank', code: '36', swiftCode: 'CHOIKENA', branchCode: '36000' },
+  { name: 'Sendwave Remittance', code: 'SENDWAVE', swiftCode: 'SENDWAVE', branchCode: 'SWV001', channel: 'SENDWAVE' },
+];
 
 const getKcbMpesaBaseUrl = () => process.env.MPESA_URL?.trim().replace(/\/+$/, '') || null;
 const getBackendCallbackUrl = (req) => {
@@ -826,6 +867,204 @@ const requestOptOut = asyncHandler(async (req, res) => {
   }, 'Opt-out request submitted successfully', 201);
 });
 
+const getWalletCashOutSummary = asyncHandler(async (req, res) => {
+  const member = await findMemberByUserId(req.user.id);
+  if (!member) throw new NotFoundError('Member profile not found');
+
+  const walletMemberId = String(member.memberNumber || member.id).slice(0, 32);
+  const walletId = `WAL-${walletMemberId}`.slice(0, 32);
+  const { wallet, latestBlock, integrityVerified } = await walletService.getSummary(walletId).catch((error) => {
+    if (error.statusCode === 404) {
+      return {
+        wallet: {
+          walletId,
+          memberId: walletMemberId,
+          status: 'ACTIVE',
+          depositedBalance: 0,
+          withdrawableBalance: 0,
+          updatedAt: null,
+        },
+        latestBlock: null,
+        integrityVerified: true,
+      };
+    }
+    throw error;
+  });
+
+  return ResponseHandler.success(res, {
+    walletId: wallet.walletId || wallet.id || walletId,
+    memberId: walletMemberId,
+    memberNumber: member.memberNumber,
+    availableBalance: Number(wallet.withdrawableBalance || 0),
+    depositedBalance: Number(wallet.depositedBalance || 0),
+    status: wallet.status,
+    banks: KENYA_PAYOUT_BANKS,
+    audit: {
+      latestBlockNumber: latestBlock ? Number(latestBlock.blockNumber) : null,
+      integrityVerified,
+    },
+  }, 'Wallet cash-out summary retrieved successfully', 200);
+});
+
+const sendCashOutOtp = asyncHandler(async (req, res) => {
+  const user = req.user;
+  if (!user.email && !user.phone) {
+    throw new ValidationError('Email address or mobile phone number is required before withdrawal verification codes can be sent.');
+  }
+  const activeSession = await otpService.getActiveOtpSession({ userId: user.id, purpose: 'CASH_OUT' });
+  otpService.assertResendAllowed(activeSession);
+  const otp = generateOTP();
+  await otpService.createOtpSession({ userId: user.id, purpose: 'CASH_OUT', otp });
+  if (user.email) {
+    await enqueueEmail(QUEUES.OTP, 'OTP', {
+      to: user.email,
+      otp,
+      recipientName: user.name || [user.firstName, user.lastName].filter(Boolean).join(' ') || 'Member',
+    }, { immediate: true }).catch((error) => logger.error('Cash-out OTP email delivery failed', { module: 'member', userId: user.id, error: error.message }));
+  }
+  if (user.phone) {
+    sendOtpSms({ to: user.phone, otp, purpose: 'CASH_OUT' }).catch((error) => {
+      logger.error('Cash-out OTP SMS delivery failed', { module: 'member', userId: user.id, error: error.message });
+    });
+  }
+
+  return ResponseHandler.success(res, {
+    email: user.email,
+    phone: user.phone,
+    resendAvailableIn: 60,
+  }, 'Cash-out OTP sent to your registered email and phone number', 200);
+});
+
+const sendLoanPayoutOtp = asyncHandler(async (req, res) => {
+  const user = req.user;
+  if (!user.phone) {
+    throw new ValidationError('A mobile phone number must be attached to your account before payout verification can be sent.');
+  }
+  const activeSession = await otpService.getActiveOtpSession({ userId: user.id, purpose: 'LOAN_PAYOUT' });
+  otpService.assertResendAllowed(activeSession);
+  const otp = generateOTP();
+  await otpService.createOtpSession({ userId: user.id, purpose: 'LOAN_PAYOUT', otp });
+  sendOtpSms({ to: user.phone, otp, purpose: 'LOAN_PAYOUT' }).catch((error) => {
+    logger.error('Loan payout OTP SMS delivery failed', { module: 'member', userId: user.id, error: error.message });
+  });
+
+  return ResponseHandler.success(res, {
+    phone: user.phone,
+    resendAvailableIn: 60,
+  }, 'Payout verification OTP sent to your registered mobile number', 200);
+});
+
+const cashOutWallet = asyncHandler(async (req, res) => {
+  const member = await findMemberByUserId(req.user.id);
+  if (!member) throw new NotFoundError('Member profile not found');
+  await otpService.verifyOtp({ userId: req.user.id, purpose: 'CASH_OUT', otp: req.body.otp });
+
+  const amount = Number(req.body.amount || 0);
+  if (!amount || amount <= 0) throw new ValidationError('Enter a valid withdrawal amount');
+
+  const channel = String(req.body.channel || 'MPESA').toUpperCase();
+  const walletMemberId = String(member.memberNumber || member.id).slice(0, 32);
+  const walletId = req.body.walletId || `WAL-${walletMemberId}`.slice(0, 32);
+  const selectedBank = channel === 'BANK' || channel === 'SENDWAVE'
+    ? KENYA_PAYOUT_BANKS.find((bank) => bank.code === req.body.bankCode || bank.name === req.body.bankName)
+    : null;
+
+  if (channel === 'BANK' && !selectedBank) throw new ValidationError('Select a valid Kenyan commercial bank');
+  if (channel === 'SENDWAVE' && !KENYA_PAYOUT_BANKS.some((bank) => bank.channel === 'SENDWAVE')) throw new ValidationError('Sendwave payout route is unavailable');
+  if (channel === 'MPESA' && !isValidMpesaPhone(normalizeMpesaPhone(req.body.phoneNumber))) throw new ValidationError('Enter a valid Kenyan M-Pesa phone number');
+
+  const result = await walletService.withdraw({
+    member_id: walletMemberId,
+    wallet_id: walletId,
+    amount,
+    channel,
+    phone_number: channel === 'MPESA' ? normalizeMpesaPhone(req.body.phoneNumber) : undefined,
+    bank: selectedBank ? {
+      name: selectedBank.name,
+      code: selectedBank.code,
+      branchCode: req.body.branchCode || selectedBank.branchCode,
+      swiftCode: req.body.swiftCode || selectedBank.swiftCode,
+    } : null,
+    beneficiary: channel !== 'MPESA' ? {
+      accountNumber: req.body.accountNumber,
+      accountName: req.body.accountName,
+    } : null,
+    telemetry: {
+      device_id: req.get('X-Device-Id') || req.body.telemetry?.device_id || req.sessionId || 'member-dashboard',
+      ip_address: req.ip,
+      gps_location: req.body.telemetry?.gps_location || 'member-confirmed',
+      operating_system: req.body.telemetry?.operating_system || null,
+      app_version: req.body.telemetry?.app_version || null,
+    },
+  });
+
+  if (result.rejected) {
+    return ResponseHandler.success(res, {
+      status: 'REJECTED',
+      transactionId: result.rejected.transactionId,
+      risk: result.risk,
+    }, 'Withdrawal rejected by risk controls', 200);
+  }
+  if (result.failed) {
+    return ResponseHandler.success(res, {
+      status: 'FAILED',
+      transactionId: result.failed.transactionId,
+      risk: result.risk,
+    }, 'Withdrawal payout failed', 200);
+  }
+
+  return ResponseHandler.success(res, {
+    status: 'SUCCESS',
+    transactionId: result.verified.transactionId,
+    amount: Number(result.verified.amount),
+    channel,
+    externalReference: result.verified.externalReference,
+    newWithdrawableBalance: Number(result.verified.newWithdrawableBalance),
+    blockchain: {
+      blockNumber: Number(result.block.blockNumber),
+      transactionHash: result.block.transactionHash,
+      blockHash: result.block.currentHash,
+    },
+    risk: result.risk,
+  }, 'Withdrawal processed successfully', 200);
+});
+
+const validateLoanPayoutDestination = (payoutDestination = {}) => {
+  const channel = String(payoutDestination.channel || '').toUpperCase();
+  if (!['MPESA', 'BANK', 'SENDWAVE'].includes(channel)) {
+    throw new ValidationError('Select a valid disbursement and withdrawal method');
+  }
+  if (channel === 'MPESA') {
+    const phone = normalizeMpesaPhone(payoutDestination.phoneNumber);
+    if (!isValidMpesaPhone(phone)) throw new ValidationError('Enter a valid M-Pesa payout phone number');
+    return { channel, phoneNumber: phone };
+  }
+
+  const selectedBank = KENYA_PAYOUT_BANKS.find((bank) => (
+    channel === 'SENDWAVE'
+      ? bank.channel === 'SENDWAVE'
+      : bank.code === payoutDestination.bankCode || bank.name === payoutDestination.bankName
+  ));
+  if (!selectedBank) throw new ValidationError(channel === 'SENDWAVE' ? 'Select a valid Sendwave payout route' : 'Select a valid Kenyan commercial bank');
+  if (!String(payoutDestination.accountNumber || '').trim()) throw new ValidationError('Beneficiary account number is required');
+  if (!String(payoutDestination.accountName || '').trim()) throw new ValidationError('Account holder name is required');
+
+  return {
+    channel,
+    bankName: selectedBank.name,
+    bankCode: selectedBank.code,
+    branchCode: payoutDestination.branchCode || selectedBank.branchCode,
+    swiftCode: payoutDestination.swiftCode || selectedBank.swiftCode,
+    accountNumberLast4: String(payoutDestination.accountNumber).slice(-4),
+    accountName: String(payoutDestination.accountName).trim(),
+  };
+};
+
+const buildPayoutReasonNote = (payout) => {
+  if (payout.channel === 'MPESA') return `Preferred payout: M-Pesa ${payout.phoneNumber}.`;
+  return `Preferred payout: ${payout.channel === 'SENDWAVE' ? 'Sendwave' : 'Bank Transfer'} via ${payout.bankName}, branch ${payout.branchCode}, swift ${payout.swiftCode}, account ending ${payout.accountNumberLast4}, holder ${payout.accountName}.`;
+};
+
 const getLoans = asyncHandler(async (req, res) => {
   const member = await findMemberByUserId(req.user.id);
   if (!member) {
@@ -951,7 +1190,9 @@ const applyForLoan = asyncHandler(async (req, res) => {
   const selfGuarantee = req.body.selfGuarantee === true;
   const requestedAmount = Number(req.body.amount || 0);
   const isEmergencyLoan = String(req.body.type || '').toUpperCase() === 'EMERGENCY';
+  const payoutDestination = validateLoanPayoutDestination(req.body.payoutDestination);
   const guarantors = Array.isArray(req.body.guarantors) ? req.body.guarantors : [];
+  await otpService.verifyOtp({ userId: req.user.id, purpose: 'LOAN_PAYOUT', otp: req.body.payoutDestination?.otp });
   if (selfGuarantee) {
     const requestedGuaranteeAmount = Number(req.body.selfGuaranteedAmount || requestedAmount);
     const availableSavings = await getAvailableSelfGuaranteeSavings(member.id);
@@ -968,8 +1209,15 @@ const applyForLoan = asyncHandler(async (req, res) => {
     throw new ValidationError('Select at least one guarantor, or use self-guarantee if your savings cover the loan.');
   }
 
+  const reason = [req.body.reason || req.body.purpose || '', buildPayoutReasonNote(payoutDestination)]
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .join('\n\n');
+
   const result = await loanService.createLoan({
     ...req.body,
+    reason,
+    payoutDestination,
     memberId: member.id,
     status: 'PENDING',
     selfGuarantee,
@@ -1924,6 +2172,10 @@ module.exports = {
   updateProfile,
   transferShareCapital,
   requestOptOut,
+  getWalletCashOutSummary,
+  sendCashOutOtp,
+  sendLoanPayoutOtp,
+  cashOutWallet,
   getLoans,
   applyForLoan,
   cancelLoan,

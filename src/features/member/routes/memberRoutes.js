@@ -14,6 +14,10 @@ router.post('/share-capital/transfers', validate(schemas.shareCapitalTransfer), 
 router.get('/opt-out/transferees', memberController.searchOptOutTransferees);
 router.post('/opt-out/otp', memberController.sendOptOutOtp);
 router.post('/opt-out', validate(schemas.memberOptOutRequest), memberController.requestOptOut);
+router.get('/wallet/cash-out', memberController.getWalletCashOutSummary);
+router.post('/wallet/cash-out/otp', memberController.sendCashOutOtp);
+router.post('/wallet/cash-out', memberController.cashOutWallet);
+router.post('/loans/payout/otp', memberController.sendLoanPayoutOtp);
 router.get('/loans', memberController.getLoans);
 router.post('/loans', validate(schemas.loanRequest), memberController.applyForLoan);
 router.post('/loans/:loanId/cancel', memberController.cancelLoan);
