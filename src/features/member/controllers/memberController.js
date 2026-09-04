@@ -1115,7 +1115,7 @@ const getLoans = asyncHandler(async (req, res) => {
     balance: outstandingBalance,
     outstandingBalance,
     repaid: Math.max(Number(loan.amount || 0) - Number(loan.principalBalance ?? loan.amount ?? 0), 0),
-    interestRate: Number(loan.interestRate || 0),
+    interestRate: quote.monthlyInterestRate,
     duration: Number(loan.duration || 0),
     nextPaymentDueAt: loan.nextPaymentDueAt,
     lastInterestAccrualAt: loan.lastInterestAccrualAt,

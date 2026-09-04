@@ -10,18 +10,12 @@ const { ValidationError, NotFoundError, ForbiddenError } = require('../../../sha
 const memberForUser = (userId) => db.Member.findOne({ where: { userId } });
 
 async function financialEligibility(memberId) {
-  const [account, config, transactions, loans] = await Promise.all([
+  const [account, config, transactions] = await Promise.all([
     db.ShareAccount.findOne({ where: { memberId } }), db.SystemConfig.findOne(),
-    db.Transaction.findAll({ where: { memberId, status: 'SUCCESS' }, attributes: ['amount', 'paymentCategory', 'description', 'type', 'loanId'] }),
-    db.Loan.findAll({ where: { memberId, status: { [Op.in]: ['APPROVED', 'ACTIVE'] } }, attributes: ['id', 'amount'] }),
+    db.Transaction.findAll({ where: { memberId, status: 'SUCCESS' }, attributes: ['amount', 'paymentCategory', 'description'] }),
   ]);
   const accountCapital = Number(account?.shares || 0) * Number(account?.shareValue || 0);
   const paidCapital = transactions.reduce((sum, row) => String(row.paymentCategory || row.description || '').toLowerCase().includes('share') ? sum + Number(row.amount || 0) : sum, 0);
-  const repayments = transactions.reduce((map, row) => {
-    if (row.type === 'LOAN_REPAYMENT' && row.loanId) map.set(row.loanId, (map.get(row.loanId) || 0) + Number(row.amount || 0));
-    return map;
-  }, new Map());
-  const outstandingLoans = loans.reduce((sum, loan) => sum + Math.max(Number(loan.amount || 0) - (repayments.get(loan.id) || 0), 0), 0);
   const minimumShareCapital = Number(config?.shareCapital || 20000);
   const shareCapital = Math.max(accountCapital, paidCapital);
   const member = await db.Member.findByPk(memberId, { attributes: ['userId'], include: [{ model: db.User, attributes: ['shareCapitalStatus'] }] });
@@ -29,7 +23,7 @@ async function financialEligibility(memberId) {
   if (member?.userId && member.User?.shareCapitalStatus !== shareCapitalStatus) {
     await db.User.update({ shareCapitalStatus }, { where: { id: member.userId } });
   }
-  return { eligible: shareCapital >= minimumShareCapital && outstandingLoans <= 0, shareCapital, minimumShareCapital, outstandingLoans };
+  return { eligible: shareCapital >= minimumShareCapital, shareCapital, minimumShareCapital };
 }
 
 const memberInclude = { model: db.Member, as: 'member', attributes: ['id', 'memberNumber', 'userId'], include: [{ model: db.User, attributes: ['name', 'email', 'phone'] }] };
@@ -141,7 +135,7 @@ const createGroup = asyncHandler(async (req, res) => {
   const member = await memberForUser(req.user.id);
   if (!member) throw new NotFoundError('Member profile not found');
   const eligibility = await financialEligibility(member.id);
-  if (!eligibility.eligible) throw new ForbiddenError('Complete minimum share capital and clear outstanding loans before creating a borrowing group');
+  if (!eligibility.eligible) throw new ForbiddenError('Complete minimum share capital before creating a borrowing group');
   const group = await db.sequelize.transaction(async (transaction) => {
     const created = await db.BorrowingGroup.create({ name: req.body.name.trim(), description: req.body.description || null, creatorMemberId: member.id }, { transaction });
     await db.GroupMembership.create({ groupId: created.id, memberId: member.id, role: 'CREATOR', status: 'ACTIVE', invitedByMemberId: member.id, respondedAt: new Date() }, { transaction });
@@ -352,18 +346,32 @@ const voteGovernanceAction = asyncHandler(async (req, res) => {
     if (action.status !== 'PENDING') throw new ValidationError(`This governance action is already ${action.status.toLowerCase()}`);
     await validateGovernanceLeader(group.id, action.payload || {}, transaction);
     const votes = { ...(action.votes || {}), [member.id]: accept ? 'ACCEPTED' : 'REJECTED' };
-    if (!accept) {
-      await action.update({ votes, status: 'REJECTED' }, { transaction });
-      return { action, status: 'REJECTED' };
-    }
     const activeCount = await db.GroupMembership.count({ where: { groupId: group.id, status: 'ACTIVE' }, transaction });
     const approvals = Object.values(votes).filter((vote) => vote === 'ACCEPTED').length;
-    const status = approvals >= activeCount ? 'APPROVED' : 'PENDING';
+    const rejections = Object.values(votes).filter((vote) => vote === 'REJECTED').length;
+    const majority = Math.floor(activeCount / 2) + 1;
+    const status = approvals >= majority ? 'APPROVED' : rejections >= majority ? 'REJECTED' : 'PENDING';
     await action.update({ votes, status, executedAt: status === 'APPROVED' ? new Date() : action.executedAt }, { transaction });
     const applied = status === 'APPROVED' ? await applyGovernanceAction(group, action, transaction) : null;
-    return { action, status, roleUpdates: applied?.roleUpdates || [] };
+    return { action, group, status, roleUpdates: applied?.roleUpdates || [] };
   });
   publishGroupRoleUpdates(result.roleUpdates);
+  const electedLeaderId = result.status === 'APPROVED' ? result.action.payload?.governanceSettings?.leaderMemberId : null;
+  if (electedLeaderId) {
+    const [leader, activeMembers] = await Promise.all([
+      db.Member.findByPk(electedLeaderId, { include: [{ model: db.User, attributes: ['name'] }] }),
+      db.GroupMembership.findAll({ where: { groupId: result.group.id, status: 'ACTIVE' }, include: [memberInclude] }),
+    ]);
+    const leaderName = leader?.User?.name || leader?.memberNumber || 'The elected member';
+    await Promise.allSettled(activeMembers.map((row) => notify(
+      row.member.userId,
+      `group-admin-appointed:${result.action.id}:${row.memberId}`,
+      'New group admin appointed',
+      `${leaderName} received the majority vote and is now the admin for ${result.group.name}. Borrowing rights have been transferred to the new admin.`,
+      result.action.id,
+      { groupId: result.group.id, governanceActionId: result.action.id, leaderMemberId: electedLeaderId },
+    )));
+  }
   return ResponseHandler.success(res, { id: result.action.id, status: result.status }, result.status === 'APPROVED' ? 'Governance edit approved and applied' : 'Governance vote recorded');
 });
 
@@ -373,7 +381,7 @@ const inviteMember = asyncHandler(async (req, res) => {
   if (!canManageGroupBorrowing(group, creator?.id)) throw new ForbiddenError('Only the active group authority can add members');
   const invited = await db.Member.findOne({ where: { memberNumber: req.body.memberNumber.trim().toUpperCase(), status: 'ACTIVE' }, include: [db.User] });
   if (!invited) throw new NotFoundError('Member not found');
-  if (!(await financialEligibility(invited.id)).eligible) throw new ValidationError('This member is not currently eligible for group borrowing');
+  if (!(await financialEligibility(invited.id)).eligible) throw new ValidationError('This member must complete the minimum share capital before joining a group');
   let membership = await db.GroupMembership.findOne({ where: { groupId: group.id, memberId: invited.id } });
   if (membership && ['ACTIVE', 'INVITED'].includes(membership.status)) throw new ValidationError('User already in group');
   if (membership) await membership.update({ status: 'INVITED', role: 'MEMBER', invitedByMemberId: creator.id, respondedAt: null });
@@ -412,7 +420,7 @@ const borrow = asyncHandler(async (req, res) => {
   const member = await memberForUser(req.user.id); const { group, membership } = await visibleGroup(req.params.groupId, member?.id);
   if (membership.status !== 'ACTIVE') throw new ForbiddenError('Only active group members can submit a group borrowing request');
   if (!canManageGroupBorrowing(group, member.id)) throw new ForbiddenError('Only the group admin or voted leader can submit group borrowing requests');
-  if (!(await financialEligibility(member.id)).eligible) throw new ForbiddenError('Complete minimum share capital and clear personal outstanding loans before group borrowing');
+  if (!(await financialEligibility(member.id)).eligible) throw new ForbiddenError('Complete minimum share capital before group borrowing');
   const amount = Number(req.body.amount); const months = Number(req.body.paymentPeriodMonths); const rate = FIXED_GROUP_LOAN_MONTHLY_INTEREST_RATE;
   const totalDue = Math.round((amount + amount * rate / 100 * months) * 100) / 100;
   const loan = await db.sequelize.transaction(async (transaction) => {
