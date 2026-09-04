@@ -160,3 +160,17 @@ test('dashboard outstanding quote includes only interest accrued to the quote da
 
   assert.equal(outstanding, 101000);
 });
+
+test('legacy loans missing a stored rate use the product monthly rate', () => {
+  const quote = calculateLoanBalanceQuote({
+    ...baseLoan,
+    type: 'EMERGENCY',
+    interestRate: null,
+    amount: 30000,
+    principalBalance: 30000,
+  }, new Date('2026-01-31T00:00:00.000Z'));
+
+  assert.equal(quote.monthlyInterestRate, 1);
+  assert.equal(quote.accruedInterest, 300);
+  assert.equal(quote.outstandingBalance, 30300);
+});

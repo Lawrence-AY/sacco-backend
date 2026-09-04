@@ -1,6 +1,7 @@
 const CENTS = 100;
 const DAYS_IN_MONTH = 30;
 const DEFAULT_AMORTIZATION = 'REDUCING_BALANCE';
+const DEFAULT_MONTHLY_RATES = Object.freeze({ EMERGENCY: 1, EDUCATION: 1, WELFARE: 1, DEVELOPMENT: 1.5 });
 
 const toCents = (value) => {
   const numeric = Number(value || 0);
@@ -15,6 +16,12 @@ const normalizeAmortization = (value) => {
   return ['SIMPLE_INTEREST', 'REDUCING_BALANCE'].includes(normalized)
     ? normalized
     : DEFAULT_AMORTIZATION;
+};
+
+const resolveMonthlyInterestRate = (loan = {}) => {
+  const storedRate = Number(loan.interestRate);
+  if (Number.isFinite(storedRate) && storedRate > 0) return storedRate;
+  return DEFAULT_MONTHLY_RATES[String(loan.type || '').toUpperCase()] || 0;
 };
 
 const daysBetween = (start, end) => {
@@ -54,7 +61,7 @@ const calculateLoanPaymentAllocation = ({ loan, amount, paymentDate = new Date()
     originalPrincipalCents,
     currentPrincipalCents,
     accruedInterestCents: storedInterestCents,
-    monthlyRatePercent: loan.interestRate,
+    monthlyRatePercent: resolveMonthlyInterestRate(loan),
     accruedDays,
     amortization,
   });
@@ -116,7 +123,7 @@ const calculateCurrentOutstandingBalance = (loan, asOf = new Date()) => {
     originalPrincipalCents,
     currentPrincipalCents,
     accruedInterestCents: toCents(loan.accruedInterest || 0),
-    monthlyRatePercent: loan.interestRate,
+    monthlyRatePercent: resolveMonthlyInterestRate(loan),
     accruedDays,
     amortization,
   });
@@ -146,14 +153,15 @@ const calculateLoanBalanceQuote = (loan, asOf = new Date()) => {
   const principalCents = toCents(loan.principalBalance ?? loan.amount);
   const accruedDays = daysBetween(loan.lastInterestAccrualAt || loan.decidedAt || loan.createdAt, asOf);
   const amortization = normalizeAmortization(loan.amortizationMethod || loan.amortization || loan.metadata?.amortizationMethod);
-  const interestCents = calculateAccruedInterestCents({ originalPrincipalCents, currentPrincipalCents: principalCents, accruedInterestCents: toCents(loan.accruedInterest || 0), monthlyRatePercent: loan.interestRate, accruedDays, amortization });
+  const monthlyInterestRate = resolveMonthlyInterestRate(loan);
+  const interestCents = calculateAccruedInterestCents({ originalPrincipalCents, currentPrincipalCents: principalCents, accruedInterestCents: toCents(loan.accruedInterest || 0), monthlyRatePercent: monthlyInterestRate, accruedDays, amortization });
   const start = loan.decidedAt || loan.approvedAt || loan.createdAt || asOf;
   const elapsedMonths = monthsBetween(start, asOf);
   const remainingInstallments = Math.max(Number(loan.duration || 1) - elapsedMonths, 1);
-  const scheduledPaymentAmount = calculateScheduledInstallment({ principal: fromCents(principalCents), monthlyRatePercent: loan.interestRate, installments: remainingInstallments });
+  const scheduledPaymentAmount = calculateScheduledInstallment({ principal: fromCents(principalCents), monthlyRatePercent: monthlyInterestRate, installments: remainingInstallments });
   const nextDue = loan.nextPaymentDueAt ? new Date(loan.nextPaymentDueAt) : null;
   const daysPastDue = nextDue && !Number.isNaN(nextDue.getTime()) ? Math.max(0, daysBetween(nextDue, asOf)) : 0;
-  return { amortization, accruedDays, principalBalance: fromCents(principalCents), accruedInterest: fromCents(interestCents), outstandingBalance: fromCents(principalCents + interestCents), remainingInstallments, scheduledPaymentAmount, nextPaymentDueAt: loan.nextPaymentDueAt || null, daysPastDue };
+  return { amortization, monthlyInterestRate, accruedDays, principalBalance: fromCents(principalCents), accruedInterest: fromCents(interestCents), outstandingBalance: fromCents(principalCents + interestCents), remainingInstallments, scheduledPaymentAmount, nextPaymentDueAt: loan.nextPaymentDueAt || null, daysPastDue };
 };
 
 module.exports = {
@@ -161,6 +169,7 @@ module.exports = {
   toCents,
   fromCents,
   normalizeAmortization,
+  resolveMonthlyInterestRate,
   calculateAccruedInterestCents,
   calculateCurrentOutstandingBalance,
   calculateLoanBalanceQuote,
