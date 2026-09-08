@@ -120,6 +120,8 @@ const applicationDocumentColumns = {
   poBox: { type: DataTypes.STRING, allowNull: true },
   county: { type: DataTypes.STRING, allowNull: true },
   subCounty: { type: DataTypes.STRING, allowNull: true },
+  dateOfBirth: { type: DataTypes.DATEONLY, allowNull: true },
+  gender: { type: DataTypes.STRING, allowNull: true },
   paymentVerifiedAt: { type: DataTypes.DATE, allowNull: true },
 };
 

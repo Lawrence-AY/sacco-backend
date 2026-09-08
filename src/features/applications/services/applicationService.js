@@ -158,6 +158,8 @@ const finalizePaidApplication = async ({
     poBox: application.poBox || user.poBox,
     county: application.county || user.county,
     subCounty: application.subCounty || user.subCounty,
+    dateOfBirth: application.dateOfBirth || user.dateOfBirth,
+    gender: application.gender || user.gender,
     consentGiven: application.consentGiven ?? user.consentGiven,
     consentGivenAt: application.consentGivenAt || user.consentGivenAt || new Date(),
     role: 'MEMBER',

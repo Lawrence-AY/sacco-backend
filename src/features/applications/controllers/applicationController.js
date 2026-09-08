@@ -82,9 +82,9 @@ const findRegistration = async (fieldValues) => {
     const value = String(rawValue || '').trim();
     if (!value) continue;
 
-    const snapshot = await registrations.where(field, '==', value).limit(1).get();
+    const snapshot = await registrations.where(field, '==', value).limit(10).get();
     if (!snapshot.empty) {
-      const document = snapshot.docs[0];
+      const document = snapshot.docs.find((doc) => normalizePaymentStatus(doc.data()?.status) === 'paid') || snapshot.docs[0];
       return { id: document.id, ...document.data() };
     }
   }
@@ -224,6 +224,8 @@ const submitApplication = asyncHandler(async (req, res) => {
     poBox: req.body.poBox || null,
     county: req.body.county || null,
     subCounty: req.body.subCounty || null,
+    dateOfBirth: req.body.dateOfBirth || null,
+    gender: req.body.gender || null,
     consentGiven: Boolean(req.body.consentGiven),
   };
 
