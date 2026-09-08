@@ -86,6 +86,12 @@ const KENYA_PAYOUT_BANKS = [
 ];
 
 const getKcbMpesaBaseUrl = () => process.env.MPESA_URL?.trim().replace(/\/+$/, '') || null;
+const getKcbSharedShortcode = () => (
+  process.env.KCB_TILL_NUMBER
+  || process.env.KCB_PAYBILL_NUMBER
+  || process.env.MPESA_PAYBILL_NUMBER
+  || DEFAULT_KCB_PAYBILL_NUMBER
+);
 const getBackendCallbackUrl = (req) => {
   const configured = process.env.BACKEND_BASE_URL
     || process.env.PUBLIC_BACKEND_URL
@@ -201,12 +207,15 @@ const getKcbRegistrationForTransaction = async (transaction) => {
   const matches = [];
   for (const field of ['transaction_reference', 'merchant_request_id', 'checkout_request_id', 'request_id']) {
     for (const ref of refs) {
-      const snapshot = await getFirebaseDb().collection('registrations').where(field, '==', ref).limit(1).get();
+      const snapshot = await getFirebaseDb().collection('registrations').where(field, '==', ref).limit(10).get();
       snapshot.forEach((document) => matches.push({ id: document.id, ...document.data() }));
     }
   }
 
   matches.sort((left, right) => {
+    const leftPaid = ['paid', 'completed', 'success'].includes(String(left.status || '').toLowerCase()) ? 1 : 0;
+    const rightPaid = ['paid', 'completed', 'success'].includes(String(right.status || '').toLowerCase()) ? 1 : 0;
+    if (leftPaid !== rightPaid) return rightPaid - leftPaid;
     const leftDate = left.updated_at?.toDate?.() || new Date(left.updated_at || 0);
     const rightDate = right.updated_at?.toDate?.() || new Date(right.updated_at || 0);
     return rightDate - leftDate;
@@ -367,6 +376,40 @@ const getProviderTransaction = async (transaction) => {
   return candidates.length === 1 ? candidates[0] : null;
 };
 
+const isSavingsDepositPayment = (transaction) => {
+  const category = String(transaction?.paymentCategory || '').toLowerCase();
+  const type = String(transaction?.type || '').toUpperCase();
+  return type === 'DEPOSIT' && ['savings', 'monthly_contribution', 'monthlycontribution'].includes(category);
+};
+
+const settleSavingsDepositPayment = async ({ transactionId, receipt, amount, description }) => (
+  db.sequelize.transaction(async (databaseTransaction) => {
+    const payment = await db.Transaction.findByPk(transactionId, {
+      transaction: databaseTransaction,
+      lock: databaseTransaction.LOCK.UPDATE,
+    });
+    if (!payment || !isSavingsDepositPayment(payment)) return payment;
+    if (String(payment.status || '').toUpperCase() === 'SUCCESS') return payment;
+
+    const paidAmount = Number(amount ?? payment.amount ?? 0);
+    if (!Number.isFinite(paidAmount) || paidAmount <= 0) throw new Error('Savings deposit amount is invalid');
+
+    const [account] = await db.SavingsAccount.findOrCreate({
+      where: { memberId: payment.memberId },
+      defaults: { memberId: payment.memberId, balance: 0 },
+      transaction: databaseTransaction,
+    });
+    await account.update({ balance: Number(account.balance || 0) + paidAmount }, { transaction: databaseTransaction });
+    await payment.update({
+      status: 'SUCCESS',
+      reference: receipt || payment.reference,
+      amount: paidAmount,
+      description: description || payment.description,
+    }, { transaction: databaseTransaction });
+    return payment;
+  })
+);
+
 const syncTransactionWithKcbRegistration = async (transaction) => {
   if (!transaction || String(transaction.status || '').toUpperCase() !== 'PENDING') {
     return { transaction, registration: null };
@@ -389,6 +432,14 @@ const syncTransactionWithKcbRegistration = async (transaction) => {
       if (providerStatus === 'SUCCESS' || providerStatus === 'FAILED') {
         if (providerStatus === 'SUCCESS' && isShareCapitalPayment(transaction)) {
           const settled = await settleShareCapitalPayment({
+            transactionId: transaction.id,
+            receipt,
+            amount: providerTransaction.amount,
+            description: providerTransaction.description,
+          });
+          transaction.set({ status: settled.status, reference: settled.reference, amount: settled.amount });
+        } else if (providerStatus === 'SUCCESS' && isSavingsDepositPayment(transaction)) {
+          const settled = await settleSavingsDepositPayment({
             transactionId: transaction.id,
             receipt,
             amount: providerTransaction.amount,
@@ -444,6 +495,14 @@ const syncTransactionWithKcbRegistration = async (transaction) => {
   if (['paid', 'completed', 'success'].includes(normalizedStatus)) {
     if (isShareCapitalPayment(transaction)) {
       const settled = await settleShareCapitalPayment({ transactionId: transaction.id, receipt });
+      transaction.set({ status: settled.status, reference: settled.reference, amount: settled.amount });
+    } else if (isSavingsDepositPayment(transaction)) {
+      const settled = await settleSavingsDepositPayment({
+        transactionId: transaction.id,
+        receipt,
+        amount: registration.transaction_amount || registration.amount,
+        description: registration.result_desc || registration.result_description,
+      });
       transaction.set({ status: settled.status, reference: settled.reference, amount: settled.amount });
     } else {
       await transaction.update({
@@ -1809,6 +1868,7 @@ const initiateContribution = asyncHandler(async (req, res) => {
   const memberPaymentAccount = /^29903-\d+$/i.test(String(memberNumber || ''))
     ? memberNumber
     : String(memberNumber || '').trim();
+  const invoiceNumber = `${getKcbSharedShortcode()}-${memberPaymentAccount}`;
 
   if (paymentMode === 'STK' && !isValidMpesaPhone(phone)) {
     throw new ValidationError('Phone number is required for STK push');
@@ -1891,7 +1951,7 @@ const initiateContribution = asyncHandler(async (req, res) => {
     body: JSON.stringify({
       phone,
       amount: Math.round(amount),
-      invoiceNumber: memberPaymentAccount,
+      invoiceNumber,
       accountReference: memberPaymentAccount,
       member_number: memberPaymentAccount,
       memberId: member.id,

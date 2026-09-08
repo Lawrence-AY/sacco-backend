@@ -24,6 +24,8 @@ const MembershipApplication = sequelize.define('MembershipApplication', {
   poBox: DataTypes.STRING,
   county: DataTypes.STRING,
   subCounty: DataTypes.STRING,
+  dateOfBirth: DataTypes.DATEONLY,
+  gender: DataTypes.STRING,
   occupation: DataTypes.STRING,
   idDocumentName: DataTypes.STRING,
   passportPhotoName: DataTypes.STRING,

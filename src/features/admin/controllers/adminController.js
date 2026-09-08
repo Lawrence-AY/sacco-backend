@@ -1342,13 +1342,14 @@ const commitFinancialCsvImport = asyncHandler(async (req, res) => {
           },
         },
       }, { transaction });
-      if (member.User) {
-        await member.User.update({
+      const linkedUserId = member.User?.id || member.userId;
+      if (linkedUserId) {
+        await db.User.update({
           employerContribution,
-          staffId: isStaffMember ? (data.staffId || member.User.staffId) : null,
-          payrollNumber: isStaffMember ? (data.staffId || member.User.payrollNumber) : null,
+          staffId: isStaffMember ? (data.staffId || member.User?.staffId) : null,
+          payrollNumber: isStaffMember ? (data.staffId || member.User?.payrollNumber) : null,
           employmentTag: EMPLOYEE_TAG,
-        }, { transaction });
+        }, { where: { id: linkedUserId }, transaction });
       }
       await syncImportedMemberBalances({
         member,

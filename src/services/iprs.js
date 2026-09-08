@@ -116,12 +116,9 @@ async function callVerificationApi(input, retry = true) {
   const token = await authenticate();
   const documentType = normalizeDocumentType(input.documentType);
   const body = {
-    documentType,
     idNumber: input.idNumber,
-    documentNumber: input.idNumber,
-    firstName: input.firstName,
-    surname: input.surname,
   };
+  if (documentType !== 'national') body.documentType = documentType;
 
   let networkFailed = false;
 
@@ -169,14 +166,27 @@ async function verifyIdentity({ idNumber, documentType, firstName, surname }) {
 
   const payload = await callVerificationApi({ idNumber, documentType, firstName, surname });
   const data = payload.data || payload.result || payload;
+  const person = data.person || data.Person || data.identity || data.result?.person || {};
   const apiSuccess = payload.success !== false && data.valid !== false && data.verified !== false && data.match !== false;
-  const firstNameMatches = data.firstName || data.givenName ? namesMatch(firstName, data.firstName || data.givenName) : true;
-  const surnameMatches = data.surname || data.lastName || data.familyName ? namesMatch(surname, data.surname || data.lastName || data.familyName) : true;
+  const officialFirstName = person.firstName || person.givenName || data.firstName || data.givenName;
+  const officialSurname = person.surname || person.lastName || person.familyName || data.surname || data.lastName || data.familyName;
+  const firstNameMatches = officialFirstName ? namesMatch(firstName, officialFirstName) : true;
+  const surnameMatches = officialSurname ? namesMatch(surname, officialSurname) : true;
   const success = Boolean(apiSuccess && firstNameMatches && surnameMatches);
 
   return {
     success,
     message: success ? 'Identity details match official records.' : 'Details do not match official records.',
+    person: {
+      idNumber: person.idNumber || data.idNumber || idNumber,
+      firstName: officialFirstName || null,
+      otherNames: person.otherNames || data.otherNames || null,
+      surname: officialSurname || null,
+      gender: person.gender || data.gender || null,
+      dateOfBirth: person.dateOfBirth || data.dateOfBirth || null,
+      verificationReference: data.verificationReference || payload.verificationReference || null,
+      source: data.source || payload.source || 'IPRS',
+    },
   };
 }
 

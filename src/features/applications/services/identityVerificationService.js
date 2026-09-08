@@ -95,6 +95,7 @@ async function verifyAndTrackIdentity({ user, email, idNumber, documentType, fir
       attemptsRemaining: MAX_ATTEMPTS,
       iprsEnabled: iprsConfig.enabled,
       message: verification.message,
+      person: verification.person || null,
     };
   }
 
