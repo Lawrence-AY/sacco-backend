@@ -1715,7 +1715,7 @@ const initiateLoanRepaymentStk = asyncHandler(async (req, res) => {
     }
     if (!upstream.ok || !checkoutRequestId) throw new Error(payload.message || payload.error || 'M-Pesa did not return a checkout request ID');
     await ledger.update({ checkoutRequestId, merchantRequestId: payload.merchantRequestId || payload.MerchantRequestID || null, reference: checkoutRequestId });
-    return ResponseHandler.success(res, { transactionId: ledger.id, checkoutRequestId, merchantRequestId: ledger.merchantRequestId, status: 'PENDING' }, 'STK Push Sent!', 200);
+    return ResponseHandler.success(res, { transactionId: ledger.id, checkoutRequestId, merchantRequestId: ledger.merchantRequestId, status: 'PENDING' }, 'STK Push Sent!', 202);
   } catch (error) {
     const timedOut = error.name === 'TimeoutError' || error.name === 'AbortError';
     if (shouldUseLocalStkFallback()) {
@@ -1747,6 +1747,14 @@ const initiateLoanRepaymentStk = asyncHandler(async (req, res) => {
         ? 'M-Pesa STK initiation timed out before a checkout request was returned'
         : error.message,
     });
+    if (timedOut) {
+      return ResponseHandler.success(res, {
+        transactionId: ledger.id,
+        checkoutRequestId: ledger.checkoutRequestId,
+        merchantRequestId: ledger.merchantRequestId,
+        status: 'PENDING',
+      }, 'STK request is still being processed. Please check your phone and wait for confirmation.', 202);
+    }
     throw new ValidationError(timedOut
       ? 'M-Pesa is taking longer than expected to send the PIN prompt. Please wait a moment and check your phone before retrying.'
       : error.message || 'Unable to send M-Pesa PIN prompt');
@@ -2003,7 +2011,7 @@ const initiateContribution = asyncHandler(async (req, res) => {
       || null,
   });
 
-  return ResponseHandler.created(res, {
+  return ResponseHandler.success(res, {
     id: transaction.id,
     type: transaction.type,
     amount: transaction.amount,
@@ -2017,7 +2025,7 @@ const initiateContribution = asyncHandler(async (req, res) => {
     kcbEndpoint: transaction.kcbEndpoint,
     promptChannel: transaction.promptChannel,
     kcbMpesa: workerPayload,
-  }, workerPayload?.message || workerPayload?.customerMessage || 'STK push sent. Check your phone and enter your M-PESA PIN.');
+  }, workerPayload?.message || workerPayload?.customerMessage || 'STK push sent. Check your phone and enter your M-PESA PIN.', 202);
 });
 
 const checkContributionStatus = asyncHandler(async (req, res) => {
