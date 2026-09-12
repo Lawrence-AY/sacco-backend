@@ -1,6 +1,8 @@
 const { Op } = require('sequelize');
 const db = require('../../../models');
 const userService = require('../../users/services/userService');
+const { assertIdentityProfileUnchanged } = require('../../../shared/utils/identityProfile');
+const { verifyNominees } = require('../services/nomineeVerificationService');
 const loanService = require('../../loans/services/loanService');
 const shareService = require('../../shares/services/shareService');
 const asyncHandler = require('../../../shared/utils/asyncHandler');
@@ -660,13 +662,18 @@ const updateProfile = asyncHandler(async (req, res) => {
       throw new ForbiddenError('Current password confirmation failed');
     }
   }
-  let updated = await userService.updateUser(req.user.id, safeBody);
-  if (!updated) {
-    throw new NotFoundError('User not found');
-  }
   const member = await findMemberByUserId(req.user.id);
-  if (nominees !== undefined && member) await member.update({ nominees });
-  updated = await userService.getUserById(req.user.id);
+  if (nominees !== undefined && !member) throw new NotFoundError('Member not found');
+  const verifiedNominees = nominees === undefined ? undefined : await verifyNominees(nominees, member.nominees || []);
+  await db.sequelize.transaction(async (transaction) => {
+    const currentUser = await db.User.findByPk(req.user.id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!currentUser) throw new NotFoundError('User not found');
+    assertIdentityProfileUnchanged(currentUser, safeBody);
+    const updatedUser = await userService.updateUser(req.user.id, safeBody, { transaction });
+    if (!updatedUser) throw new NotFoundError('User not found');
+    if (verifiedNominees !== undefined) await member.update({ nominees: verifiedNominees }, { transaction });
+  });
+  const updated = await userService.getUserById(req.user.id);
   const refreshedMember = updated?.Member || member;
   return ResponseHandler.success(res, { ...UserDTO.private(updated), Member: sanitizeMemberForPrivateProfile(refreshedMember), nominees: refreshedMember?.nominees || [] }, 'Profile updated successfully', 200);
 });
