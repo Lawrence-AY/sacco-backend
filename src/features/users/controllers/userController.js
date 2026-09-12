@@ -94,7 +94,7 @@ const updateUser = asyncHandler(async (req, res) => {
     }
   }
 
-  const updatedUser = await userService.updateUser(userId, safeBody);
+  const updatedUser = await userService.updateUser(userId, safeBody, { lockIdentity: req.user.id === userId || !['ADMIN', 'SUPERADMIN'].includes(req.user.role) });
   if (!updatedUser) {
     throw new NotFoundError('User not found');
   }
