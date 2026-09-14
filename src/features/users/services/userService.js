@@ -1,4 +1,5 @@
 const db = require('../../../models');
+const { assertIdentityProfileUnchanged } = require('../../../shared/utils/identityProfile');
 const { DatabaseError, ValidationError } = require('../../../shared/utils/errors');
 
 const privateUserFields = ['password', 'otp', 'otpExpiresAt', 'otpAttempts', 'otpLastSentAt', 'failedLoginAttempts', 'lockedUntil', 'passwordResetToken', 'passwordResetExpires'];
@@ -15,6 +16,10 @@ const memberProfileFields = [
   'registrationTransactionId',
   'isVerified',
   'nominees',
+  'nationalIdUrl',
+  'nationalIdBackUrl',
+  'passportUrl',
+  'passportBackUrl',
   'savings',
   'shareCapital',
   'loans',
@@ -53,15 +58,16 @@ const getUserById = async (id) => {
   }
 };
 
-const updateUser = async (id, data) => {
+const updateUser = async (id, data, { transaction, lockIdentity = false } = {}) => {
   try {
-    const user = await db.User.findByPk(id);
+    const user = await db.User.findByPk(id, { transaction });
     if (!user) {
       return null;
     }
+    if (lockIdentity) assertIdentityProfileUnchanged(user, data);
 
     if (data.email && data.email !== user.email) {
-      const existingEmail = await db.User.findOne({ where: { email: data.email } });
+      const existingEmail = await db.User.findOne({ where: { email: data.email }, transaction });
       if (existingEmail && existingEmail.id !== id) {
         throw new ValidationError('Email address is already in use');
       }
@@ -92,9 +98,11 @@ const updateUser = async (id, data) => {
       isVerified: data.isVerified ?? user.isVerified,
       consentGiven: data.consentGiven ?? user.consentGiven,
       consentGivenAt: data.consentGivenAt ?? user.consentGivenAt
-    });
+    }, { transaction });
 
     const refreshedUser = await db.User.findByPk(id, {
+      transaction,
+      transaction,
       attributes: { exclude: privateUserFields },
       include: [{
         model: db.Member,

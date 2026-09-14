@@ -2,6 +2,7 @@ const { Op } = require('sequelize');
 const db = require('../../../models');
 const iprs = require('../../../services/iprs');
 const iprsConfig = require('../../../shared/config/iprs');
+const { normalizeIdentityProfile } = require('../../../shared/utils/identityProfile');
 const notificationService = require('../../notifications/services/notificationService');
 
 const MAX_ATTEMPTS = 3;
@@ -75,6 +76,11 @@ async function verifyAndTrackIdentity({ user, email, idNumber, documentType, fir
   const verification = await iprs.verifyIdentity({ idNumber: documentNumber, documentType: type, firstName, surname });
 
   if (verification.success) {
+    if (iprsConfig.enabled && user?.id && normalizedEmail === normalizeEmail(user.email) && verification.person) {
+      const captured = normalizeIdentityProfile(verification.person);
+      if (Object.keys(captured).length) await db.User.update(captured, { where: { id: user.id } });
+      verification.person = { ...verification.person, ...captured };
+    }
     await db.IdentityVerificationAttempt.create({
       userId: user?.id || null,
       email: normalizedEmail,
