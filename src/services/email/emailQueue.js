@@ -69,6 +69,7 @@ const buildMessage = (type, job) => {
       to: job.to,
       subject: 'Reset your AYEDOS password',
       html: buildPasswordResetEmail(job),
+      attachments: getBrandLogoAttachments(),
     });
   }
   return withTextFallback({

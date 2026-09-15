@@ -82,7 +82,7 @@ const buildOtpEmail = ({ otp, recipientName }) => {
   const safeRecipientName = escapeHtml(recipientName || 'Member');
 
   return buildBrandedEmail({
-    footer: 'This is an automated verification email. Replies to this address are not monitored. © 2026 CMPL. All rights reserved.',
+    footer: 'This is an automated verification email. Replies to this address are not monitored./n © 2026 AYEDOS SACCO. All rights reserved.',
     children: `
             <tr>
               <td style="padding:8px 40px 24px">
@@ -155,23 +155,41 @@ const buildNewDeviceEmail = ({ recipientName, session }) => {
     ['Time', new Date(session.loginAt || Date.now()).toLocaleString()],
   ].map(([label, value]) => `
     <tr>
-      <td style="padding:7px 0;color:#64748b;font-size:13px;font-weight:700">${escapeHtml(label)}</td>
-      <td style="padding:7px 0;color:#24384d;font-size:13px;text-align:right">${escapeHtml(value)}</td>
+      <td class="ayedos-email-muted" style="padding:12px 0;border-bottom:1px solid #e6edf5;color:#64748b;font-size:13px;font-weight:700;vertical-align:top">${escapeHtml(label)}</td>
+      <td class="ayedos-email-strong" style="padding:12px 0 12px 18px;border-bottom:1px solid #e6edf5;color:#24384d;font-size:13px;line-height:1.45;text-align:right;vertical-align:top;word-break:break-word">${escapeHtml(value)}</td>
     </tr>
   `).join('');
 
   return buildBrandedEmail({
     children: `
       <tr>
-        <td style="padding:0 28px 20px">
+        <td style="padding:0 40px 34px">
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" class="ayedos-email-panel" style="border-collapse:separate;border-spacing:0;border-radius:24px;background:#f7f9fc;border:1px solid #e6edf5">
             <tr>
-              <td style="padding:24px 26px">
-                <div class="ayedos-email-title" style="font-size:14px;font-weight:800;letter-spacing:0.16em;text-transform:uppercase;color:#5b82aa">Security Alert</div>
-                <h1 class="ayedos-email-strong" style="margin:12px 0 8px;font-size:24px;line-height:1.25;color:#24384d">New device login detected</h1>
-                <p class="ayedos-email-text" style="margin:0 0 12px;font-size:15px;line-height:1.55;color:#5f748c">Hello ${escapeHtml(recipientName || 'Member')}, your AYEDOS SACCO account was accessed using a device we have not seen before.</p>
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">${rows}</table>
-                <p class="ayedos-email-strong" style="margin:12px 0 0;font-size:14px;line-height:1.5;color:#24384d;font-weight:800">If this was not you, change your password immediately.</p>
+              <td style="padding:30px 32px 32px">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">
+                  <tr>
+                    <td align="center" style="padding:0 0 18px">
+                      <div class="ayedos-email-title" style="font-size:14px;font-weight:800;letter-spacing:0.16em;text-transform:uppercase;color:#5b82aa">Security Alert</div>
+                      <h1 class="ayedos-email-strong" style="margin:12px 0 8px;font-size:24px;line-height:1.25;color:#24384d">New device login detected</h1>
+                      <p class="ayedos-email-text" style="max-width:520px;margin:0 auto;font-size:15px;line-height:1.65;color:#5f748c">Hello ${escapeHtml(recipientName || 'Member')}, your AYEDOS SACCO account was accessed using a device we have not seen before.</p>
+                    </td>
+                  </tr>
+                </table>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" class="ayedos-email-card" style="margin-top:4px;border-collapse:separate;border-spacing:0;border-radius:18px;background:#ffffff;border:1px solid #e6edf5">
+                  <tr>
+                    <td style="padding:10px 22px 12px">
+                      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">${rows}</table>
+                    </td>
+                  </tr>
+                </table>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:18px;border-collapse:separate;border-spacing:0;border-radius:18px;background:#fff7ed;border:1px solid #fed7aa">
+                  <tr>
+                    <td align="center" style="padding:16px 20px">
+                      <p class="ayedos-email-strong" style="margin:0;font-size:14px;line-height:1.55;color:#9a3412;font-weight:800">If this was not you, change your password immediately.</p>
+                    </td>
+                  </tr>
+                </table>
               </td>
             </tr>
           </table>
@@ -181,15 +199,36 @@ const buildNewDeviceEmail = ({ recipientName, session }) => {
   });
 };
 
-const buildPasswordResetEmail = ({ recipientName, resetUrl, expiresInMinutes }) => `
-  <div style="font-family:Arial,sans-serif;color:#14213d">
-    <h2>Reset your AYEDOS password</h2>
-    <p>Hello ${recipientName},</p>
-    <p>Use the link below within ${expiresInMinutes} minutes:</p>
-    <p><a href="${resetUrl}">Reset password</a></p>
-    <p>If you did not request this change, ignore this email.</p>
-  </div>
-`;
+const buildPasswordResetEmail = ({ recipientName, resetUrl, expiresInMinutes }) => buildBrandedEmail({
+  footer: 'This is an automated password reset email. Replies to this address are not monitored.',
+  children: `
+    <tr>
+      <td style="padding:0 40px 34px">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" class="ayedos-email-panel" style="border-collapse:separate;border-spacing:0;border-radius:24px;background:#f7f9fc;border:1px solid #e6edf5">
+          <tr>
+            <td align="center" style="padding:30px 32px">
+              <div class="ayedos-email-title" style="font-size:14px;font-weight:800;letter-spacing:0.16em;text-transform:uppercase;color:#5b82aa">Password Reset</div>
+              <h1 class="ayedos-email-strong" style="margin:12px 0 8px;font-size:24px;line-height:1.25;color:#24384d">Reset your AYEDOS password</h1>
+              <p class="ayedos-email-text" style="max-width:520px;margin:0 auto 22px;font-size:15px;line-height:1.65;color:#5f748c">Hello ${escapeHtml(recipientName || 'Member')}, use the secure link below within ${escapeHtml(expiresInMinutes)} minutes.</p>
+              <a href="${escapeHtml(resetUrl)}" class="ayedos-email-strong" style="display:inline-block;padding:14px 24px;border-radius:12px;background:#24384d;color:#ffffff;text-decoration:none;font-size:14px;font-weight:800">Reset password</a>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:0 40px 34px">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" class="ayedos-email-notice" style="border-collapse:separate;border-spacing:0;background:transparent">
+          <tr>
+            <td align="center" style="padding:0 20px">
+              <p class="ayedos-email-text" style="margin:0;font-size:13px;line-height:1.55;color:#5f748c"><strong class="ayedos-email-strong" style="color:#24384d">Didn't request this?</strong> You can safely ignore this email. Your password will remain unchanged.</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  `,
+});
 
 module.exports = {
   buildOtpEmail,
