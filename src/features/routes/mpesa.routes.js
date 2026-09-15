@@ -4,9 +4,63 @@ const logger = require('../../shared/utils/logger');
 const { getFirebaseDb } = require('../../shared/config/firebase');
 const { allocateMpesaRepayment } = require('../loans/services/loanRepaymentService');
 const { isShareCapitalPayment, settleShareCapitalPayment } = require('../shares/services/shareCapitalPaymentService');
+const eventBus = require('../../services/realtime/eventBus');
 
 const router = express.Router();
 const MPESA_PROXY_TIMEOUT_MS = Number(process.env.MPESA_TIMEOUT_MS || 115000);
+
+const isSavingsDepositPayment = (transaction) => {
+  const category = String(transaction?.paymentCategory || '').toLowerCase();
+  const type = String(transaction?.type || '').toUpperCase();
+  return type === 'DEPOSIT' && ['savings', 'monthly_contribution', 'monthlycontribution', 'historical_savings'].includes(category);
+};
+
+const publishBalanceUpdated = async (transaction, reason) => {
+  if (!transaction?.memberId) return;
+  const member = await db.Member.findByPk(transaction.memberId, { attributes: ['id', 'userId'] }).catch(() => null);
+  eventBus.publish('BALANCE_UPDATED', {
+    userId: member?.userId || null,
+    memberId: transaction.memberId,
+    transactionId: transaction.id,
+    paymentCategory: transaction.paymentCategory,
+    amount: Number(transaction.amount || 0),
+    status: transaction.status,
+    reason,
+  }, [
+    member?.userId ? `user:${member.userId}` : null,
+    `member:${transaction.memberId}`,
+    'finance:dashboard',
+    'admin:dashboard',
+  ]);
+};
+
+const settleSavingsDepositPayment = async ({ transactionId, receipt, amount, description }) => (
+  db.sequelize.transaction(async (databaseTransaction) => {
+    const payment = await db.Transaction.findByPk(transactionId, {
+      transaction: databaseTransaction,
+      lock: databaseTransaction.LOCK.UPDATE,
+    });
+    if (!payment || !isSavingsDepositPayment(payment)) return payment;
+    if (String(payment.status || '').toUpperCase() === 'SUCCESS') return payment;
+
+    const paidAmount = Number(amount ?? payment.amount ?? 0);
+    if (!Number.isFinite(paidAmount) || paidAmount <= 0) throw new Error('Savings deposit amount is invalid');
+
+    const [account] = await db.SavingsAccount.findOrCreate({
+      where: { memberId: payment.memberId },
+      defaults: { memberId: payment.memberId, balance: 0 },
+      transaction: databaseTransaction,
+    });
+    await account.increment('balance', { by: paidAmount, transaction: databaseTransaction });
+    await payment.update({
+      status: 'SUCCESS',
+      reference: receipt || payment.reference,
+      amount: paidAmount,
+      description: description || payment.description,
+    }, { transaction: databaseTransaction });
+    return payment;
+  })
+);
 
 router.post('/stk', async (req, res, next) => {
   const mpesaUrl = process.env.MPESA_URL?.trim().replace(/\/+$/, '');
@@ -89,7 +143,7 @@ router.post('/stk', async (req, res, next) => {
       }
     }
 
-    return res.status(200).json(payload);
+    return res.status(202).json(payload);
   } catch (error) {
     const timedOut = error.name === 'TimeoutError' || error.name === 'AbortError';
     logger.error('M-Pesa STK request failed', {
@@ -189,8 +243,18 @@ router.post('/callback', async (req, res) => {
             amount: amount == null ? transaction.amount : Number(amount),
             description: ResultDesc,
           });
+          await publishBalanceUpdated(transaction, 'share_capital_payment');
+        } else if (success && isSavingsDepositPayment(transaction)) {
+          await settleSavingsDepositPayment({
+            transactionId: transaction.id,
+            receipt,
+            amount: amount == null ? transaction.amount : Number(amount),
+            description: ResultDesc,
+          });
+          await publishBalanceUpdated(transaction, 'savings_deposit_payment');
         } else {
           await transaction.update({ status: success ? 'SUCCESS' : 'FAILED', reference: receipt || transaction.reference, amount: amount ? Number(amount) : transaction.amount, description: ResultDesc || transaction.description });
+          if (success) await publishBalanceUpdated(transaction, 'mpesa_callback');
         }
       } else {
         logger.warn('M-Pesa callback transaction not found', {

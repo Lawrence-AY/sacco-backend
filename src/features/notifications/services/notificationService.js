@@ -1,6 +1,8 @@
 const db = require('../../../models');
 const { Op } = require('sequelize');
 const { enqueueEmail, QUEUES } = require('../../../services/email/emailQueue');
+const { sendSms } = require('../../../services/sms/smsService');
+const logger = require('../../../shared/utils/logger');
 
 const IMPORTANT_TRANSACTION_STATUSES = new Set(['SUCCESS', 'FAILED', 'PENDING']);
 const IMPORTANT_LOAN_STATUSES = new Set(['PENDING', 'PENDING_GUARANTORS', 'UNDER_REVIEW', 'APPROVED', 'ACTIVE', 'REJECTED']);
@@ -75,6 +77,36 @@ const formatDateTime = (value) => new Date(value || Date.now()).toLocaleString('
   hour: '2-digit',
   minute: '2-digit',
 });
+
+const formatMoney = (value) => `KES ${Number(value || 0).toLocaleString()}`;
+
+const formatDate = (value) => new Date(value || Date.now()).toLocaleDateString('en-KE', {
+  year: 'numeric',
+  month: 'short',
+  day: '2-digit',
+});
+
+const dispatchSms = async ({ to, message, purpose, metadata = {} }) => {
+  try {
+    return await sendSms({ to, message, purpose });
+  } catch (error) {
+    logger.error('Transactional SMS dispatch failed', {
+      module: 'notifications',
+      purpose,
+      error: error.message,
+      ...metadata,
+    });
+    return { failed: true, error: error.message };
+  }
+};
+
+const buildLoanDecisionSms = ({ approved, name, amount, loanId }) => approved
+  ? `Dear ${name}, your SACCO loan application of ${formatMoney(amount)} has been APPROVED. Funds will be disbursed to your account shortly. Ref: ${loanId}`
+  : `Dear ${name}, we regret to inform you that your SACCO loan application of ${formatMoney(amount)} could not be approved at this time. Please contact support or visit your branch for more details. Ref: ${loanId}`;
+
+const buildOverdueLoanSms = ({ name, amount, dueDate }) => (
+  `Reminder: Dear ${name}, your SACCO loan installment of ${formatMoney(amount)} was due on ${formatDate(dueDate)}. Please clear your balance to avoid penalties. Ignore if recently paid.`
+);
 
 const queueLoanEmail = async ({ to, subject, title, lines }) => {
   if (!to) return null;
@@ -182,6 +214,20 @@ const createMemberLoanDecisionNotification = async (loanId, decision, payload = 
         `Your ${loan.type || 'loan'} request for KES ${Number(loan.amount || 0).toLocaleString()} was rejected on ${formatDateTime(decidedAt)}.`,
         `Decision reason: ${rejectionReason}`,
       ],
+    });
+  }
+
+  if (!payload.skipSms) {
+    await dispatchSms({
+      to: loan.Member?.User?.phone,
+      purpose: approved ? 'loan_approved' : 'loan_rejected',
+      message: buildLoanDecisionSms({
+        approved,
+        name: formatApplicantName(loan.Member?.User, loan.Member),
+        amount,
+        loanId: loan.id,
+      }),
+      metadata: { loanId: loan.id, userId: loan.Member.userId, status },
     });
   }
 
@@ -638,7 +684,7 @@ const createOverdueLoanAlerts = async () => {
   const now = new Date();
   const loans = await db.Loan.findAll({
     where: { status: { [Op.in]: ['ACTIVE', 'DISBURSED', 'IN_ARREARS'] } },
-    include: [{ model: db.Member, include: [{ model: db.User, attributes: ['id', 'name', 'firstName', 'lastName', 'email'] }] }],
+    include: [{ model: db.Member, include: [{ model: db.User, attributes: ['id', 'name', 'firstName', 'lastName', 'email', 'phone'] }] }],
   });
   const staff = await db.User.findAll({ where: { role: { [Op.in]: ['ADMIN', 'SUPERADMIN', 'FINANCE'] } }, attributes: ['id', 'role'] });
   const created = [];
@@ -660,7 +706,19 @@ const createOverdueLoanAlerts = async () => {
     const common = { title: 'Admin loan repayment alert', body: `${reason}. ${loan.type} loan for member ${member.memberNumber}; outstanding principal KES ${outstandingPrincipal.toFixed(2)}.`, category: 'loan', severity: 'critical', sourceType: 'Loan', sourceId: loan.id, metadata: { subtype: periodElapsed ? 'repayment_period_elapsed' : 'missed_monthly_payment', memberId: member.id, memberNumber: member.memberNumber, memberName: formatApplicantName(user, member), loanType: loan.type, dueDate, periodEnd, outstandingPrincipal, generatedBy: 'ADMIN_AUTOMATION' } };
     created.push(await upsertNotification({ ...common, userId: user.id, eventKey: `${baseKey}:member`, actionUrl: '/dashboard/user/loans' }));
     for (const recipient of staff) created.push(await upsertNotification({ ...common, userId: recipient.id, eventKey: `${baseKey}:${recipient.id}`, actionUrl: recipient.role === 'FINANCE' ? '/dashboard/finance/notifications' : '/dashboard/admin/notifications' }));
-    if (!alreadyRecorded) await db.AuditLog.create({ userId: null, action: periodElapsed ? 'LOAN_REPAYMENT_PERIOD_ELAPSED' : 'LOAN_MONTHLY_PAYMENT_MISSED', module: 'loans', method: 'SYSTEM', route: '/system/loan-overdue-monitor', statusCode: 200, metadata: { actorRole: 'SYSTEM', actorName: 'Admin Automation', severity: 'CRITICAL', status: 'SUCCESS', targetType: 'LOAN', targetId: loan.id, memberNumber: member.memberNumber, memberName: formatApplicantName(user, member), dueDate, periodEnd, outstandingPrincipal } });
+    if (!alreadyRecorded) {
+      await dispatchSms({
+        to: user.phone,
+        purpose: 'loan_overdue_reminder',
+        message: buildOverdueLoanSms({
+          name: formatApplicantName(user, member),
+          amount: outstandingPrincipal,
+          dueDate: periodElapsed ? periodEnd : dueDate,
+        }),
+        metadata: { loanId: loan.id, userId: user.id, memberId: member.id },
+      });
+      await db.AuditLog.create({ userId: null, action: periodElapsed ? 'LOAN_REPAYMENT_PERIOD_ELAPSED' : 'LOAN_MONTHLY_PAYMENT_MISSED', module: 'loans', method: 'SYSTEM', route: '/system/loan-overdue-monitor', statusCode: 200, metadata: { actorRole: 'SYSTEM', actorName: 'Admin Automation', severity: 'CRITICAL', status: 'SUCCESS', targetType: 'LOAN', targetId: loan.id, memberNumber: member.memberNumber, memberName: formatApplicantName(user, member), dueDate, periodEnd, outstandingPrincipal } });
+    }
   }
   return created.map(serialize);
 };
