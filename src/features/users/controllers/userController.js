@@ -7,6 +7,17 @@ const { UserDTO } = require('../../../shared/utils/dtos');
 const bcrypt = require('bcrypt');
 const db = require('../../../models');
 
+const hasAssignedStaffId = (user = {}) => Boolean(String(user.staffId || user.payrollNumber || '').trim());
+
+const privateUserDto = (user) => {
+  const dto = UserDTO.private(user);
+  if (!hasAssignedStaffId(user)) {
+    dto.employerContribution = 0;
+    if (dto.Member) dto.Member.employerContribution = 0;
+  }
+  return dto;
+};
+
 const getAllUsers = asyncHandler(async (req, res) => {
   const users = await userService.getAllUsers();
   return ResponseHandler.success(res, users.map(UserDTO.admin), 'Users retrieved successfully', 200);
@@ -20,7 +31,7 @@ const getCurrentUser = asyncHandler(async (req, res) => {
   if (!user) {
     throw new NotFoundError('User not found');
   }
-  return ResponseHandler.success(res, UserDTO.private(user), 'Current user retrieved successfully', 200);
+  return ResponseHandler.success(res, privateUserDto(user), 'Current user retrieved successfully', 200);
 });
 
 const getUserById = asyncHandler(async (req, res) => {
@@ -33,7 +44,7 @@ const getUserById = asyncHandler(async (req, res) => {
   }
   const dto = ['ADMIN', 'SUPERADMIN', 'FINANCE'].includes(req.user.role)
     ? UserDTO.admin(user)
-    : UserDTO.private(user);
+    : privateUserDto(user);
   return ResponseHandler.success(res, dto, 'User retrieved successfully', 200);
 });
 
@@ -58,7 +69,6 @@ const updateUser = asyncHandler(async (req, res) => {
     'gender',
     'employer',
     'monthlyIncome',
-    'payrollNumber',
     'passportPhotoUrl',
     'consentGiven',
   ];

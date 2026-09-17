@@ -1,5 +1,4 @@
 const express = require('express');
-const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
@@ -244,28 +243,6 @@ app.use(helmet({
 }));
 
 app.use(compression());
-
-// ============= CORS =============
-const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, etc.)
-    if (!origin) return callback(null, true);
-
-    if (isOriginAllowed(origin)) {
-      callback(null, true);
-    } else {
-      logger.warn('CORS blocked request', { origin, endpoint: 'CORS' });
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-  methods: corsAllowedMethods,
-  allowedHeaders: corsAllowedHeaders,
-  exposedHeaders: corsExposedHeaders,
-  maxAge: 86400 // 24 hours
-};
-
-app.use(cors(corsOptions));
 
 // ============= RATE LIMITING =============
 const limiter = rateLimit({

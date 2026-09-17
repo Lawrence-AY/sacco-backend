@@ -9,6 +9,11 @@ const { ValidationError, NotFoundError, ForbiddenError } = require('../../../sha
 const { LoanDTO } = require('../../../shared/utils/dtos');
 const { formatEAT } = require('../../../shared/utils/eatDateTime');
 const MINIMUM_SHARE_CAPITAL = 20000;
+const hasStaffId = (user = {}) => Boolean(String(user.staffId || user.payrollNumber || '').trim());
+const staffIdSortNumber = (value) => {
+  const match = String(value || '').match(/(\d+)\s*$/);
+  return match ? Number(match[1]) : 0;
+};
 
 const classifyTransaction = (transaction) => {
   const source = [
@@ -557,7 +562,7 @@ const updateDeduction = asyncHandler(async (req, res) => {
 const getAllMembers = asyncHandler(async (req, res) => {
   const [members, transactions, loans, shareAccounts] = await Promise.all([
     db.Member.findAll({
-      include: [{ model: db.User, attributes: ['name', 'firstName', 'lastName', 'email', 'phone', 'employer', 'monthlyIncome', 'staffId', 'isWhitelisted', 'employerContribution'] }],
+      include: [{ model: db.User, attributes: ['name', 'firstName', 'lastName', 'email', 'phone', 'employer', 'monthlyIncome', 'staffId', 'payrollNumber', 'isWhitelisted', 'employerContribution'] }],
       order: [['createdAt', 'DESC']],
     }),
     db.Transaction.findAll({ where: { status: 'SUCCESS' } }),
@@ -568,6 +573,7 @@ const getAllMembers = asyncHandler(async (req, res) => {
   const formatted = members.map((member) => {
     const user = member.User || {};
     const importProfile = member.importProfile || {};
+    const isStaffMember = hasStaffId(user);
     const name = user.name || [user.firstName, user.lastName].filter(Boolean).join(' ') || importProfile.fullName || member.memberNumber || member.id;
     const memberTransactions = transactions.filter((transaction) => transaction.memberId === member.id);
     const memberLoans = loans.filter((loan) => loan.memberId === member.id);
@@ -606,12 +612,18 @@ const getAllMembers = asyncHandler(async (req, res) => {
       shares: Math.max(Number(member.shareCapital || 0), shareCapital),
       loanRepayment: Number(member.loanRepayment || 0),
       interest: Number(member.interest || 0),
-      employerContribution: Number(member.employerContribution || user.employerContribution || 0),
+      employerContribution: isStaffMember ? Number(member.employerContribution || user.employerContribution || 0) : 0,
       shareCapitalBalance: Math.max(MINIMUM_SHARE_CAPITAL - shareCapital, 0),
       risk: memberLoans.some((loan) => ['OVERDUE', 'DEFAULTED', 'WRITTEN_OFF'].includes(String(loan.status || '').toUpperCase())) ? 'High' : 'Low',
       status: member.status || (member.isVerified ? 'Active' : 'Pending'),
       createdAt: member.createdAt,
     };
+  });
+
+  formatted.sort((left, right) => {
+    const staffDelta = staffIdSortNumber(right.staffId) - staffIdSortNumber(left.staffId);
+    if (staffDelta) return staffDelta;
+    return new Date(right.createdAt || 0) - new Date(left.createdAt || 0);
   });
 
   return ResponseHandler.success(res, formatted, 'Members retrieved successfully', 200);
@@ -659,6 +671,8 @@ const getMemberFinancialProfile = asyncHandler(async (req, res) => {
   });
   const defaultingHistory = loanHistory.filter((loan) =>
     ['OVERDUE', 'DEFAULTED', 'WRITTEN_OFF'].includes(String(loan.status || '').toUpperCase()));
+  const isStaffMember = hasStaffId(user);
+  const employerContribution = isStaffMember ? Number(member.employerContribution || user?.employerContribution || 0) : 0;
 
   return ResponseHandler.success(res, {
     member: {
@@ -670,7 +684,7 @@ const getMemberFinancialProfile = asyncHandler(async (req, res) => {
       staffId: user?.staffId || null,
       isWhitelisted: Boolean(user?.isWhitelisted),
       company: user?.employer || null,
-      employerContribution: Number(member.employerContribution || user?.employerContribution || 0),
+      employerContribution,
       user,
     },
     summary: {
@@ -685,7 +699,7 @@ const getMemberFinancialProfile = asyncHandler(async (req, res) => {
         0,
       ),
       shareCapital,
-      employerContribution: Number(member.employerContribution || user?.employerContribution || 0),
+      employerContribution,
       minimumShareCapital: MINIMUM_SHARE_CAPITAL,
       shareCapitalBalance: Math.max(MINIMUM_SHARE_CAPITAL - shareCapital, 0),
       outstandingLoans: loanHistory
