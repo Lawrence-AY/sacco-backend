@@ -9,6 +9,7 @@ const asyncHandler = require('../../../shared/utils/asyncHandler');
 const ResponseHandler = require('../../../shared/utils/response');
 const { ValidationError, NotFoundError, ForbiddenError } = require('../../../shared/utils/errors');
 const { UserDTO } = require('../../../shared/utils/dtos');
+const logger = require('../../../shared/utils/logger');
 const eventBus = require('../../../services/realtime/eventBus');
 
 const detectDelimiter = (line = '') => {
@@ -101,6 +102,65 @@ const optionalStringField = (key, value) => {
   return normalized ? { [key]: normalized } : {};
 };
 const EMPLOYEE_TAG = 'EMPLOYEE';
+const STAFF_ID_LABEL = 'Staff ID';
+
+const extractStaffIdNumber = (value) => {
+  const match = String(value || '').match(/(\d+)\s*$/);
+  return match ? Number(match[1]) : 0;
+};
+
+const formatStaffId = (sequence) => `${STAFF_ID_LABEL} ${sequence}`;
+
+const parseImportDate = (value, fallback = new Date()) => {
+  if (!value) return fallback;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? fallback : parsed;
+};
+
+const getRowFailureReason = (error) => {
+  if (error?.name === 'SequelizeUniqueConstraintError') return 'Duplicate account details already exist';
+  if (error?.name === 'SequelizeValidationError') return 'Invalid account details';
+  return error?.message || 'Failed to import row';
+};
+
+const getNextStaffIdSequence = async () => {
+  const users = await db.User.findAll({
+    attributes: ['staffId', 'payrollNumber'],
+    where: {
+      [Op.or]: [
+        { staffId: { [Op.ne]: null } },
+        { payrollNumber: { [Op.ne]: null } },
+      ],
+    },
+  });
+  const highest = users.reduce((max, user) => Math.max(
+    max,
+    extractStaffIdNumber(user.staffId),
+    extractStaffIdNumber(user.payrollNumber),
+  ), 0);
+  return highest + 1;
+};
+
+const getNextStaffIdSequenceForImport = async () => {
+  try {
+    return await getNextStaffIdSequence();
+  } catch (error) {
+    logger.warn('Unable to read existing staff IDs before member import; falling back to sequence 1', {
+      module: 'admin',
+      error: error?.message,
+    });
+    return 1;
+  }
+};
+
+const hasAssignedStaffId = (member) => hasStaffId(member?.User?.staffId || member?.User?.payrollNumber);
+
+const sortUsersByStaffIdDesc = (left, right) => {
+  const staffDelta = extractStaffIdNumber(right.staffId || right.payrollNumber)
+    - extractStaffIdNumber(left.staffId || left.payrollNumber);
+  if (staffDelta) return staffDelta;
+  return new Date(right.createdAt || 0) - new Date(left.createdAt || 0);
+};
 
 const mergeImportProfile = (member, data, status) => ({
   ...(member?.importProfile || {}),
@@ -192,7 +252,7 @@ const syncImportedMembershipFee = async ({ member, data, rowNumber, transaction 
   });
 };
 
-const syncImportedMemberBalances = async ({ member, data, rowNumber, transaction }) => {
+const syncImportedMemberBalances = async ({ member, data, rowNumber, transaction, updateBalances = true }) => {
   const [savingsAccount] = await db.SavingsAccount.findOrCreate({
     where: { memberId: member.id },
     defaults: { balance: 0 },
@@ -238,6 +298,7 @@ const syncImportedMemberBalances = async ({ member, data, rowNumber, transaction
       transaction,
     });
 
+    if (!updateBalances) continue;
     if (adjustment.key === 'savings') {
       await savingsAccount.increment('balance', { by: adjustment.amount, transaction });
       await member.increment('savings', { by: adjustment.amount, transaction });
@@ -343,6 +404,59 @@ const syncImportedLoanLiability = async ({ member, data, rowNumber, transaction 
   }, { transaction });
   await member.update({ loans: currentBalance }, { transaction });
   return loan;
+};
+
+const recordImportedLoanTransactionsOnly = async ({ member, data, rowNumber, transaction }) => {
+  const records = [
+    {
+      key: 'loans',
+      amount: Number(data.loans || 0),
+      type: 'LOAN_DISBURSEMENT',
+      category: 'account_liability_statement',
+      description: 'Imported account liability statement loan balance',
+    },
+    {
+      key: 'loanRepayment',
+      amount: Number(data.loanRepayment || 0),
+      type: 'LOAN_REPAYMENT',
+      category: 'loan_repayment',
+      description: 'Imported loan repayment',
+    },
+    {
+      key: 'interest',
+      amount: Number(data.interest || 0),
+      type: 'DEPOSIT',
+      category: 'interest',
+      description: 'Imported interest record',
+    },
+  ];
+  for (const record of records) {
+    if (!hasOwn(data, record.key) || !record.amount) continue;
+    const reference = buildImportReference({ member, data, category: record.category, amount: record.amount, rowNumber });
+    const duplicate = await db.Transaction.findOne({
+      where: {
+        memberId: member.id,
+        paymentCategory: record.category,
+        reference,
+      },
+      transaction,
+    });
+    if (duplicate) {
+      await duplicate.update({ status: 'SUCCESS', description: record.description }, { transaction });
+      continue;
+    }
+    await createBalanceDeltaTransaction({
+      memberId: member.id,
+      type: record.type,
+      amount: record.amount,
+      category: record.category,
+      description: record.description,
+      rowNumber,
+      reference,
+      metadata: buildImportMetadata(data, { source: 'financial_import_view_only', rowNumber, balancesUpdated: false }),
+      transaction,
+    });
+  }
 };
 
 const mapMemberImportRow = (row) => {
@@ -495,7 +609,7 @@ const getAllUsers = asyncHandler(async (req, res) => {
       ),
       onboardingStatus: application?.status || (member ? 'IMPORTED_MEMBER' : 'INCOMPLETE'),
     };
-  });
+  }).sort(sortUsersByStaffIdDesc);
   return ResponseHandler.success(res, result, 'Users retrieved successfully', 200);
 });
 
@@ -1077,15 +1191,38 @@ const previewMemberCsvImport = asyncHandler(async (req, res) => {
 });
 
 const commitMemberCsvImport = asyncHandler(async (req, res) => {
-  const rows = parseCsv(req.body?.csv).map(mapMemberImportRow);
+  const parsedRows = parseCsv(req.body?.csv);
+  if (!parsedRows.length) throw new ValidationError('CSV file is empty or missing headers');
+
+  const rows = parsedRows.map(mapMemberImportRow);
   const readyRows = rows.filter((row) => row.ready);
   if (!readyRows.length) throw new ValidationError('No valid member rows to import');
 
   const imported = [];
   const skipped = [];
+  let nextStaffIdSequence = await getNextStaffIdSequenceForImport();
+  const allocatedStaffIds = new Set();
+  const allocateStaffId = (preferred) => {
+    const normalized = String(preferred || '').trim();
+    if (normalized && !allocatedStaffIds.has(normalized.toLowerCase())) {
+      allocatedStaffIds.add(normalized.toLowerCase());
+      return normalized;
+    }
+
+    let generated = formatStaffId(nextStaffIdSequence);
+    nextStaffIdSequence += 1;
+    while (allocatedStaffIds.has(generated.toLowerCase())) {
+      generated = formatStaffId(nextStaffIdSequence);
+      nextStaffIdSequence += 1;
+    }
+    allocatedStaffIds.add(generated.toLowerCase());
+    return generated;
+  };
+
   for (const row of readyRows) {
     try {
       const { data } = row;
+      data.staffId = allocateStaffId(data.staffId);
       const existingMember = await db.Member.findOne({
       where: {
         [Op.or]: [
@@ -1144,7 +1281,7 @@ const commitMemberCsvImport = asyncHandler(async (req, res) => {
           type: 'EMPLOYEE',
           nationalId: data.nationalId || existingMember.nationalId,
           status,
-          dateJoined: data.joinDate ? new Date(data.joinDate) : existingMember.dateJoined,
+          dateJoined: parseImportDate(data.joinDate, existingMember.dateJoined || new Date()),
           importProfile: mergeImportProfile(existingMember, data, status),
         }, { transaction });
         if (existingMember.User) {
@@ -1189,7 +1326,7 @@ const commitMemberCsvImport = asyncHandler(async (req, res) => {
           employerContribution: 0,
           status,
           isVerified: false,
-          dateJoined: data.joinDate ? new Date(data.joinDate) : new Date(),
+          dateJoined: parseImportDate(data.joinDate),
           importProfile: mergeImportProfile(null, data, status),
         }, { transaction });
         await syncImportedMembershipFee({ member: archivedMember, data, rowNumber: row.rowNumber, transaction });
@@ -1251,7 +1388,7 @@ const commitMemberCsvImport = asyncHandler(async (req, res) => {
         employerContribution: 0,
         status,
         isVerified: true,
-        dateJoined: data.joinDate ? new Date(data.joinDate) : new Date(),
+        dateJoined: parseImportDate(data.joinDate),
         importProfile: {
           source: 'bulk_member_import',
           statementSheet: data.statementSheet || null,
@@ -1279,7 +1416,7 @@ const commitMemberCsvImport = asyncHandler(async (req, res) => {
         rowNumber: row.rowNumber,
         memberNumber: row.data?.memberNumber || null,
         nationalId: row.data?.nationalId || null,
-        reason: error?.message || 'Failed to import row',
+        reason: getRowFailureReason(error),
       });
       logger.error('Member import row failed', {
         module: 'admin',
@@ -1289,6 +1426,13 @@ const commitMemberCsvImport = asyncHandler(async (req, res) => {
         error: error?.message,
       });
     }
+  }
+
+  if (!imported.length) {
+    return ResponseHandler.success(res, {
+      imported,
+      skipped,
+    }, 'No members were imported. Review the skipped rows and try again.', 200);
   }
 
   return ResponseHandler.success(res, { imported, skipped }, 'Members imported successfully', 201);
@@ -1336,13 +1480,13 @@ const commitFinancialCsvImport = asyncHandler(async (req, res) => {
       continue;
     }
 
-    const isStaffMember = true;
+    const isStaffMember = hasAssignedStaffId(member);
     const employerContribution = isStaffMember ? data.employerContribution : 0;
     await db.sequelize.transaction(async (transaction) => {
-      if (Number(data.loanRepayment || 0)) {
+      if (isStaffMember && Number(data.loanRepayment || 0)) {
         await member.increment('loanRepayment', { by: Number(data.loanRepayment || 0), transaction });
       }
-      if (Number(data.interest || 0)) {
+      if (isStaffMember && Number(data.interest || 0)) {
         await member.increment('interest', { by: Number(data.interest || 0), transaction });
       }
       await member.update({
@@ -1359,11 +1503,9 @@ const commitFinancialCsvImport = asyncHandler(async (req, res) => {
         },
       }, { transaction });
       const linkedUserId = member.User?.id || member.userId;
-      if (linkedUserId) {
+      if (linkedUserId && isStaffMember) {
         await db.User.update({
           employerContribution,
-          staffId: isStaffMember ? (data.staffId || member.User?.staffId) : null,
-          payrollNumber: isStaffMember ? (data.staffId || member.User?.payrollNumber) : null,
           employmentTag: EMPLOYEE_TAG,
         }, { where: { id: linkedUserId }, transaction });
       }
@@ -1372,8 +1514,13 @@ const commitFinancialCsvImport = asyncHandler(async (req, res) => {
         data: { ...data, employerContribution },
         rowNumber: row.rowNumber,
         transaction,
+        updateBalances: isStaffMember,
       });
-      await syncImportedLoanLiability({ member, data, rowNumber: row.rowNumber, transaction });
+      if (isStaffMember) {
+        await syncImportedLoanLiability({ member, data, rowNumber: row.rowNumber, transaction });
+      } else {
+        await recordImportedLoanTransactionsOnly({ member, data, rowNumber: row.rowNumber, transaction });
+      }
     });
     imported.push({
       rowNumber: row.rowNumber,
@@ -1382,6 +1529,7 @@ const commitFinancialCsvImport = asyncHandler(async (req, res) => {
       userId: member.User?.id || member.userId || null,
       memberNumber: member.memberNumber,
       paymentPeriod: getImportPeriod(data),
+      balancesUpdated: isStaffMember,
     });
   }
   imported.forEach((item) => {

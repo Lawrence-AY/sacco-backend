@@ -82,7 +82,7 @@ const buildOtpEmail = ({ otp, recipientName }) => {
   const safeRecipientName = escapeHtml(recipientName || 'Member');
 
   return buildBrandedEmail({
-    footer: 'This is an automated verification email. Replies to this address are not monitored./n © 2026 AYEDOS SACCO. All rights reserved.',
+    footer: 'This is an automated verification email. Replies to this address are not monitored.\n © 2026 AYEDOS SACCO. All rights reserved.',
     children: `
             <tr>
               <td style="padding:8px 40px 24px">

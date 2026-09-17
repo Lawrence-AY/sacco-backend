@@ -122,6 +122,18 @@ const findMemberByUserId = async (userId) => {
   return db.Member.findOne({ where: { userId } });
 };
 
+const hasAssignedStaffId = (user = {}) => Boolean(String(user.staffId || user.payrollNumber || '').trim());
+
+const privateProfileForMember = (user, member = null, extra = {}) => {
+  const profile = UserDTO.private(user);
+  const sanitizedMember = sanitizeMemberForPrivateProfile(member || user?.Member || user?.member || null);
+  if (!hasAssignedStaffId(user)) {
+    profile.employerContribution = 0;
+    if (sanitizedMember) sanitizedMember.employerContribution = 0;
+  }
+  return { ...profile, Member: sanitizedMember, ...extra };
+};
+
 const ensureMemberByUser = async (user) => {
   let member = await findMemberByUserId(user.id);
   if (!member) {
@@ -526,7 +538,7 @@ const getProfile = asyncHandler(async (req, res) => {
     throw new NotFoundError('User not found');
   }
   const member = await findMemberByUserId(req.user.id);
-  return ResponseHandler.success(res, { ...UserDTO.private(user), Member: sanitizeMemberForPrivateProfile(user.Member || member), nominees: member?.nominees || [] }, 'Profile retrieved successfully');
+  return ResponseHandler.success(res, privateProfileForMember(user, user.Member || member, { nominees: member?.nominees || [] }), 'Profile retrieved successfully');
 });
 
 const parseProfilePhotoDataUrl = (dataUrl) => {
@@ -579,7 +591,7 @@ const uploadProfilePhoto = asyncHandler(async (req, res) => {
     passportPhotoUrl: publicUrl,
   });
 
-  return ResponseHandler.success(res, UserDTO.private(updated), 'Profile photo updated successfully', 200);
+  return ResponseHandler.success(res, privateProfileForMember(updated), 'Profile photo updated successfully', 200);
 });
 
 const uploadKycDocuments = asyncHandler(async (req, res) => {
@@ -615,7 +627,7 @@ const uploadKycDocuments = asyncHandler(async (req, res) => {
   });
 
   const updated = await userService.getUserById(req.user.id);
-  return ResponseHandler.success(res, { ...UserDTO.private(updated), Member: member }, 'KYC documents updated successfully', 200);
+  return ResponseHandler.success(res, privateProfileForMember(updated, member), 'KYC documents updated successfully', 200);
 });
 
 const updateProfile = asyncHandler(async (req, res) => {
@@ -639,7 +651,6 @@ const updateProfile = asyncHandler(async (req, res) => {
     'gender',
     'employer',
     'monthlyIncome',
-    'payrollNumber',
     'passportPhotoUrl',
     'consentGiven',
     'consentGivenAt',
@@ -675,7 +686,7 @@ const updateProfile = asyncHandler(async (req, res) => {
   });
   const updated = await userService.getUserById(req.user.id);
   const refreshedMember = updated?.Member || member;
-  return ResponseHandler.success(res, { ...UserDTO.private(updated), Member: sanitizeMemberForPrivateProfile(refreshedMember), nominees: refreshedMember?.nominees || [] }, 'Profile updated successfully', 200);
+  return ResponseHandler.success(res, privateProfileForMember(updated, refreshedMember, { nominees: refreshedMember?.nominees || [] }), 'Profile updated successfully', 200);
 });
 
 const transferShareCapital = asyncHandler(async (req, res) => {
@@ -2091,9 +2102,7 @@ const emailReport = asyncHandler(async (req, res) => {
   const reportType = req.body?.reportType || 'portfolio';
   const durationMonths = Number(req.body?.duration) || 0;
   const member = await findMemberByUserId(req.user.id);
-  const isStaffMember = Boolean(String(user.staffId || user.payrollNumber || '').trim())
-    || String(user.employmentTag || '').toUpperCase() === 'EMPLOYEE'
-    || String(user.role || '').toUpperCase() === 'EMPLOYEE';
+  const isStaffMember = Boolean(String(user.staffId || user.payrollNumber || '').trim());
   if (!isStaffMember && reportType === 'payroll-deduction') {
     throw new ForbiddenError('Payroll deduction reports are available to staff members only');
   }
