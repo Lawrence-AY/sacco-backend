@@ -2,13 +2,20 @@ const db = require('../../../models');
 const notificationService = require('../../notifications/services/notificationService');
 const logger = require('../../../shared/utils/logger');
 const crypto = require('crypto');
+const { getMemberCapacity, getLoanCoverage, money } = require('./guaranteeCapacityService');
 
 const GUARANTOR_TOKEN_TTL_MS = 72 * 60 * 60 * 1000;
 
 const isEmergencyLoan = (type) => String(type || '').toUpperCase() === 'EMERGENCY';
+const LOAN_PRODUCT_LIMITS = Object.freeze({
+  EMERGENCY: 50000,
+  EDUCATION: 100000,
+  WELFARE: 100000,
+  DEVELOPMENT: 250000,
+});
 // Prevent duplicate in-flight applications, but allow a member with an active
 // facility to apply for another loan when all product eligibility rules pass.
-const RESTRICTED_LOAN_STATUSES = ['PENDING', 'PENDING_GUARANTORS', 'UNDER_REVIEW'];
+const RESTRICTED_LOAN_STATUSES = ['PENDING', 'PENDING_GUARANTORS', 'FULLY_COVERED', 'UNDER_REVIEW'];
 
 const addMonths = (value, months) => {
   const date = new Date(value);
@@ -18,38 +25,6 @@ const addMonths = (value, months) => {
   const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
   date.setUTCDate(Math.min(day, lastDay));
   return date;
-};
-
-const getAvailableGuaranteeSavings = async (memberId, excludeGuarantorId = null) => {
-  const [savingsAccount, successfulTransactions, activeGuarantees] = await Promise.all([
-    db.SavingsAccount.findOne({ where: { memberId } }),
-    db.Transaction.findAll({
-      where: {
-        memberId,
-        status: 'SUCCESS',
-      },
-    }),
-    db.Guarantor.sum('amount', {
-      where: {
-        memberId,
-        ...(excludeGuarantorId ? { id: { [db.Sequelize.Op.ne]: excludeGuarantorId } } : {}),
-        status: { [db.Sequelize.Op.in]: ['PENDING', 'ACCEPTED'] },
-      },
-    }),
-  ]);
-
-  const savingsFromTransactions = successfulTransactions.reduce((sum, transaction) => {
-    const category = String(
-      transaction.paymentCategory ||
-      transaction.kcbEndpoint ||
-      transaction.description ||
-      transaction.type ||
-      ''
-    ).toLowerCase();
-    return category.includes('savings') ? sum + Number(transaction.amount || 0) : sum;
-  }, 0);
-  const savings = Math.max(Number(savingsAccount?.balance || 0), savingsFromTransactions);
-  return Math.max(savings - Number(activeGuarantees || 0), 0);
 };
 
 const makeWalletTransactionId = () => {
@@ -166,6 +141,18 @@ const getLoanById = async (id) => {
 };
 
 const createLoan = async (data) => {
+  const normalizedType = String(data.type || '').toUpperCase();
+  const productLimit = LOAN_PRODUCT_LIMITS[normalizedType];
+  if (!productLimit) {
+    const error = new Error('Select a valid loan product');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (Number(data.amount || 0) > productLimit) {
+    const error = new Error(`${normalizedType.toLowerCase().replace(/^./, (letter) => letter.toUpperCase())} Loan is limited to KES ${productLimit.toLocaleString()}`);
+    error.statusCode = 400;
+    throw error;
+  }
   const result = await db.sequelize.transaction(async (transaction) => {
     const existingLoan = await db.Loan.findOne({
       where: { memberId: data.memberId, status: { [db.Sequelize.Op.in]: RESTRICTED_LOAN_STATUSES } },
@@ -179,36 +166,86 @@ const createLoan = async (data) => {
     }
     const emergency = isEmergencyLoan(data.type);
     const risk = emergency ? await runEmergencyEligibilityChecks(data.memberId) : null;
-    const selfGuaranteed = data.selfGuarantee === true || data.selfGuaranteed === true;
-    const requiresGuarantors = !selfGuaranteed && !emergency && Array.isArray(data.guarantors) && data.guarantors.length > 0;
+    const wantsSelfGuarantee = data.selfGuarantee === true || data.selfGuaranteed === true;
+    const applicantCapacity = await getMemberCapacity(data.memberId, { transaction, lock: transaction.LOCK.UPDATE });
+    const selfGuaranteedAmount = !emergency && wantsSelfGuarantee
+      ? money(Math.min(Number(data.amount || 0), applicantCapacity?.freeSavings || 0))
+      : 0;
+    const selfGuaranteed = selfGuaranteedAmount > 0;
+    const externalGuaranteeRequired = money(Math.max(0, Number(data.amount || 0) - selfGuaranteedAmount));
+    const requestedGuarantors = emergency ? [] : (Array.isArray(data.guarantors) ? data.guarantors : []);
+    const requiresGuarantors = externalGuaranteeRequired > 0 && requestedGuarantors.length > 0;
+    if (!emergency && externalGuaranteeRequired > 0 && !requiresGuarantors) {
+      const error = new Error(`External guarantees of KES ${externalGuaranteeRequired.toLocaleString()} are required`);
+      error.statusCode = 400;
+      throw error;
+    }
     const loan = await db.Loan.create({
       memberId: data.memberId,
       amount: data.amount,
       interestRate: data.interestRate,
       duration: data.duration,
       reason: data.reason || data.purpose || null,
-      status: emergency && risk.eligible ? 'APPROVED' : requiresGuarantors ? 'PENDING_GUARANTORS' : data.status || 'UNDER_REVIEW',
+      status: emergency && risk.eligible ? 'APPROVED' : requiresGuarantors ? 'PENDING_GUARANTORS' : 'FULLY_COVERED',
       type: data.type,
       multiplier: data.multiplier,
       selfGuaranteed,
-      selfGuaranteedAmount: selfGuaranteed ? Number(data.selfGuaranteedAmount || data.amount || 0) : 0,
+      selfGuaranteedAmount,
       approvedById: data.approvedById,
-      approvalStage: emergency && risk.eligible ? 'FINANCE' : requiresGuarantors ? 'INITIAL' : data.approvalStage || 'FINANCE',
+      approvalStage: emergency && risk.eligible ? 'FINANCE' : requiresGuarantors ? 'INITIAL' : 'FINANCE',
       decidedAt: emergency && risk.eligible ? new Date() : null,
       principalBalance: emergency && risk.eligible ? Number(data.amount) : null,
       lastInterestAccrualAt: emergency && risk.eligible ? new Date() : null,
       nextPaymentDueAt: emergency && risk.eligible ? addMonths(new Date(), 1) : null,
     }, { transaction });
 
-    if (data.guarantors && data.guarantors.length > 0) {
-      for (const guarantor of data.guarantors) {
+    if (requestedGuarantors.length > 0) {
+      const uniqueIds = new Set(requestedGuarantors.map((item) => item.memberId));
+      if (uniqueIds.size !== requestedGuarantors.length || uniqueIds.has(data.memberId)) {
+        const error = new Error('A borrower cannot guarantee their own external request and each guarantor may only be selected once');
+        error.statusCode = 400;
+        throw error;
+      }
+      const eligibleGuarantors = [];
+      for (const guarantor of requestedGuarantors) {
+        const capacity = await getMemberCapacity(guarantor.memberId, { transaction, lock: transaction.LOCK.UPDATE });
+        if (!capacity?.isEligibleToGuarantee) {
+          const error = new Error('A selected member is no longer eligible to guarantee this loan');
+          error.statusCode = 409;
+          throw error;
+        }
+        eligibleGuarantors.push({ memberId: guarantor.memberId, capacity: money(capacity.freeSavings), reservedAmount: 0 });
+      }
+      let remainingToReserve = externalGuaranteeRequired;
+      let candidates = eligibleGuarantors;
+      while (remainingToReserve > 0 && candidates.length) {
+        const equalShare = Math.max(0.01, money(remainingToReserve / candidates.length));
+        let allocatedThisRound = 0;
+        for (const candidate of candidates) {
+          const unusedCapacity = money(candidate.capacity - candidate.reservedAmount);
+          const allocation = money(Math.min(equalShare, unusedCapacity, remainingToReserve - allocatedThisRound));
+          candidate.reservedAmount = money(candidate.reservedAmount + allocation);
+          allocatedThisRound = money(allocatedThisRound + allocation);
+        }
+        if (allocatedThisRound <= 0) break;
+        remainingToReserve = money(remainingToReserve - allocatedThisRound);
+        candidates = candidates.filter((candidate) => money(candidate.capacity - candidate.reservedAmount) > 0);
+      }
+      if (remainingToReserve > 0) {
+        const error = new Error('The selected guarantors cannot fully secure the requested amount. Select an additional eligible guarantor.');
+        error.statusCode = 409;
+        throw error;
+      }
+      for (const guarantor of eligibleGuarantors) {
+        if (guarantor.reservedAmount <= 0) continue;
         await db.Guarantor.create({
           loanId: loan.id,
           memberId: guarantor.memberId,
-          amount: guarantor.amount,
+          amount: guarantor.reservedAmount,
           status: 'PENDING',
           requestToken: crypto.randomBytes(32).toString('hex'),
           tokenExpiresAt: new Date(Date.now() + GUARANTOR_TOKEN_TTL_MS),
+          holdPlacedAt: new Date(),
         }, { transaction });
       }
     }
@@ -305,8 +342,8 @@ const updateLoanStatus = async (id, status, options = {}) => {
     }
 
     const allowedDecisionStatuses = normalized === 'REJECTED'
-      ? ['PENDING', 'UNDER_REVIEW', 'PENDING_GUARANTORS']
-      : ['PENDING', 'UNDER_REVIEW'];
+      ? ['PENDING', 'UNDER_REVIEW', 'PENDING_GUARANTORS', 'FULLY_COVERED']
+      : ['PENDING', 'UNDER_REVIEW', 'FULLY_COVERED'];
     if (['APPROVED', 'REJECTED'].includes(normalized)
       && !allowedDecisionStatuses.includes(currentStatus)) {
       const error = new Error(`This loan can no longer be ${normalized.toLowerCase()}. Its current status is ${currentStatus}.`);
@@ -330,7 +367,22 @@ const updateLoanStatus = async (id, status, options = {}) => {
       nextPaymentDueAt: normalized === 'APPROVED' ? addMonths(decisionTime, 1) : loan.nextPaymentDueAt,
     }, { transaction });
 
-    return { loanId: loan.id, changed: true };
+    let releasedGuarantorIds = [];
+    if (normalized === 'REJECTED') {
+      const held = await db.Guarantor.findAll({
+        where: { loanId: loan.id, status: { [db.Sequelize.Op.in]: ['PENDING', 'ACCEPTED'] } },
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
+      releasedGuarantorIds = held.map((item) => item.id);
+      await Promise.all(held.map((item) => item.update({
+        status: item.status === 'PENDING' ? 'CANCELLED' : 'RELEASED',
+        cancellationReason: options.reason || 'Loan application was rejected or cancelled',
+        releasedAt: decisionTime,
+      }, { transaction })));
+    }
+
+    return { loanId: loan.id, changed: true, releasedGuarantorIds };
   });
 
   if (!result) return null;
@@ -343,6 +395,13 @@ const updateLoanStatus = async (id, status, options = {}) => {
         status: normalized,
         error: error.message,
       }));
+  }
+  if (normalized === 'REJECTED' && result.releasedGuarantorIds?.length) {
+    notificationService.createGuarantorExpirationNotifications(
+      result.loanId,
+      result.releasedGuarantorIds,
+      options.reason || 'Loan application was rejected or cancelled',
+    ).catch((error) => logger.error('Guarantor release notification failed', { loanId: result.loanId, error: error.message }));
   }
 
   return getLoanById(result.loanId);
@@ -386,7 +445,7 @@ const disburseLoan = async (id, options = {}) => {
   };
 };
 
-const getGuarantorRequest = async (token) => {
+const getGuarantorRequest = async (token, actorMemberId) => {
   const guarantor = await db.Guarantor.findOne({
     where: { requestToken: token },
     include: [
@@ -398,15 +457,28 @@ const getGuarantorRequest = async (token) => {
     ],
   });
   if (!guarantor) return null;
+  if (guarantor.memberId !== actorMemberId) {
+    const error = new Error('This guarantor request belongs to another member');
+    error.statusCode = 403;
+    throw error;
+  }
 
   const expired = guarantor.tokenExpiresAt && new Date(guarantor.tokenExpiresAt).getTime() < Date.now();
   if (expired && guarantor.status === 'PENDING') {
-    await guarantor.update({ status: 'EXPIRED' });
+    await guarantor.update({ status: 'EXPIRED', cancellationReason: 'Guarantor response window expired', releasedAt: new Date() });
   }
-  return { guarantor, expired };
+  const [capacity, coverage] = await Promise.all([
+    getMemberCapacity(guarantor.memberId, { excludeGuarantorId: guarantor.id }),
+    getLoanCoverage(guarantor.loanId),
+  ]);
+  const maxAllowedPledge = money(Math.min(
+    capacity?.freeSavings || 0,
+    coverage?.acceptedRemaining || 0,
+  ));
+  return { guarantor, expired, capacity, coverage, maxAllowedPledge };
 };
 
-const respondToGuarantorRequest = async (token, decision, amount) => {
+const respondToGuarantorRequest = async (token, decision, amount, actorMemberId) => {
   const normalized = String(decision || '').toUpperCase();
   if (!['ACCEPTED', 'REJECTED'].includes(normalized)) {
     const error = new Error('Decision must be ACCEPTED or REJECTED');
@@ -415,16 +487,22 @@ const respondToGuarantorRequest = async (token, decision, amount) => {
   }
 
   const result = await db.sequelize.transaction(async (transaction) => {
-    const guarantor = await db.Guarantor.findOne({
-      where: { requestToken: token },
+    const guarantorLookup = await db.Guarantor.findOne({ where: { requestToken: token }, transaction });
+    if (!guarantorLookup) return null;
+    const loan = await db.Loan.findByPk(guarantorLookup.loanId, { transaction, lock: transaction.LOCK.UPDATE });
+    const guarantor = await db.Guarantor.findByPk(guarantorLookup.id, {
       transaction,
       lock: transaction.LOCK.UPDATE,
     });
-    if (!guarantor) return null;
+    if (guarantor.memberId !== actorMemberId) {
+      const error = new Error('You are not authorized to respond to this guarantor request');
+      error.statusCode = 403;
+      throw error;
+    }
 
     const expired = guarantor.tokenExpiresAt && new Date(guarantor.tokenExpiresAt).getTime() < Date.now();
     if (expired) {
-      await guarantor.update({ status: 'EXPIRED' }, { transaction });
+      await guarantor.update({ status: 'EXPIRED', cancellationReason: 'Guarantor response window expired', releasedAt: new Date() }, { transaction });
       const error = new Error('This guarantor link has expired');
       error.statusCode = 410;
       throw error;
@@ -434,17 +512,26 @@ const respondToGuarantorRequest = async (token, decision, amount) => {
       return { loanId: guarantor.loanId, guarantorId: guarantor.id, status: guarantor.status };
     }
 
-    const acceptedAmount = Number(amount || guarantor.amount || 0);
+    const acceptedAmount = Number(amount === undefined || amount === null || amount === '' ? guarantor.amount : amount);
     if (normalized === 'ACCEPTED' && (!Number.isFinite(acceptedAmount) || acceptedAmount <= 0)) {
       const error = new Error('Guarantee amount is required');
       error.statusCode = 400;
       throw error;
     }
     if (normalized === 'ACCEPTED') {
-      const availableSavings = await getAvailableGuaranteeSavings(guarantor.memberId, guarantor.id);
-      if (acceptedAmount > availableSavings) {
-        const error = new Error(`Guarantee amount exceeds available savings. Available guarantee limit is KES ${availableSavings.toLocaleString()}.`);
-        error.statusCode = 400;
+      const capacity = await getMemberCapacity(guarantor.memberId, {
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+        excludeGuarantorId: guarantor.id,
+      });
+      const coverage = await getLoanCoverage(guarantor.loanId, { transaction });
+      const maxAllowed = money(Math.min(
+        capacity?.freeSavings || 0,
+        coverage?.acceptedRemaining || 0,
+      ));
+      if (!capacity?.isEligibleToGuarantee || acceptedAmount > maxAllowed) {
+        const error = new Error('Insufficient free savings to complete this guarantee');
+        error.statusCode = 409;
         throw error;
       }
     }
@@ -453,36 +540,77 @@ const respondToGuarantorRequest = async (token, decision, amount) => {
       status: normalized,
       amount: normalized === 'ACCEPTED' ? acceptedAmount : guarantor.amount,
       respondedAt: new Date(),
+      releasedAt: normalized === 'REJECTED' ? new Date() : guarantor.releasedAt,
+      cancellationReason: normalized === 'REJECTED' ? 'Guarantor declined the request' : guarantor.cancellationReason,
     }, { transaction });
 
     const allGuarantors = await db.Guarantor.findAll({
       where: { loanId: guarantor.loanId },
       transaction,
     });
-    const loan = await db.Loan.findByPk(guarantor.loanId, { transaction });
     const acceptedTotal = allGuarantors.reduce((sum, item) => {
       const status = item.id === guarantor.id ? normalized : item.status;
       const nextAmount = item.id === guarantor.id && normalized === 'ACCEPTED' ? acceptedAmount : item.amount;
       return status === 'ACCEPTED' ? sum + Number(nextAmount || 0) : sum;
     }, 0);
-    const fullyGuaranteed = acceptedTotal >= Number(loan?.amount || 0);
+    const fullyGuaranteed = money(acceptedTotal + Number(loan?.selfGuaranteedAmount || 0)) >= money(loan?.amount || 0);
+    let cancelledGuarantorIds = [];
 
     if (fullyGuaranteed) {
-      await db.Loan.update(
-        { status: 'UNDER_REVIEW', approvalStage: 'FINANCE' },
-        { where: { id: guarantor.loanId }, transaction },
-      );
+      await loan.update({ status: 'FULLY_COVERED', approvalStage: 'FINANCE' }, { transaction });
+      const pending = allGuarantors.filter((item) => item.id !== guarantor.id && item.status === 'PENDING');
+      cancelledGuarantorIds = pending.map((item) => item.id);
+      if (cancelledGuarantorIds.length) {
+        await db.Guarantor.update({
+          status: 'CANCELLED',
+          cancellationReason: 'Loan requirement fully satisfied by other guarantors',
+          releasedAt: new Date(),
+        }, { where: { id: { [db.Sequelize.Op.in]: cancelledGuarantorIds } }, transaction });
+      }
     }
 
-    return { loanId: guarantor.loanId, guarantorId: guarantor.id, status: normalized, allAccepted: fullyGuaranteed };
+    return { loanId: guarantor.loanId, guarantorId: guarantor.id, status: normalized, allAccepted: fullyGuaranteed, cancelledGuarantorIds };
   });
 
   if (!result) return null;
   await notificationService.createApplicantGuarantorDecisionNotification(result.loanId, result.guarantorId);
+  if (result.cancelledGuarantorIds?.length) {
+    await notificationService.createGuarantorExpirationNotifications(result.loanId, result.cancelledGuarantorIds);
+  }
   if (result.allAccepted) {
     await notificationService.createFinanceLoanRequestNotifications(result.loanId);
   }
   return getLoanById(result.loanId);
+};
+
+const expireStaleGuarantorRequests = async () => {
+  const expiredByLoan = await db.sequelize.transaction(async (transaction) => {
+    const stale = await db.Guarantor.findAll({
+      where: {
+        status: 'PENDING',
+        tokenExpiresAt: { [db.Sequelize.Op.lt]: new Date() },
+      },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+    if (!stale.length) return new Map();
+    const releasedAt = new Date();
+    await Promise.all(stale.map((item) => item.update({
+      status: 'EXPIRED',
+      cancellationReason: 'Guarantor response window expired',
+      releasedAt,
+    }, { transaction })));
+    return stale.reduce((map, item) => {
+      const ids = map.get(item.loanId) || [];
+      ids.push(item.id);
+      map.set(item.loanId, ids);
+      return map;
+    }, new Map());
+  });
+  for (const [loanId, ids] of expiredByLoan.entries()) {
+    await notificationService.createGuarantorExpirationNotifications(loanId, ids, 'Guarantor response window expired');
+  }
+  return [...expiredByLoan.values()].reduce((sum, ids) => sum + ids.length, 0);
 };
 
 module.exports = {
@@ -495,4 +623,5 @@ module.exports = {
   disburseLoan,
   getGuarantorRequest,
   respondToGuarantorRequest,
+  expireStaleGuarantorRequests,
 };

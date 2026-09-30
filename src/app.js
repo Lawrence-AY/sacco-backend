@@ -561,6 +561,7 @@ app.use('/api/loans', loanRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/shares', shareRoutes);
 app.use('/api/member', memberRoutes);
+app.get('/api/v1/guarantors/search', protect, memberController.searchGuarantors);
 app.use('/api/finance', financeRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/search', searchRoutes);

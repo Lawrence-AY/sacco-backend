@@ -5,7 +5,7 @@ const { sendSms } = require('../../../services/sms/smsService');
 const logger = require('../../../shared/utils/logger');
 
 const IMPORTANT_TRANSACTION_STATUSES = new Set(['SUCCESS', 'FAILED', 'PENDING']);
-const IMPORTANT_LOAN_STATUSES = new Set(['PENDING', 'PENDING_GUARANTORS', 'UNDER_REVIEW', 'APPROVED', 'ACTIVE', 'REJECTED']);
+const IMPORTANT_LOAN_STATUSES = new Set(['PENDING', 'PENDING_GUARANTORS', 'FULLY_COVERED', 'UNDER_REVIEW', 'APPROVED', 'ACTIVE', 'REJECTED']);
 
 const severityForStatus = (status) => {
   const normalized = String(status || '').toUpperCase();
@@ -264,15 +264,23 @@ const createGuarantorRequestNotifications = async (loanId) => {
       subject: 'AYEDOS SACCO guarantor request',
       title: 'Loan guarantor request',
       lines: [
-        `${applicant} requested you as a guarantor for a ${loan.type || 'loan'} of KES ${Number(loan.amount || 0).toLocaleString()}.`,
+        `${applicant} requested you to guarantee KES ${Number(guarantor.amount || 0).toLocaleString()} for ${loan.type || 'loan'} ${loan.id}.`,
         `Review and respond within 72 hours: <a href="${fullUrl}">${fullUrl}</a>`,
       ],
     });
+    if (recipient.phone) {
+      await dispatchSms({
+        to: recipient.phone,
+        purpose: 'guarantor_request',
+        message: `${applicant} requested you to guarantee ${formatMoney(guarantor.amount)} for loan ${loan.id}. Sign in to review. Expires in 72 hours.`,
+        metadata: { loanId: loan.id, guarantorId: guarantor.id },
+      });
+    }
     return upsertNotification({
       userId: recipient.id,
       eventKey: `guarantor-request:${guarantor.id}:${recipient.id}`,
       title: 'Guarantor request',
-      body: `${applicant} requested your guarantee for KES ${Number(loan.amount || 0).toLocaleString()}. The link expires in 72 hours.`,
+      body: `${applicant} requested you to guarantee KES ${Number(guarantor.amount || 0).toLocaleString()} for loan ${loan.id}. The request expires in 72 hours.`,
       category: 'loan',
       severity: 'warning',
       actionUrl,
@@ -283,7 +291,7 @@ const createGuarantorRequestNotifications = async (loanId) => {
         loanId: loan.id,
         guarantorId: guarantor.id,
         applicantName: applicant,
-        amount: loan.amount,
+        amount: guarantor.amount,
         expiresAt: guarantor.tokenExpiresAt,
       },
     });
@@ -292,10 +300,44 @@ const createGuarantorRequestNotifications = async (loanId) => {
   return notifications.filter(Boolean).map(serialize);
 };
 
+const createGuarantorExpirationNotifications = async (loanId, guarantorIds = [], reason = 'Loan requirement fully satisfied by other guarantors') => {
+  if (!guarantorIds.length) return [];
+  const guarantors = await db.Guarantor.findAll({
+    where: { id: { [Op.in]: guarantorIds }, loanId },
+    include: [{ model: db.Member, include: [{ model: db.User, attributes: ['id', 'phone'] }] }],
+  });
+  const notifications = [];
+  for (const guarantor of guarantors) {
+    const recipient = guarantor.Member?.User;
+    if (!recipient?.id) continue;
+    notifications.push(await upsertNotification({
+      userId: recipient.id,
+      eventKey: `guarantor-request-expired:${guarantor.id}`,
+      title: 'Guarantor request released',
+      body: `${reason}. Your temporary savings hold of ${formatMoney(guarantor.amount)} has been released.`,
+      category: 'loan',
+      severity: 'info',
+      actionUrl: '/dashboard/user/loans',
+      sourceType: 'Guarantor',
+      sourceId: guarantor.id,
+      metadata: { subtype: 'guarantor_request_expired', loanId, guarantorId: guarantor.id, reason, releasedAt: guarantor.releasedAt },
+    }));
+    if (recipient.phone) {
+      await dispatchSms({
+        to: recipient.phone,
+        purpose: 'guarantor_request_expired',
+        message: `${reason}. Your ${formatMoney(guarantor.amount)} savings hold has been released. Loan ref: ${loanId}`,
+        metadata: { loanId, guarantorId: guarantor.id },
+      });
+    }
+  }
+  return notifications.map(serialize);
+};
+
 const createApplicantGuarantorDecisionNotification = async (loanId, guarantorId) => {
   const loan = await getLoanWithApplicant(loanId);
   const guarantor = await db.Guarantor.findByPk(guarantorId, {
-    include: [{ model: db.Member, include: [{ model: db.User, attributes: ['name', 'firstName', 'lastName'] }] }],
+    include: [{ model: db.Member, include: [{ model: db.User, attributes: ['id', 'name', 'firstName', 'lastName', 'phone'] }] }],
   });
   if (!loan?.Member?.userId || !guarantor) return null;
 
@@ -320,6 +362,35 @@ const createApplicantGuarantorDecisionNotification = async (loanId, guarantorId)
       allAccepted: String(loan.status || '').toUpperCase() === 'UNDER_REVIEW',
     },
   });
+
+  const guarantorUser = guarantor.Member?.User;
+  if (guarantorUser?.id) {
+    const accepted = status === 'ACCEPTED';
+    await upsertNotification({
+      userId: guarantorUser.id,
+      eventKey: `guarantor-confirmation:${guarantor.id}:${status}`,
+      title: accepted ? 'Guarantee commitment confirmed' : 'Guarantor request declined',
+      body: accepted
+        ? `You committed ${formatMoney(guarantor.amount)} as security for loan ${loan.id}. This amount remains reserved until the guarantee is released.`
+        : `You declined the guarantor request for loan ${loan.id}. Any temporary savings hold has been released.`,
+      category: 'loan',
+      severity: accepted ? 'success' : 'info',
+      actionUrl: '/dashboard/user/loans',
+      sourceType: 'Guarantor',
+      sourceId: guarantor.id,
+      metadata: { subtype: 'guarantor_confirmation', loanId: loan.id, guarantorId: guarantor.id, status, amount: guarantor.amount },
+    });
+    if (guarantorUser.phone) {
+      await dispatchSms({
+        to: guarantorUser.phone,
+        purpose: accepted ? 'guarantor_acceptance_confirmation' : 'guarantor_rejection_confirmation',
+        message: accepted
+          ? `Guarantee confirmed: You committed ${formatMoney(guarantor.amount)} for loan ${loan.id}. The amount remains reserved until release.`
+          : `You declined the guarantor request for loan ${loan.id}. Any temporary savings hold has been released.`,
+        metadata: { loanId: loan.id, guarantorId: guarantor.id, status },
+      });
+    }
+  }
 
   return serialize(notification);
 };
@@ -733,6 +804,7 @@ module.exports = {
   createFinanceEmergencyAutoApprovalNotifications,
   createMemberLoanDecisionNotification,
   createGuarantorRequestNotifications,
+  createGuarantorExpirationNotifications,
   createApplicantGuarantorDecisionNotification,
   createOptOutReviewNotifications,
   createAdminIdentityBlockNotifications,

@@ -140,7 +140,7 @@ const formatLoan = (loan) => {
   const duration = Number(loan.duration || 0);
   const outstandingBalance = calculateCurrentOutstandingBalance(loan);
   const rawStatus = String(loan.status || '').toUpperCase();
-  const financeStatus = ['PENDING', 'UNDER_REVIEW'].includes(rawStatus)
+  const financeStatus = ['PENDING', 'UNDER_REVIEW', 'FULLY_COVERED'].includes(rawStatus)
     ? 'PENDING_FINANCE'
     : ['ACTIVE', 'DISBURSED'].includes(rawStatus)
       ? 'DISBURSED'
