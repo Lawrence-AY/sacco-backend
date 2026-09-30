@@ -271,6 +271,10 @@ async function startServer() {
     overdueMonitor().catch((error) => logger.error('Initial overdue-loan alert scan failed', { error: error.message }));
     const overdueMonitorTimer = setInterval(() => overdueMonitor().catch((error) => logger.error('Overdue-loan alert scan failed', { error: error.message })), 60 * 60 * 1000);
     overdueMonitorTimer.unref();
+    const guarantorExpiryMonitor = require('./src/features/loans/services/loanService').expireStaleGuarantorRequests;
+    guarantorExpiryMonitor().catch((error) => logger.error('Initial guarantor-expiry scan failed', { error: error.message }));
+    const guarantorExpiryTimer = setInterval(() => guarantorExpiryMonitor().catch((error) => logger.error('Guarantor-expiry scan failed', { error: error.message })), 60 * 1000);
+    guarantorExpiryTimer.unref();
 
   } catch (error) {
     logger.error('Failed to start server:', {

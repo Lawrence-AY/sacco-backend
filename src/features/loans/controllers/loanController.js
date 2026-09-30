@@ -111,10 +111,12 @@ const rejectLoan = asyncHandler(async (req, res) => {
 });
 
 const getGuarantorRequest = asyncHandler(async (req, res) => {
-  const request = await loanService.getGuarantorRequest(req.params.token);
+  const actorMember = await db.Member.findOne({ where: { userId: req.user.id } });
+  if (!actorMember) throw new ForbiddenError('Only an authenticated SACCO member can review this request');
+  const request = await loanService.getGuarantorRequest(req.params.token, actorMember.id);
   if (!request) throw new NotFoundError('Guarantor request not found');
 
-  const { guarantor, expired } = request;
+  const { guarantor, expired, capacity, coverage, maxAllowedPledge } = request;
   const loan = guarantor.Loan;
   const applicant = loan?.Member?.User?.name
     || [loan?.Member?.User?.firstName, loan?.Member?.User?.lastName].filter(Boolean).join(' ')
@@ -126,6 +128,10 @@ const getGuarantorRequest = asyncHandler(async (req, res) => {
     status: expired ? 'EXPIRED' : guarantor.status,
     expiresAt: guarantor.tokenExpiresAt,
     amount: guarantor.amount,
+    freeSavings: capacity?.freeSavings || 0,
+    committedCapacity: capacity?.committedCapacity || 0,
+    remainingNeeded: coverage?.acceptedRemaining || 0,
+    maxAllowedPledge,
     guarantor: {
       name: guarantor.Member?.User?.name
         || [guarantor.Member?.User?.firstName, guarantor.Member?.User?.lastName].filter(Boolean).join(' ')
@@ -146,7 +152,9 @@ const getGuarantorRequest = asyncHandler(async (req, res) => {
 });
 
 const respondToGuarantorRequest = asyncHandler(async (req, res) => {
-  const loan = await loanService.respondToGuarantorRequest(req.params.token, req.body.decision, req.body.amount);
+  const actorMember = await db.Member.findOne({ where: { userId: req.user.id } });
+  if (!actorMember) throw new ForbiddenError('Only an authenticated SACCO member can respond to this request');
+  const loan = await loanService.respondToGuarantorRequest(req.params.token, req.body.decision, req.body.amount, actorMember.id);
   if (!loan) throw new NotFoundError('Guarantor request not found');
   return ResponseHandler.success(res, LoanDTO.basic(loan, req.user), 'Guarantor response recorded', 200);
 });

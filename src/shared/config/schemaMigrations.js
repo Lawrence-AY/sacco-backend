@@ -148,6 +148,8 @@ const guarantorWorkflowColumns = {
   tokenExpiresAt: { type: DataTypes.DATE, allowNull: true },
   respondedAt: { type: DataTypes.DATE, allowNull: true },
   releasedAt: { type: DataTypes.DATE, allowNull: true },
+  cancellationReason: { type: DataTypes.TEXT, allowNull: true },
+  holdPlacedAt: { type: DataTypes.DATE, allowNull: true },
 };
 
 const loanSelfGuaranteeColumns = {

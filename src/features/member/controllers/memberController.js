@@ -28,6 +28,7 @@ const otpService = require('../../../services/otpService');
 const { enqueueEmail, QUEUES } = require('../../../services/email/emailQueue');
 const { sendOtpSms } = require('../../../services/sms/smsService');
 const walletService = require('../../wallet/services/walletService');
+const { getMemberCapacity } = require('../../loans/services/guaranteeCapacityService');
 const PROFILE_PHOTO_MAX_BYTES = 1.5 * 1024 * 1024;
 const PROFILE_PHOTO_TYPES = {
   'image/jpeg': 'jpg',
@@ -290,22 +291,15 @@ const findLoanForRepayment = async (memberId) => {
 };
 
 const releaseCoveredGuarantors = async (loanId) => {
-  const totalRepaid = await db.Transaction.sum('amount', {
-    where: {
-      loanId,
-      type: 'LOAN_REPAYMENT',
-      status: 'SUCCESS',
-    },
-  });
-  const repaid = Number(totalRepaid || 0);
+  const loan = await db.Loan.findByPk(loanId, { attributes: ['id', 'status', 'principalBalance', 'accruedInterest'] });
+  const cleared = String(loan?.status || '').toUpperCase() === 'COMPLETED'
+    || (Number(loan?.principalBalance || 0) <= 0 && Number(loan?.accruedInterest || 0) <= 0);
+  if (!cleared) return;
   const guarantors = await db.Guarantor.findAll({
     where: { loanId, status: 'ACCEPTED' },
-    order: [['respondedAt', 'ASC']],
   });
 
-  await Promise.all(guarantors
-    .filter((guarantor) => repaid >= Number(guarantor.amount || 0))
-    .map((guarantor) => guarantor.update({ status: 'RELEASED', releasedAt: new Date() })));
+  await Promise.all(guarantors.map((guarantor) => guarantor.update({ status: 'RELEASED', releasedAt: new Date() })));
 };
 
 const applyLoanRepaymentLink = async (transaction) => {
@@ -538,7 +532,24 @@ const getProfile = asyncHandler(async (req, res) => {
     throw new NotFoundError('User not found');
   }
   const member = await findMemberByUserId(req.user.id);
-  return ResponseHandler.success(res, privateProfileForMember(user, user.Member || member, { nominees: member?.nominees || [] }), 'Profile retrieved successfully');
+  const profile = privateProfileForMember(user, user.Member || member, { nominees: member?.nominees || [] });
+  if (member && profile.Member) {
+    const balances = await getMemberExitBalances(member.id);
+    const activeLoans = await db.Loan.findAll({
+      where: {
+        memberId: member.id,
+        status: { [Op.in]: ['APPROVED', 'ACTIVE', 'DISBURSED', 'OVERDUE', 'IN_ARREARS', 'DEFAULTED'] },
+      },
+    });
+    profile.Member.savings = Number(balances.savings || 0);
+    profile.Member.shareCapital = Number(balances.shareCapital || 0);
+    profile.Member.loans = activeLoans.reduce(
+      (sum, loan) => sum + Number(calculateLoanBalanceQuote(loan).outstandingBalance || 0),
+      0,
+    );
+    profile.Member.activeLoans = activeLoans.length;
+  }
+  return ResponseHandler.success(res, profile, 'Profile retrieved successfully');
 });
 
 const parseProfilePhotoDataUrl = (dataUrl) => {
@@ -721,12 +732,20 @@ const getMemberExitBalances = async (memberId) => {
       transaction.type ||
       ''
     ).toLowerCase();
-    return tokens.some((token) => category.includes(token))
-      ? sum + Number(transaction.amount || 0)
-      : sum;
+    if (!tokens.some((token) => category.includes(token))) return sum;
+    const outgoing = transaction.direction === 'OUT'
+      || String(transaction.type || '').toUpperCase().includes('WITHDRAW')
+      || category.includes('withdraw')
+      || category.includes('transfer_out');
+    const amount = Number(transaction.netAmount ?? transaction.amount ?? 0);
+    return sum + (outgoing ? -amount : amount);
   }, 0);
 
-  const savings = Math.max(Number(savingsAccount?.balance || 0), categoryTotal(['savings']));
+  const savings = Math.max(
+    Number(savingsAccount?.balance || 0),
+    categoryTotal(['savings', 'monthly_contribution', 'monthlycontributions']),
+    0,
+  );
   const shareAccountCapital = Number(shareAccount?.shares || 0) * Number(shareAccount?.shareValue || 0);
   const shareCapital = Math.max(
     shareAccountCapital,
@@ -852,6 +871,10 @@ const requestOptOut = asyncHandler(async (req, res) => {
   const member = await findMemberByUserId(req.user.id);
   if (!member) {
     throw new NotFoundError('Member profile not found');
+  }
+  const capacity = await getMemberCapacity(member.id);
+  if (Number(capacity?.pledgeHolds || 0) > 0) {
+    throw new ValidationError(`Membership exit is blocked while KES ${Number(capacity.pledgeHolds).toLocaleString()} of savings secures pending or active guarantees.`);
   }
   await otpService.verifyOtp({ userId: req.user.id, purpose: 'OPT_OUT', otp: req.body.otp });
 
@@ -1270,19 +1293,12 @@ const applyForLoan = asyncHandler(async (req, res) => {
   const payoutDestination = validateLoanPayoutDestination(req.body.payoutDestination);
   const guarantors = Array.isArray(req.body.guarantors) ? req.body.guarantors : [];
   await otpService.verifyOtp({ userId: req.user.id, purpose: 'LOAN_PAYOUT', otp: req.body.payoutDestination?.otp });
-  if (selfGuarantee) {
-    const requestedGuaranteeAmount = Number(req.body.selfGuaranteedAmount || requestedAmount);
-    const availableSavings = await getAvailableSelfGuaranteeSavings(member.id);
-
-    if (requestedGuaranteeAmount < requestedAmount) {
-      throw new ValidationError('Self-guarantee amount must cover the requested loan amount');
-    }
-
-    if (requestedGuaranteeAmount > availableSavings) {
-      throw new ValidationError(`Self-guarantee exceeds available savings. Available self-guarantee limit is KES ${availableSavings.toLocaleString()}.`);
-    }
-  }
-  if (!selfGuarantee && !isEmergencyLoan && guarantors.length < 1) {
+  const applicantCapacity = selfGuarantee ? await getMemberCapacity(member.id) : null;
+  const selfGuaranteedAmount = selfGuarantee
+    ? Math.min(requestedAmount, Number(applicantCapacity?.freeSavings || 0))
+    : 0;
+  const externalGuaranteeRequired = Math.max(0, requestedAmount - selfGuaranteedAmount);
+  if (!isEmergencyLoan && externalGuaranteeRequired > 0 && guarantors.length < 1) {
     throw new ValidationError('Select at least one guarantor, or use self-guarantee if your savings cover the loan.');
   }
 
@@ -1298,8 +1314,8 @@ const applyForLoan = asyncHandler(async (req, res) => {
     memberId: member.id,
     status: 'PENDING',
     selfGuarantee,
-    selfGuaranteedAmount: selfGuarantee ? Number(req.body.selfGuaranteedAmount || requestedAmount) : 0,
-    guarantors: selfGuarantee || isEmergencyLoan ? [] : guarantors,
+    selfGuaranteedAmount,
+    guarantors: isEmergencyLoan ? [] : guarantors,
   });
 
   return ResponseHandler.created(res, {
@@ -1536,9 +1552,14 @@ const searchGuarantors = asyncHandler(async (req, res) => {
   }
 
   const currentMember = await findMemberByUserId(req.user.id);
+  const applicantId = String(req.query.applicant_id || currentMember?.id || '');
+  if (!currentMember) throw new NotFoundError('Member profile not found');
+  if (applicantId !== currentMember.id && !['ADMIN', 'FINANCE', 'SUPERADMIN'].includes(String(req.user.role || '').toUpperCase())) {
+    throw new ForbiddenError('You may only search guarantors for your own application');
+  }
   const members = await db.Member.findAll({
     where: {
-      id: { [Op.ne]: currentMember?.id || null },
+      id: { [Op.ne]: applicantId },
       [Op.or]: [
         { memberNumber: { [Op.iLike]: `%${term}%` } },
         { '$User.name$': { [Op.iLike]: `%${term}%` } },
@@ -1554,39 +1575,17 @@ const searchGuarantors = asyncHandler(async (req, res) => {
     order: [['memberNumber', 'ASC']],
   });
 
-  const guaranteeCounts = await Promise.all(members.map(async (member) => {
-    const [count, balances] = await Promise.all([
-      db.Guarantor.count({
-        where: {
-          memberId: member.id,
-          status: { [Op.in]: ['PENDING', 'ACCEPTED'] },
-        },
-      }),
-      getMemberExitBalances(member.id),
-    ]);
-    return [member.id, { count, balances }];
-  }));
-  const countMap = new Map(guaranteeCounts);
-
-  const results = members
-    .filter((member) => {
-      const balances = countMap.get(member.id)?.balances || {};
-      return (
-        (member.isVerified || String(member.status || '').toUpperCase() === 'ACTIVE')
-        && Number(balances.shareCapital || 0) >= MINIMUM_LOAN_SHARE_CAPITAL
-      );
-    })
-    .map((member) => {
+  const capacities = new Map(await Promise.all(members.map(async (member) => [member.id, await getMemberCapacity(member.id)])));
+  const results = members.map((member) => {
       const user = member.User || {};
       const fullName = user.name || [user.firstName, user.lastName].filter(Boolean).join(' ') || member.memberNumber;
-      const entry = countMap.get(member.id) || {};
-      const activeGuarantees = entry.count || 0;
+      const capacity = capacities.get(member.id) || {};
       return {
         memberId: member.id,
         memberNumber: member.memberNumber,
         name: fullName,
-        status: activeGuarantees > 0 ? `${activeGuarantees} active guarantee${activeGuarantees === 1 ? '' : 's'}` : 'Available',
-        activeGuarantees,
+        status: capacity.isEligibleToGuarantee ? 'Eligible' : 'Not Eligible',
+        isEligibleToGuarantee: Boolean(capacity.isEligibleToGuarantee),
       };
     });
 

@@ -4,8 +4,8 @@ const { protect, authorize } = require('../../../shared/middleware/authMiddlewar
 const { validate, schemas } = require('../../../shared/middleware/zodValidation');
 const loanController = require('../controllers/loanController');
 
-router.get('/guarantor-requests/:token', loanController.getGuarantorRequest);
-router.post('/guarantor-requests/:token/respond', loanController.respondToGuarantorRequest);
+router.get('/guarantor-requests/:token', protect, loanController.getGuarantorRequest);
+router.post('/guarantor-requests/:token/respond', protect, loanController.respondToGuarantorRequest);
 
 // All routes require authentication
 router.use(protect);

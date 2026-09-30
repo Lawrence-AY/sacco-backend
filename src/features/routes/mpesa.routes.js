@@ -63,11 +63,28 @@ const settleSavingsDepositPayment = async ({ transactionId, receipt, amount, des
 );
 
 router.post('/stk', async (req, res, next) => {
-  const mpesaUrl = process.env.MPESA_URL?.trim().replace(/\/+$/, '');
-  if (!mpesaUrl) {
+  const configuredMpesaUrl = process.env.MPESA_URL?.trim();
+  if (!configuredMpesaUrl) {
     return res.status(503).json({
       success: false,
       message: 'M-Pesa service is not configured',
+    });
+  }
+
+  let mpesaUrl;
+  try {
+    const parsedUrl = new URL(configuredMpesaUrl);
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) throw new Error('Unsupported protocol');
+    mpesaUrl = parsedUrl.toString().replace(/\/+$/, '');
+  } catch (error) {
+    logger.error('Invalid MPESA_URL configuration', {
+      error: error.message,
+      requestId: req.id,
+    });
+    return res.status(503).json({
+      success: false,
+      message: 'M-Pesa service is misconfigured. Contact support.',
+      errorCode: 'MPESA_INVALID_URL',
     });
   }
 
