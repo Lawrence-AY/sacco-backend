@@ -42,7 +42,7 @@ const KYC_DOCUMENT_TYPES = {
   'application/pdf': 'pdf',
 };
 
-const DEFAULT_KCB_PAYBILL_NUMBER = '522522';
+const DEFAULT_KCB_PAYBILL_NUMBER = '7929884';
 const LOAN_REPAYMENT_STK_TIMEOUT_MS = Number(process.env.LOAN_REPAYMENT_STK_TIMEOUT_MS || 45000);
 const MINIMUM_LOAN_SHARE_CAPITAL = 20000;
 const LOAN_ELIGIBILITY_MESSAGE = 'You are not yet eligible to apply for a loan. Please complete the minimum required share capital purchase before submitting a loan application.';
