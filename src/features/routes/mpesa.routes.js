@@ -8,6 +8,73 @@ const eventBus = require('../../services/realtime/eventBus');
 
 const router = express.Router();
 const MPESA_PROXY_TIMEOUT_MS = Number(process.env.MPESA_TIMEOUT_MS || 115000);
+const KCB_PAYBILL_NUMBER = String(process.env.KCB_PAYBILL_NUMBER || process.env.MPESA_PAYBILL_NUMBER || '7929884').trim();
+const KCB_REFERENCE_PATTERN = new RegExp(`^${KCB_PAYBILL_NUMBER.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}#(MS|LM|LE|LW|LD|SC|RF|PF)([A-Za-z0-9-]+)$`, 'i');
+const KCB_PAYMENT_TYPES = {
+  MS: { type: 'DEPOSIT', category: 'savings', description: 'KCB direct savings payment' },
+  LM: { type: 'LOAN_REPAYMENT', category: 'emergency_loan_repayment', description: 'KCB emergency loan payment' },
+  LE: { type: 'LOAN_REPAYMENT', category: 'education_loan_repayment', description: 'KCB education loan payment' },
+  LW: { type: 'LOAN_REPAYMENT', category: 'welfare_loan_repayment', description: 'KCB welfare loan payment' },
+  LD: { type: 'LOAN_REPAYMENT', category: 'development_loan_repayment', description: 'KCB development loan payment' },
+  SC: { type: 'DEPOSIT', category: 'share_capital', description: 'KCB direct share capital payment' },
+  PF: { type: 'DEPOSIT', category: 'processing_fee', description: 'KCB processing fee payment' },
+};
+
+const kcbIpnAuth = (req, res, next) => {
+  const expected = String(process.env.KCB_IPN_SHARED_SECRET || '').trim();
+  if (expected && req.get('x-kcb-ipn-secret') !== expected) return res.status(401).json({ statusCode: 1, statusMessage: 'Unauthorized' });
+  next();
+};
+
+// KCB direct-payments endpoint. Registration fees remain in Firebase registrations;
+// all other board-approved payment identifiers become member ledger transactions.
+router.post('/kcb/ipn', kcbIpnAuth, async (req, res) => {
+  const body = req.body || {};
+  const transactionReference = String(body.transactionReference || body.transaction_reference || '').trim();
+  const accountReference = String(body.customerReference || body.customer_reference || body.accountReference || body.account_reference || '').trim().toUpperCase();
+  const amount = Number(body.transactionAmount ?? body.transaction_amount ?? body.amount);
+  const match = KCB_REFERENCE_PATTERN.exec(accountReference);
+  if (!transactionReference || !Number.isFinite(amount) || amount <= 0 || !match) {
+    return res.status(400).json({ statusCode: 1, statusMessage: 'Invalid KCB payment reference or amount' });
+  }
+
+  const [, identifier, memberSequence] = match;
+  const normalizedIdentifier = identifier.toUpperCase();
+  const memberCandidates = [memberSequence, `${normalizedIdentifier}${memberSequence}`];
+  const payment = KCB_PAYMENT_TYPES[identifier.toUpperCase()];
+  const existing = await db.Transaction.findOne({ where: { providerTransactionId: transactionReference } });
+  if (existing) return res.json({ transactionID: transactionReference, statusCode: 0, statusMessage: 'Already processed' });
+
+  if (normalizedIdentifier === 'RF') {
+    const member = await db.Member.findOne({ where: { memberNumber: { [db.Sequelize.Op.in]: memberCandidates } } });
+    await getFirebaseDb().collection('registrations').doc(transactionReference).set({
+      transaction_reference: transactionReference, customer_reference: accountReference,
+      member_number: member?.memberNumber || memberSequence, member_id: member?.id || null, amount,
+      transaction_amount: amount, status: 'completed', payment_category: 'registration',
+      customer_name: body.customerName || null, customer_mobile_number: body.customerMobileNumber || null,
+      created_at: new Date(), updated_at: new Date(),
+    }, { merge: true });
+    return res.json({ transactionID: transactionReference, statusCode: 0, statusMessage: 'Registration payment received' });
+  }
+
+  const member = await db.Member.findOne({ where: { memberNumber: { [db.Sequelize.Op.in]: memberCandidates } } });
+  if (!member) return res.status(404).json({ statusCode: 1, statusMessage: 'Member not found' });
+
+  const transaction = await db.sequelize.transaction(async (databaseTransaction) => {
+    const created = await db.Transaction.create({
+      memberId: member.id, type: payment.type, amount, method: 'MPESA', status: 'SUCCESS',
+      reference: transactionReference, providerTransactionId: transactionReference,
+      internalReference: accountReference, description: payment.description,
+      paymentCategory: payment.category, kcbEndpoint: '/kcb/ipn',
+    }, { transaction: databaseTransaction });
+    if (normalizedIdentifier === 'MS') {
+      const [account] = await db.SavingsAccount.findOrCreate({ where: { memberId: member.id }, defaults: { memberId: member.id, balance: 0 }, transaction: databaseTransaction });
+      await account.increment('balance', { by: amount, transaction: databaseTransaction });
+    }
+    return created;
+  });
+  return res.json({ transactionID: transactionReference, transactionId: transaction.id, statusCode: 0, statusMessage: 'Payment processed' });
+});
 
 const isSavingsDepositPayment = (transaction) => {
   const category = String(transaction?.paymentCategory || '').toLowerCase();
