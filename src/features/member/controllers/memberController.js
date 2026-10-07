@@ -28,6 +28,7 @@ const otpService = require('../../../services/otpService');
 const { enqueueEmail, QUEUES } = require('../../../services/email/emailQueue');
 const { sendOtpSms } = require('../../../services/sms/smsService');
 const walletService = require('../../wallet/services/walletService');
+const { buildAccountReference, PAYBILL } = require('../../routes/mpesaReference');
 const { getMemberCapacity } = require('../../loans/services/guaranteeCapacityService');
 const PROFILE_PHOTO_MAX_BYTES = 1.5 * 1024 * 1024;
 const PROFILE_PHOTO_TYPES = {
@@ -42,7 +43,7 @@ const KYC_DOCUMENT_TYPES = {
   'application/pdf': 'pdf',
 };
 
-const DEFAULT_KCB_PAYBILL_NUMBER = '7929884';
+const DEFAULT_MPESA_PAYBILL_NUMBER = '522533';
 const LOAN_REPAYMENT_STK_TIMEOUT_MS = Number(process.env.LOAN_REPAYMENT_STK_TIMEOUT_MS || 45000);
 const MINIMUM_LOAN_SHARE_CAPITAL = 20000;
 const LOAN_ELIGIBILITY_MESSAGE = 'You are not yet eligible to apply for a loan. Please complete the minimum required share capital purchase before submitting a loan application.';
@@ -93,7 +94,7 @@ const getKcbSharedShortcode = () => (
   process.env.KCB_TILL_NUMBER
   || process.env.KCB_PAYBILL_NUMBER
   || process.env.MPESA_PAYBILL_NUMBER
-  || DEFAULT_KCB_PAYBILL_NUMBER
+  || DEFAULT_MPESA_PAYBILL_NUMBER
 );
 const getBackendCallbackUrl = (req) => {
   const configured = process.env.BACKEND_BASE_URL
@@ -189,11 +190,15 @@ const KCB_PROMPT_TYPES = {
   registration: { endpoint: '/register', category: 'registration', label: 'Registration fee', transactionType: 'MEMBERSHIP_FEE' },
   kcbmpesa: { endpoint: '/kcbmpesa', category: 'kcb_mpesa', label: 'KCB M-PESA prompt', transactionType: 'DEPOSIT' },
   stkpush: { endpoint: '/stkpush', category: 'stk_push', label: 'STK push', transactionType: 'DEPOSIT' },
-  monthly: { endpoint: '/monthlycontributions', category: 'monthly_contribution', label: 'Monthly contribution', transactionType: 'DEPOSIT' },
-  monthlycontributions: { endpoint: '/monthlycontributions', category: 'monthly_contribution', label: 'Monthly contribution', transactionType: 'DEPOSIT' },
-  loan_repayment: { endpoint: '/loans_repayment', category: 'loan_repayment', label: 'Loan repayment', transactionType: 'LOAN_REPAYMENT' },
-  loans_repayment: { endpoint: '/loans_repayment', category: 'loan_repayment', label: 'Loan repayment', transactionType: 'LOAN_REPAYMENT' },
-  repayment: { endpoint: '/loans_repayment', category: 'loan_repayment', label: 'Loan repayment', transactionType: 'LOAN_REPAYMENT' },
+  monthly: { endpoint: '/monthlycontributions', category: 'monthly_contribution', label: 'Monthly contribution', transactionType: 'DEPOSIT', designator: 'MS' },
+  monthlycontributions: { endpoint: '/monthlycontributions', category: 'monthly_contribution', label: 'Monthly contribution', transactionType: 'DEPOSIT', designator: 'MS' },
+  loan_repayment: { endpoint: '/loans_repayment', category: 'loan_repayment', label: 'Loan repayment', transactionType: 'LOAN_REPAYMENT', designator: 'LM' },
+  loans_repayment: { endpoint: '/loans_repayment', category: 'loan_repayment', label: 'Loan repayment', transactionType: 'LOAN_REPAYMENT', designator: 'LM' },
+  repayment: { endpoint: '/loans_repayment', category: 'loan_repayment', label: 'Loan repayment', transactionType: 'LOAN_REPAYMENT', designator: 'LM' },
+  emergency: { endpoint: '/loans_repayment', category: 'emergency_loan_repayment', label: 'Emergency loan repayment', transactionType: 'LOAN_REPAYMENT', designator: 'LM' },
+  education: { endpoint: '/loans_repayment', category: 'education_loan_repayment', label: 'Education loan repayment', transactionType: 'LOAN_REPAYMENT', designator: 'LE' },
+  welfare: { endpoint: '/loans_repayment', category: 'welfare_loan_repayment', label: 'Welfare loan repayment', transactionType: 'LOAN_REPAYMENT', designator: 'LW' },
+  development: { endpoint: '/loans_repayment', category: 'development_loan_repayment', label: 'Development loan repayment', transactionType: 'LOAN_REPAYMENT', designator: 'LD' },
   fines: { endpoint: '/fines', category: 'fine', label: 'Fine payment', transactionType: 'DEPOSIT' },
   fine: { endpoint: '/fines', category: 'fine', label: 'Fine payment', transactionType: 'DEPOSIT' },
   sharecapital: { endpoint: '/sharecapital', category: 'share_capital', label: 'Share capital', transactionType: 'DEPOSIT' },
@@ -1691,6 +1696,7 @@ const initiateLoanRepaymentStk = asyncHandler(async (req, res) => {
   const internalReference = `LOAN-${loan.id}-${Date.now()}`;
   if (!member.memberNumber) throw new ValidationError('Your member number is required before an M-Pesa loan repayment can be initiated');
   const memberAccountReference = String(member.memberNumber);
+  const paymentReference = buildAccountReference(memberAccountReference, 'LM');
   const ledger = await db.Transaction.create({
     memberId: member.id, loanId: loan.id, type: 'LOAN_REPAYMENT', amount,
     method: 'MPESA', status: 'PENDING', reference: internalReference,
@@ -1704,10 +1710,11 @@ const initiateLoanRepaymentStk = asyncHandler(async (req, res) => {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       signal: AbortSignal.timeout(LOAN_REPAYMENT_STK_TIMEOUT_MS),
       body: JSON.stringify({
-        phone, amount: Math.round(amount), accountReference: memberAccountReference,
-        AccountReference: memberAccountReference, transactionDesc: `Loan repayment - ${memberAccountReference}`,
-        TransactionDesc: `Loan repayment - ${memberAccountReference}`, loanId: loan.id, memberId: member.id,
-        member_number: memberAccountReference,
+        phone, amount: Math.round(amount), accountReference: PAYBILL,
+        AccountReference: PAYBILL, invoiceNumber: PAYBILL,
+        transactionDesc: `Loan repayment - ${paymentReference}`,
+        TransactionDesc: `Loan repayment - ${paymentReference}`, loanId: loan.id, memberId: member.id,
+        member_number: memberAccountReference, paymentReference,
         type: 'LOAN_REPAYMENT', method: 'MPESA', paymentCategory: 'loan_repayment', internalReference,
         callbackUrl: getBackendCallbackUrl(req),
         CallBackURL: getBackendCallbackUrl(req),
@@ -1889,11 +1896,21 @@ const initiateContribution = asyncHandler(async (req, res) => {
   const contributionType = req.body?.contributionType || 'monthly';
   const promptType = getKcbPromptType(contributionType);
   const reference = `CONTRIB-${Date.now()}`;
-  const memberNumber = member.memberNumber || reference;
-  const memberPaymentAccount = /^29903-\d+$/i.test(String(memberNumber || ''))
-    ? memberNumber
-    : String(memberNumber || '').trim();
-  const invoiceNumber = `${getKcbSharedShortcode()}-${memberPaymentAccount}`;
+  // Never derive a Pay Bill account from the internal contribution reference.
+  // That fallback can produce values such as 7929884SC000, which KCB accepts
+  // for STK initiation but cannot route, causing an automatic reversal.
+  const memberNumber = String(member.memberNumber || '').trim();
+  if (!memberNumber || !/\d{5,}/.test(memberNumber)) {
+    throw new ValidationError('Your member number is not available yet. Please refresh your profile before making this payment.');
+  }
+  const designator = promptType.designator || (promptType.category === 'share_capital' ? 'SC' : 'MS');
+  const memberPaymentAccount = buildAccountReference(memberNumber, designator);
+  // The composite value is for reconciliation/narration only. KCB validates
+  // the gateway account separately and accepts only the configured account.
+  // KCB STK must receive only the configured paybill as the gateway account.
+  // Keep the member-specific reference in accountReference/paymentReference
+  // for reconciliation and reports, not in the STK invoice number.
+  const invoiceNumber = paymentMode === 'STK' ? PAYBILL : memberPaymentAccount;
 
   if (paymentMode === 'STK' && !isValidMpesaPhone(phone)) {
     throw new ValidationError('Phone number is required for STK push');
@@ -1938,15 +1955,15 @@ const initiateContribution = asyncHandler(async (req, res) => {
       internalReference: transaction.internalReference,
       promptChannel: transaction.promptChannel,
       paybill: {
-        businessNumber: process.env.KCB_PAYBILL_NUMBER || process.env.MPESA_PAYBILL_NUMBER || DEFAULT_KCB_PAYBILL_NUMBER,
-        accountNumber: memberNumber,
+        businessNumber: process.env.MPESA_PAYBILL_NUMBER || process.env.KCB_PAYBILL_NUMBER || DEFAULT_MPESA_PAYBILL_NUMBER,
+        accountNumber: memberPaymentAccount,
         amount,
         steps: [
           'Open M-PESA on your phone or SIM toolkit.',
           'Select Lipa na M-PESA.',
           'Select Pay Bill.',
-          'Enter the business number shown here.',
-          'Enter the account number shown here.',
+          'Enter the business number: 522533.',
+          `Enter the account number: ${memberPaymentAccount}.`,
           'Enter the amount and confirm with your PIN.',
           'Keep the MPESA confirmation message for your records.',
         ],
@@ -1978,7 +1995,8 @@ const initiateContribution = asyncHandler(async (req, res) => {
       amount: Math.round(amount),
       invoiceNumber,
       accountReference: memberPaymentAccount,
-      member_number: memberPaymentAccount,
+      member_number: memberNumber,
+      paymentReference: memberPaymentAccount,
       memberId: member.id,
       type: promptType.transactionType,
       method: 'MPESA',
