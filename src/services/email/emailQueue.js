@@ -3,6 +3,7 @@ const { Queue, Worker } = require('bullmq');
 const db = require('../../models');
 const logger = require('../../shared/utils/logger');
 const { sendEmail } = require('./emailProviders');
+const { sendSms } = require('../sms/smsService');
 const { buildOtpEmail, buildPasswordResetEmail, getBrandLogoAttachments } = require('./templates');
 
 const QUEUES = {
@@ -13,6 +14,7 @@ const QUEUES = {
 const REDIS_URL = process.env.REDIS_URL || process.env.UPSTASH_REDIS_URL;
 const connection = REDIS_URL ? { url: REDIS_URL, maxRetriesPerRequest: null } : null;
 const queues = new Map();
+const workers = new Set();
 let workersStarted = false;
 let pollTimer = null;
 let outboxUnavailableLogged = false;
@@ -86,7 +88,19 @@ const processEmailJob = async (emailJobId) => {
   if (!record || record.status === 'SENT') return;
   await record.update({ status: 'PROCESSING', attempts: record.attempts + 1 });
   try {
-    const result = await sendEmail(buildMessage(record.type, decrypt(record.encryptedPayload)));
+    const payload = decrypt(record.encryptedPayload);
+    if (record.type === 'PAYMENT_CONFIRMATION') {
+      const results = await Promise.allSettled([
+        payload.to ? sendEmail(buildMessage('NOTIFICATION', payload)) : Promise.resolve({ skipped: true }),
+        payload.phone ? sendSms({ to: payload.phone, message: payload.sms, purpose: 'payment_confirmation' }) : Promise.resolve({ skipped: true }),
+      ]);
+      const failed = results.find((item) => item.status === 'rejected');
+      if (failed) throw failed.reason;
+      const result = results[0].value;
+      await record.update({ status: 'SENT', provider: result.provider, providerMessageId: result.messageId, sentAt: new Date(), lastError: null });
+      return;
+    }
+    const result = await sendEmail(buildMessage(record.type, payload));
     await record.update({
       status: 'SENT',
       provider: result.provider,
@@ -158,9 +172,11 @@ const isOutboxStoreUnavailable = (error) => {
     || message.includes('14 UNAVAILABLE')
     || message.includes('No connection established')
     || message.includes('ENETUNREACH')
+    || message.includes('ENOTFOUND')
+    || message.includes('EAI_AGAIN')
     || message.includes('ECONNREFUSED')
     || message.includes('ETIMEDOUT')
-    || message.includes('EAI_AGAIN');
+    || message.includes('network is unreachable');
 };
 
 const logOutboxPollError = (error) => {
@@ -189,6 +205,7 @@ const startEmailWorkers = () => {
   if (connection) {
     Object.values(QUEUES).forEach((queueName) => {
       const worker = new Worker(queueName, ({ data }) => processEmailJob(data.emailJobId), { connection, concurrency: 10 });
+      workers.add(worker);
       worker.on('failed', (job, error) => logger.error('Email queue job failed', {
         module: 'email', queueName, emailJobId: job?.data?.emailJobId, error: error.message,
       }));
@@ -200,4 +217,16 @@ const startEmailWorkers = () => {
   pollOutbox().catch(logOutboxPollError);
 };
 
-module.exports = { QUEUES, enqueueEmail, processEmailJob, startEmailWorkers };
+const shutdownEmailWorkers = async () => {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+  await Promise.all([...workers].map((worker) => worker.close()));
+  workers.clear();
+  await Promise.all([...queues.values()].map((queue) => queue.close()));
+  queues.clear();
+  workersStarted = false;
+};
+
+module.exports = { QUEUES, enqueueEmail, processEmailJob, startEmailWorkers, shutdownEmailWorkers };

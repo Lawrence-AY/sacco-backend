@@ -123,6 +123,35 @@ const queueLoanEmail = async ({ to, subject, title, lines }) => {
   }).catch(() => null);
 };
 
+// Creates one durable outbox job for both channels. The job is keyed by the
+// ledger id so replayed provider callbacks cannot send duplicate confirmations.
+const queuePaymentConfirmation = async (transactionId) => {
+  const transaction = await db.Transaction.findByPk(transactionId, {
+    include: [{ model: db.Member, include: [{ model: db.User, attributes: ['id', 'name', 'firstName', 'lastName', 'email', 'phone'] }] }],
+  });
+  if (!transaction || String(transaction.status).toUpperCase() !== 'SUCCESS' || !transaction.Member?.User) return null;
+  const member = transaction.Member;
+  const user = member.User;
+  const name = formatApplicantName(user, member);
+  const category = String(transaction.paymentCategory || transaction.description || 'Payment').replace(/_/g, ' ');
+  const amount = formatMoney(transaction.amount);
+  const reference = transaction.reference || transaction.providerTransactionId || transaction.id;
+  const timestamp = formatDateTime(transaction.updatedAt || transaction.createdAt);
+  const balance = transaction.type === 'LOAN_REPAYMENT'
+    ? await db.Loan.findByPk(transaction.loanId, { attributes: ['principalBalance', 'accruedInterest'] }).then((loan) => loan ? `Remaining loan balance: ${formatMoney(Number(loan.principalBalance || 0) + Number(loan.accruedInterest || 0))}` : '')
+    : await db.SavingsAccount.findOne({ where: { memberId: member.id }, attributes: ['balance'] }).then((account) => account ? `Updated savings balance: ${formatMoney(account.balance)}` : '');
+  const subject = 'Payment received - AYEDOS SACCO';
+  const text = `Dear ${name}, your payment has been received. Member: ${name} (${member.memberNumber}). Category: ${category}. Amount: ${amount}. M-Pesa receipt: ${reference}. Date: ${timestamp}. ${balance}`;
+  const html = `<div style="font-family:Arial,sans-serif;line-height:1.5"><h2>Payment received</h2><p>${text}</p><p>Thank you for banking with AYEDOS SACCO.</p></div>`;
+  const eventKey = `payment-confirmation:${transaction.id}`;
+  if (await db.Notification.findOne({ where: { eventKey }, attributes: ['id'] })) return null;
+  const jobId = await enqueueEmail(QUEUES.NOTIFICATIONS, 'PAYMENT_CONFIRMATION', {
+    to: user.email, phone: user.phone, subject, html, text, sms: text,
+  }, { immediate: false });
+  await db.Notification.create({ userId: user.id, eventKey, title: subject, body: text, category: 'transaction', severity: 'success', sourceType: 'Transaction', sourceId: transaction.id, actionUrl: '/dashboard/user/transactions', metadata: { amount: Number(transaction.amount), reference, paymentCategory: category } }).catch(() => null);
+  return jobId;
+};
+
 const createFinanceLoanRequestNotifications = async (loanId) => {
   const loan = await getLoanWithApplicant(loanId);
   if (!loan) return [];
@@ -809,4 +838,5 @@ module.exports = {
   createOptOutReviewNotifications,
   createAdminIdentityBlockNotifications,
   createOverdueLoanAlerts,
+  queuePaymentConfirmation,
 };

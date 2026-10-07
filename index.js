@@ -49,6 +49,9 @@ process.on('SIGINT', () => {
 });
 
 let server;
+let shuttingDown = false;
+let shutdownTimer;
+const activeSockets = new Set();
 
 const withStartupTimeout = (promise, timeoutMs, label) => Promise.race([
   promise.catch((error) => { throw error; }),
@@ -61,21 +64,47 @@ const withStartupTimeout = (promise, timeoutMs, label) => Promise.race([
   }),
 ]);
 
-function shutdown() {
-  if (server) {
-    logger.info('Closing HTTP server...');
-    server.close(() => {
-      logger.info('HTTP server closed');
-      process.exit(0);
-    });
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
 
-    // Force close after 10 seconds
-    setTimeout(() => {
-      logger.error('Could not close connections in time, forcefully shutting down');
-      process.exit(1);
-    }, 10000);
-  } else {
-    process.exit(0);
+  logger.info('Closing HTTP server and application connections...');
+
+  const closeServer = new Promise((resolve) => {
+    if (!server) return resolve();
+
+    server.close(resolve);
+
+    // Stop accepting new work and close idle keep-alive connections. Requests
+    // already in progress are allowed to finish until the shutdown deadline.
+    if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
+    if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+  });
+
+  shutdownTimer = setTimeout(() => {
+    logger.warn('Shutdown deadline reached; destroying remaining HTTP connections', {
+      activeConnections: activeSockets.size,
+    });
+    activeSockets.forEach((socket) => socket.destroy());
+    process.exitCode = 1;
+  }, 10000);
+
+  try {
+    await closeServer;
+    if (server) logger.info('HTTP server closed');
+
+    const db = require('./src/models');
+    if (typeof db.sequelize?.close === 'function') await db.sequelize.close();
+    else if (typeof db.close === 'function') await db.close();
+
+    const emailQueue = require('./src/services/email/emailQueue');
+    if (typeof emailQueue.shutdownEmailWorkers === 'function') await emailQueue.shutdownEmailWorkers();
+  } catch (error) {
+    logger.error('Application shutdown cleanup failed', { error: error.message, stack: error.stack });
+    process.exitCode = 1;
+  } finally {
+    clearTimeout(shutdownTimer);
+    process.exit(process.exitCode || 0);
   }
 }
 
@@ -213,6 +242,10 @@ async function startServer() {
     // Start listening
     const listen = (port) => new Promise((resolve, reject) => {
       const candidateServer = createServer(app);
+      candidateServer.on('connection', (socket) => {
+        activeSockets.add(socket);
+        socket.once('close', () => activeSockets.delete(socket));
+      });
       const onError = (error) => {
         candidateServer.off('listening', onListening);
         candidateServer.close(() => {});
@@ -273,7 +306,17 @@ async function startServer() {
     overdueMonitorTimer.unref();
     const guarantorExpiryMonitor = require('./src/features/loans/services/loanService').expireStaleGuarantorRequests;
     guarantorExpiryMonitor().catch((error) => logger.error('Initial guarantor-expiry scan failed', { error: error.message }));
-    const guarantorExpiryTimer = setInterval(() => guarantorExpiryMonitor().catch((error) => logger.error('Guarantor-expiry scan failed', { error: error.message })), 60 * 1000);
+    let lastGuarantorExpiryErrorAt = 0;
+    const guarantorExpiryTimer = setInterval(() => guarantorExpiryMonitor().catch((error) => {
+      // Firestore DNS/network failures are transient; avoid turning a platform
+      // outage into a one-error-per-minute log storm while the next scan retries.
+      const now = Date.now();
+      if (now - lastGuarantorExpiryErrorAt < 60 * 1000) return;
+      lastGuarantorExpiryErrorAt = now;
+      const message = String(error?.message || '');
+      const transient = /ENOTFOUND|EAI_AGAIN|ENETUNREACH|ECONNREFUSED|ETIMEDOUT|network is unreachable/i.test(message);
+      logger[transient ? 'warn' : 'error']('Guarantor-expiry scan failed', { error: message, transient });
+    }), 60 * 1000);
     guarantorExpiryTimer.unref();
 
   } catch (error) {
