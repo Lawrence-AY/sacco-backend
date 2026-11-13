@@ -1466,7 +1466,7 @@ const getTransactions = asyncHandler(async (req, res) => {
     id: transaction.id,
     type: transaction.type,
     amount: transaction.amount,
-    description: buildTransactionDescription(transaction),
+    description: transaction.description || buildTransactionDescription(transaction),
     createdAt: transaction.createdAt,
     createdAtEAT: formatEAT(transaction.createdAt),
     status: transaction.status,

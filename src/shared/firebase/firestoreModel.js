@@ -207,7 +207,37 @@ class FirestoreModel {
   }
 
   async bulkCreate(records = []) {
-    return Promise.all(records.map((record) => this.create(record)));
+    const uniqueFields = Object.entries(this.attributes)
+      .filter(([, definition]) => definition?.unique)
+      .map(([field]) => field);
+    const seenUniqueValues = new Map(uniqueFields.map((field) => [field, new Set()]));
+    for (const values of records) {
+      for (const field of uniqueFields) {
+        if (values[field] === undefined || values[field] === null) continue;
+        const value = String(values[field]);
+        if (seenUniqueValues.get(field).has(value) || await this.findOne({ where: { [field]: values[field] } })) {
+          const error = new Error(`${this.name}.${field} must be unique`);
+          error.name = 'SequelizeUniqueConstraintError';
+          throw error;
+        }
+        seenUniqueValues.get(field).add(value);
+      }
+    }
+
+    const now = new Date();
+    const created = records.map((values) => clean({
+      ...this._defaults(values),
+      ...values,
+      id: values.id || crypto.randomUUID(),
+      createdAt: values.createdAt || now,
+      updatedAt: values.updatedAt || now,
+    }));
+    for (let offset = 0; offset < created.length; offset += 400) {
+      const batch = getFirebaseDb().batch();
+      created.slice(offset, offset + 400).forEach((record) => batch.set(this._document(record.id), record));
+      await firestoreCall(() => batch.commit());
+    }
+    return created.map((record) => this._instance(record));
   }
 
   async findByPk(id, options = {}) {
@@ -329,7 +359,11 @@ class FirestoreModel {
 
   async destroy(options = {}) {
     const records = await this.findAll({ where: options.where });
-    await Promise.all(records.map((record) => record.destroy()));
+    for (let offset = 0; offset < records.length; offset += 400) {
+      const batch = getFirebaseDb().batch();
+      records.slice(offset, offset + 400).forEach((record) => batch.delete(this._document(record.id)));
+      await firestoreCall(() => batch.commit());
+    }
     return records.length;
   }
 
