@@ -278,7 +278,9 @@ const sensitiveLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => req.method === 'OPTIONS' || isLocalRequest(req) || isLocalDevelopmentOrigin(req),
+  // Reads are polled by dashboards and must not consume the write-operation
+  // allowance. Only state-changing requests are sensitive operations.
+  skip: (req) => ['GET', 'HEAD', 'OPTIONS'].includes(req.method) || isLocalRequest(req) || isLocalDevelopmentOrigin(req),
 });
 
 app.use('/api/loans', sensitiveLimiter);
