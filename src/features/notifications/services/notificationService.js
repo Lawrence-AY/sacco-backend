@@ -163,7 +163,12 @@ const createFinanceLoanRequestNotifications = async (loanId) => {
     attributes: ['id'],
   });
 
-  const notifications = await Promise.all(financeUsers.map((recipient) => upsertNotification({
+  const notificationResults = await Promise.all(financeUsers.map(async (recipient) => {
+    const existing = await db.Notification.findOne({
+      where: { eventKey: `finance:loan-request:${loan.id}:${recipient.id}` },
+      attributes: ['id'],
+    });
+    const notification = await upsertNotification({
     userId: recipient.id,
     eventKey: `finance:loan-request:${loan.id}:${recipient.id}`,
     title: 'New loan request',
@@ -188,9 +193,23 @@ const createFinanceLoanRequestNotifications = async (loanId) => {
       interestRate: loan.interestRate,
       requestedAt: loan.createdAt,
     },
+    });
+    return { notification, created: !existing };
+  }));
+
+  const financeRecipients = await db.User.findAll({
+    where: { role: 'FINANCE', phone: { [Op.ne]: null } },
+    attributes: ['id', 'phone'],
+  });
+  const smsMessage = `Pending loan approval: ${applicant} (Member No. ${member?.memberNumber || 'N/A'}) has submitted a loan request.`;
+  if (notificationResults.some((item) => item.created)) await Promise.all(financeRecipients.map((recipient) => dispatchSms({
+    to: recipient.phone,
+    message: smsMessage,
+    purpose: 'pending_loan_approval',
+    metadata: { loanId: loan.id, userId: recipient.id },
   })));
 
-  return notifications.map(serialize);
+  return notificationResults.map(({ notification }) => serialize(notification));
 };
 
 const createMemberLoanDecisionNotification = async (loanId, decision, payload = {}) => {
@@ -363,7 +382,7 @@ const createGuarantorExpirationNotifications = async (loanId, guarantorIds = [],
   return notifications.map(serialize);
 };
 
-const createApplicantGuarantorDecisionNotification = async (loanId, guarantorId) => {
+const createApplicantGuarantorDecisionNotification = async (loanId, guarantorId, payload = {}) => {
   const loan = await getLoanWithApplicant(loanId);
   const guarantor = await db.Guarantor.findByPk(guarantorId, {
     include: [{ model: db.Member, include: [{ model: db.User, attributes: ['id', 'name', 'firstName', 'lastName', 'phone'] }] }],
@@ -372,11 +391,16 @@ const createApplicantGuarantorDecisionNotification = async (loanId, guarantorId)
 
   const guarantorName = formatApplicantName(guarantor.Member?.User, guarantor.Member);
   const status = String(guarantor.status || 'PENDING').toUpperCase();
+  const fullyGuaranteed = Boolean(payload.fullyGuaranteed)
+    || String(loan.status || '').toUpperCase() === 'FULLY_COVERED';
+  const decisionBody = status === 'ACCEPTED' && fullyGuaranteed
+    ? `All required guarantees are confirmed for your ${loan.type || 'loan'}. Your application is proceeding to Finance for disbursement.`
+    : `${guarantorName} ${status.toLowerCase()} your guarantor request for ${loan.type || 'loan'}.`;
   const notification = await upsertNotification({
     userId: loan.Member.userId,
     eventKey: `loan:${loan.id}:guarantor:${guarantor.id}:${status}`,
     title: 'Guarantor response received',
-    body: `${guarantorName} ${status.toLowerCase()} your guarantor request for ${loan.type || 'loan'}.`,
+    body: decisionBody,
     category: 'loan',
     severity: status === 'ACCEPTED' ? 'success' : 'critical',
     actionUrl: '/dashboard/user/loans',
@@ -388,16 +412,20 @@ const createApplicantGuarantorDecisionNotification = async (loanId, guarantorId)
       guarantorId: guarantor.id,
       guarantorName,
       status,
-      allAccepted: String(loan.status || '').toUpperCase() === 'UNDER_REVIEW',
+      allAccepted: fullyGuaranteed,
+      totalGuaranteed: payload.totalGuaranteed ?? null,
+      applicantMemberNumber: loan.Member?.memberNumber || null,
     },
   });
 
   const guarantorUser = guarantor.Member?.User;
   if (guarantorUser?.id) {
     const accepted = status === 'ACCEPTED';
+    const confirmationEventKey = `guarantor-confirmation:${guarantor.id}:${status}`;
+    const existingConfirmation = await db.Notification.findOne({ where: { eventKey: confirmationEventKey }, attributes: ['id'] });
     await upsertNotification({
       userId: guarantorUser.id,
-      eventKey: `guarantor-confirmation:${guarantor.id}:${status}`,
+      eventKey: confirmationEventKey,
       title: accepted ? 'Guarantee commitment confirmed' : 'Guarantor request declined',
       body: accepted
         ? `You committed ${formatMoney(guarantor.amount)} as security for loan ${loan.id}. This amount remains reserved until the guarantee is released.`
@@ -409,7 +437,7 @@ const createApplicantGuarantorDecisionNotification = async (loanId, guarantorId)
       sourceId: guarantor.id,
       metadata: { subtype: 'guarantor_confirmation', loanId: loan.id, guarantorId: guarantor.id, status, amount: guarantor.amount },
     });
-    if (guarantorUser.phone) {
+    if (!existingConfirmation && guarantorUser.phone) {
       await dispatchSms({
         to: guarantorUser.phone,
         purpose: accepted ? 'guarantor_acceptance_confirmation' : 'guarantor_rejection_confirmation',
@@ -419,6 +447,83 @@ const createApplicantGuarantorDecisionNotification = async (loanId, guarantorId)
         metadata: { loanId: loan.id, guarantorId: guarantor.id, status },
       });
     }
+  }
+
+  const financeUsers = await db.User.findAll({
+    where: { role: { [Op.in]: ['FINANCE', 'ADMIN', 'SUPERADMIN'] } },
+    attributes: ['id'],
+  });
+  const financeRecipients = await db.User.findAll({
+    where: { role: 'FINANCE', phone: { [Op.ne]: null } },
+    attributes: ['id', 'phone'],
+  });
+  const applicantNumber = loan.Member?.memberNumber || 'N/A';
+  const confirmedAmount = Number(guarantor.amount || 0);
+  const financeDecisionTitle = status === 'ACCEPTED' ? 'Guarantor accepted request' : 'Guarantor rejected request';
+  const financeDecisionBody = status === 'ACCEPTED'
+    ? `${guarantorName} (Member ${guarantor.Member?.memberNumber || 'N/A'}) accepted KES ${confirmedAmount.toLocaleString()} for ${loan.type || 'loan'} ${loan.id}.`
+    : `${guarantorName} (Member ${guarantor.Member?.memberNumber || 'N/A'}) rejected the guarantee request for ${loan.type || 'loan'} ${loan.id}. Finance should review and reject the loan application.`;
+  await Promise.all(financeUsers.map(async (recipient) => {
+    const eventKey = `finance:guarantor-decision:${loan.id}:${guarantor.id}:${status}:${recipient.id}`;
+    const existing = await db.Notification.findOne({ where: { eventKey }, attributes: ['id'] });
+    await upsertNotification({
+      userId: recipient.id,
+      eventKey,
+      title: financeDecisionTitle,
+      body: financeDecisionBody,
+      category: 'loan',
+      severity: status === 'ACCEPTED' ? 'success' : 'critical',
+      actionUrl: `/dashboard/finance/loans?loanId=${loan.id}`,
+      sourceType: 'Loan',
+      sourceId: loan.id,
+      metadata: {
+        subtype: 'guarantor_decision', loanId: loan.id, guarantorId: guarantor.id,
+        guarantorName, guarantorMemberNumber: guarantor.Member?.memberNumber || null,
+        applicantName: formatApplicantName(loan.Member?.User, loan.Member),
+        applicantMemberNumber: applicantNumber, status, amount: confirmedAmount,
+      },
+    });
+    if (!existing) {
+      const phone = financeRecipients.find((item) => item.id === recipient.id)?.phone;
+      if (phone) await dispatchSms({
+        to: phone,
+        purpose: status === 'ACCEPTED' ? 'guarantor_acceptance_finance' : 'guarantor_rejection_finance',
+        message: status === 'ACCEPTED'
+          ? `Guarantor accepted – ${guarantorName}, Member Number: ${guarantor.Member?.memberNumber || 'N/A'}, confirmed guarantee amount: ${formatMoney(confirmedAmount)} for loan ${loan.id}.`
+          : `Guarantor rejection – ${guarantorName}, Member Number: ${guarantor.Member?.memberNumber || 'N/A'}, status: REJECTED for loan ${loan.id}. Finance should reject the loan application.`,
+        metadata: { loanId: loan.id, guarantorId: guarantor.id, userId: recipient.id, status },
+      });
+    }
+  }));
+
+  if (fullyGuaranteed) {
+    const acceptedAmount = Number(await db.Guarantor.sum('amount', { where: { loanId, status: 'ACCEPTED' } }) || 0);
+    const totalGuaranteed = Math.min(Number(loan.amount || 0), Number(loan.selfGuaranteedAmount || 0) + acceptedAmount);
+    await Promise.all(financeUsers.map(async (recipient) => {
+      const eventKey = `finance:loan-fully-guaranteed:${loan.id}:${recipient.id}`;
+      const existing = await db.Notification.findOne({ where: { eventKey }, attributes: ['id'] });
+      await upsertNotification({
+        userId: recipient.id,
+        eventKey,
+        title: 'Loan fully guaranteed',
+        body: `${formatApplicantName(loan.Member?.User, loan.Member)} (Member ${applicantNumber}) has KES ${totalGuaranteed.toLocaleString()} of KES ${Number(loan.amount || 0).toLocaleString()} guaranteed. The application is awaiting Finance disbursement.`,
+        category: 'loan',
+        severity: 'success',
+        actionUrl: `/dashboard/finance/loans?loanId=${loan.id}`,
+        sourceType: 'Loan',
+        sourceId: loan.id,
+        metadata: { subtype: 'loan_fully_guaranteed', loanId: loan.id, applicantName: formatApplicantName(loan.Member?.User, loan.Member), memberNumber: applicantNumber, loanAmount: Number(loan.amount || 0), totalGuaranteed },
+      });
+      if (!existing) {
+        const phone = financeRecipients.find((item) => item.id === recipient.id)?.phone;
+        if (phone) await dispatchSms({
+          to: phone,
+          purpose: 'loan_fully_guaranteed_finance',
+          message: `Loan fully guaranteed – Applicant: ${formatApplicantName(loan.Member?.User, loan.Member)}, Member Number: ${applicantNumber}, Loan Amount: ${formatMoney(loan.amount)}, Total Guaranteed: ${formatMoney(totalGuaranteed)}. Awaiting disbursement.`,
+          metadata: { loanId: loan.id, userId: recipient.id },
+        });
+      }
+    }));
   }
 
   return serialize(notification);
@@ -435,11 +540,14 @@ const createFinanceEmergencyAutoApprovalNotifications = async (loanId, payload =
     attributes: ['id'],
   });
 
-  const notifications = await Promise.all(financeUsers.map((recipient) => upsertNotification({
+  const notificationResults = await Promise.all(financeUsers.map(async (recipient) => {
+    const eventKey = `finance:emergency-auto-approved:${loan.id}:${recipient.id}`;
+    const existing = await db.Notification.findOne({ where: { eventKey }, attributes: ['id'] });
+    const notification = await upsertNotification({
     userId: recipient.id,
-    eventKey: `finance:emergency-auto-approved:${loan.id}:${recipient.id}`,
+    eventKey,
     title: 'Emergency loan auto-approved',
-    body: `${applicant}'s emergency loan for KES ${Number(loan.amount || 0).toLocaleString()} passed automated checks and is queued for wallet disbursement within 1 hour.`,
+    body: `${applicant}'s emergency loan for KES ${Number(loan.amount || 0).toLocaleString()} passed automated checks and is awaiting physical disbursement by Finance.`,
     category: 'loan',
     severity: 'success',
     actionUrl: `/dashboard/finance/notifications?loanId=${loan.id}`,
@@ -464,7 +572,23 @@ const createFinanceEmergencyAutoApprovalNotifications = async (loanId, payload =
       disbursementDeadline: payload.disbursementDeadline,
       riskChecks: payload.riskChecks || [],
     },
-  })));
+    });
+    return { notification, created: !existing };
+  }));
+
+  const financeRecipients = await db.User.findAll({
+    where: { role: 'FINANCE', phone: { [Op.ne]: null } },
+    attributes: ['id', 'phone'],
+  });
+  const smsMessage = `Pending emergency loan disbursement – Member: ${applicant}, Member Number: ${member?.memberNumber || 'N/A'}.`;
+  if (notificationResults.some((item) => item.created)) {
+    await Promise.all(financeRecipients.map((recipient) => dispatchSms({
+      to: recipient.phone,
+      message: smsMessage,
+      purpose: 'pending_emergency_loan_disbursement',
+      metadata: { loanId: loan.id, userId: recipient.id },
+    })));
+  }
 
   await queueLoanEmail({
     to: member?.User?.email,
@@ -476,7 +600,7 @@ const createFinanceEmergencyAutoApprovalNotifications = async (loanId, payload =
     ],
   });
 
-  return notifications.map(serialize);
+  return notificationResults.map(({ notification }) => serialize(notification));
 };
 
 const isFinanceUser = (user) => ['FINANCE', 'ADMIN', 'SUPERADMIN'].includes(String(user?.role || '').toUpperCase());

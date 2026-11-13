@@ -32,6 +32,11 @@ const Loan = sequelize.define('Loan', {
     type: DataTypes.STRING,
     defaultValue: 'PENDING'
   },
+  disbursementStatus: {
+    type: DataTypes.ENUM('PENDING', 'COMPLETE', 'DENIED'),
+    allowNull: false,
+    defaultValue: 'PENDING',
+  },
   type: {
     type: DataTypes.ENUM(
       'EMERGENCY',

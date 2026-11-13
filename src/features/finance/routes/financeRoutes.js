@@ -24,6 +24,7 @@ router.get('/loans/:loanId', financeController.getLoanById);
 router.post('/loans/:loanId/approve', financeController.approveLoan);
 router.post('/loans/:loanId/reject', financeController.rejectLoan);
 router.post('/loans/:loanId/disburse', financeController.disburseLoan);
+router.post('/loans/:loanId/disbursement-status', financeController.updateLoanDisbursement);
 
 router.get('/shares', financeController.getAllShares);
 router.get('/shares/member/:memberId', financeController.getMemberShares);

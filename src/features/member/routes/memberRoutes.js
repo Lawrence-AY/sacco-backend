@@ -18,6 +18,7 @@ router.get('/wallet/cash-out', memberController.getWalletCashOutSummary);
 router.post('/wallet/cash-out/otp', memberController.sendCashOutOtp);
 router.post('/wallet/cash-out', memberController.cashOutWallet);
 router.post('/loans/payout/otp', memberController.sendLoanPayoutOtp);
+router.get('/loans/eligibility', memberController.getLoanEligibility);
 router.get('/loans', memberController.getLoans);
 router.post('/loans', validate(schemas.loanRequest), memberController.applyForLoan);
 router.post('/loans/:loanId/cancel', memberController.cancelLoan);
