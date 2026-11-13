@@ -516,12 +516,14 @@ const mapMemberImportRow = (row) => {
 
 const mapFinancialImportRow = (row) => {
   const sheetName = pick(row, ['sheet', 'worksheet', 'workbookSheet']);
+  const normalizedSheetName = String(sheetName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const isSystemSheet = ['soa', 'sao'].includes(normalizedSheetName) || normalizedSheetName.includes('moneyinout') || normalizedSheetName.includes('saccoaccount');
   const paymentPeriod = pick(row, ['paymentPeriod', 'payment period', 'period', 'dateRange', 'date range', 'statementPeriod', 'statement period', 'month', 'contributionMonth', 'contribution month']);
   const memberNumber = pick(row, ['memberNumber', 'registrationNumber', 'memberNo', 'memberId', 'memberID']);
   const email = pick(row, ['email', 'emailAddress']).toLowerCase();
   const staffId = pick(row, ['staffId', 'staffID', 'payrollNumber', 'employeeId']);
   const missing = [];
-  if (!memberNumber && !email && !staffId) missing.push('memberNumber/email/staffId');
+  if (!memberNumber && !email && !staffId && !isSystemSheet) missing.push('memberNumber/email/staffId');
   return {
     rowNumber: row.rowNumber,
     ready: missing.length === 0,
@@ -533,9 +535,12 @@ const mapFinancialImportRow = (row) => {
       dateRange: paymentPeriod,
       email,
       staffId,
+      isSaoSheet: isSystemSheet,
       shareCapital: toNumber(pick(row, ['shareCapital', 'shares'])),
       savings: toNumber(pick(row, ['savings', 'savingsBalance'])),
-      loans: toNumber(pick(row, ['loans', 'loanBalance'])),
+      loans: toNumber(pick(row, ['loans', 'loanAmount', 'loanBalance', ...(normalizedSheetName.includes('loan') ? ['amount'] : [])])),
+      moneyIn: toNumber(pick(row, ['moneyIn', 'money in', 'inflow', 'cash in', 'receipts', 'saccoAccount', 'sacco account', 'balance'])),
+      moneyOut: toNumber(pick(row, ['moneyOut', 'money out', 'outflow', 'cash out', 'payments'])),
       loanRepayment: toNumber(pick(row, ['loanRepayment', 'repayments'])),
       interest: toNumber(pick(row, ['interest', 'interestEarned'])),
       employerContribution: toNumber(pick(row, ['employerContribution', 'employerContrib'])),

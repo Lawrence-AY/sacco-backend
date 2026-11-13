@@ -2,6 +2,7 @@ const express = require('express');
 const { protect, authorize } = require('../../../shared/middleware/authMiddleware');
 const { validate, schemas } = require('../../../shared/middleware/zodValidation');
 const adminController = require('../controllers/adminController');
+const saccoLedgerController = require('../controllers/saccoLedgerController');
 
 const router = express.Router();
 
@@ -32,6 +33,8 @@ router.post('/members/import/commit', adminController.commitMemberCsvImport);
 // Finance CSV import posts periodic financial data to existing member accounts and ledgers.
 router.post('/financial-import/preview', adminController.previewFinancialCsvImport);
 router.post('/financial-import/commit', adminController.commitFinancialCsvImport);
+router.post('/sacco-ledger/preview', saccoLedgerController.preview);
+router.post('/sacco-ledger/commit', saccoLedgerController.commit);
 router.get('/notifications', adminController.listNotifications);
 router.post('/notifications/broadcast', adminController.sendBroadcastNotification);
 router.post('/notifications/direct', adminController.sendDirectNotification);
