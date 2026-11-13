@@ -129,6 +129,9 @@ const getGuarantorRequest = asyncHandler(async (req, res) => {
     expiresAt: guarantor.tokenExpiresAt,
     amount: guarantor.amount,
     freeSavings: capacity?.freeSavings || 0,
+    totalSavings: capacity?.totalSavings || 0,
+    committedToOtherMembers: capacity?.pledgeHolds || 0,
+    committedToOwnLoans: capacity?.selfGuaranteeHolds || 0,
     committedCapacity: capacity?.committedCapacity || 0,
     remainingNeeded: coverage?.acceptedRemaining || 0,
     maxAllowedPledge,
@@ -146,6 +149,7 @@ const getGuarantorRequest = asyncHandler(async (req, res) => {
       interestRate: loan?.interestRate,
       reason: loan?.reason,
       applicant,
+      applicantMemberNumber: loan?.Member?.memberNumber || null,
       createdAt: loan?.createdAt,
     },
   }, 'Guarantor request retrieved', 200);

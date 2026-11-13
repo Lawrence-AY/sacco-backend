@@ -29,7 +29,7 @@ const { enqueueEmail, QUEUES } = require('../../../services/email/emailQueue');
 const { sendOtpSms } = require('../../../services/sms/smsService');
 const walletService = require('../../wallet/services/walletService');
 const { buildAccountReference, PAYBILL } = require('../../routes/mpesaReference');
-const { getMemberCapacity } = require('../../loans/services/guaranteeCapacityService');
+const { getMemberCapacity, calculateGuaranteeProgress } = require('../../loans/services/guaranteeCapacityService');
 const PROFILE_PHOTO_MAX_BYTES = 1.5 * 1024 * 1024;
 const PROFILE_PHOTO_TYPES = {
   'image/jpeg': 'jpg',
@@ -47,7 +47,6 @@ const DEFAULT_MPESA_PAYBILL_NUMBER = '522533';
 const LOAN_REPAYMENT_STK_TIMEOUT_MS = Number(process.env.LOAN_REPAYMENT_STK_TIMEOUT_MS || 45000);
 const MINIMUM_LOAN_SHARE_CAPITAL = 20000;
 const LOAN_ELIGIBILITY_MESSAGE = 'You are not yet eligible to apply for a loan. Please complete the minimum required share capital purchase before submitting a loan application.';
-const SELF_GUARANTEE_MULTIPLIER = Number(process.env.SELF_GUARANTEE_SAVINGS_MULTIPLIER || 1);
 
 const KENYA_PAYOUT_BANKS = [
   { name: 'KCB Bank Kenya', code: '01', swiftCode: 'KCBLKENX', branchCode: '01000' },
@@ -767,25 +766,8 @@ const getMemberExitBalances = async (memberId) => {
 };
 
 const getAvailableSelfGuaranteeSavings = async (memberId) => {
-  const balances = await getMemberExitBalances(memberId);
-  const [activeGuarantees, activeSelfGuaranteedLoans] = await Promise.all([
-    db.Guarantor.sum('amount', {
-      where: {
-        memberId,
-        status: { [Op.in]: ['PENDING', 'ACCEPTED'] },
-      },
-    }),
-    db.Loan.sum('selfGuaranteedAmount', {
-      where: {
-        memberId,
-        selfGuaranteed: true,
-        status: { [Op.in]: ['PENDING', 'PENDING_GUARANTORS', 'UNDER_REVIEW', 'APPROVED', 'ACTIVE'] },
-      },
-    }),
-  ]);
-
-  const encumbered = Number(activeGuarantees || 0) + Number(activeSelfGuaranteedLoans || 0);
-  return Math.max((Number(balances.savings || 0) * SELF_GUARANTEE_MULTIPLIER) - encumbered, 0);
+  const capacity = await getMemberCapacity(memberId);
+  return Number(capacity?.freeSavings || 0);
 };
 
 const searchOptOutTransferees = asyncHandler(async (req, res) => {
@@ -1199,6 +1181,11 @@ const getLoans = asyncHandler(async (req, res) => {
     const quote = calculateLoanBalanceQuote(loan);
     const outstandingBalance = quote.outstandingBalance;
     const isImportedLiabilityStatement = loan.reason === 'Imported account liability statement';
+    const guaranteeProgress = calculateGuaranteeProgress({
+      loanAmount: loan.amount,
+      selfGuaranteedAmount: loan.selfGuaranteedAmount,
+      pledges: loan.Guarantors || [],
+    });
     return ({
     id: loan.id,
     memberId: loan.memberId,
@@ -1233,6 +1220,9 @@ const getLoans = asyncHandler(async (req, res) => {
     createdAt: loan.createdAt,
     selfGuaranteed: loan.selfGuaranteed,
     selfGuaranteedAmount: loan.selfGuaranteedAmount,
+    guaranteeProgress,
+    guaranteeCoverageSatisfied: guaranteeProgress.fullyGuaranteed,
+    disbursementStatus: loan.disbursementStatus || 'PENDING',
     guarantors: (loan.Guarantors || []).map((guarantor) => ({
       id: guarantor.id,
       memberId: guarantor.memberId,
@@ -1280,12 +1270,64 @@ const getLoans = asyncHandler(async (req, res) => {
   return ResponseHandler.success(res, formatted, 'Member loans retrieved successfully', 200);
 });
 
+const getLoanEligibility = asyncHandler(async (req, res) => {
+  const member = await ensureMemberByUser(req.user);
+  const [balances, capacity, pendingApplication] = await Promise.all([
+    getMemberExitBalances(member.id),
+    getMemberCapacity(member.id),
+    db.Loan.findOne({
+      where: { memberId: member.id, status: { [Op.in]: ['PENDING', 'PENDING_GUARANTORS', 'FULLY_COVERED', 'UNDER_REVIEW'] } },
+      attributes: ['id', 'status'],
+    }),
+  ]);
+  const reasons = [];
+  if (String(member.status || '').toUpperCase() !== 'ACTIVE') reasons.push('Your membership account is not active.');
+  if (Number(balances.shareCapital || 0) < MINIMUM_LOAN_SHARE_CAPITAL) {
+    reasons.push(`You need at least KES ${MINIMUM_LOAN_SHARE_CAPITAL.toLocaleString()} in share capital.`);
+  }
+  if (capacity?.ineligibilityReason === 'Member has an active exit request') reasons.push('An active membership exit request prevents new loan applications.');
+  if (pendingApplication) reasons.push('You already have a loan application awaiting a decision.');
+  const maximumByProduct = Object.fromEntries(Object.entries(loanService.LOAN_PRODUCT_LIMITS).map(([type, productLimit]) => [
+    type,
+    {
+      productLimit,
+      maximumSelfGuaranteed: Math.min(productLimit, Number(capacity?.freeSavings || 0)),
+      maximumWithGuarantors: productLimit,
+    },
+  ]));
+  return ResponseHandler.success(res, {
+    eligibleToApply: reasons.length === 0,
+    ineligibilityReasons: reasons,
+    totalSavings: Number(capacity?.totalSavings || balances.savings || 0),
+    savingsCommittedToOtherMembers: Number(capacity?.pledgeHolds || 0),
+    savingsCommittedToOwnSelfGuarantees: Number(capacity?.selfGuaranteeHolds || 0),
+    availableSelfGuaranteeSavings: Number(capacity?.freeSavings || 0),
+    selfGuaranteeEligible: Boolean(capacity?.isEligibleToGuarantee),
+    selfGuaranteeIneligibilityReason: capacity?.ineligibilityReason || null,
+    outstandingLoanObligations: Number(capacity?.outstandingLoans || 0),
+    activeLoanCount: (await db.Loan.findAll({
+      where: { memberId: member.id, status: { [Op.in]: ['ACTIVE', 'DISBURSED', 'OVERDUE', 'IN_ARREARS', 'DEFAULTED'] } },
+      attributes: ['amount', 'principalBalance', 'accruedInterest'],
+    })).filter((loan) => Number(loan.principalBalance ?? loan.amount ?? 0) + Number(loan.accruedInterest || 0) > 0).length,
+    minimumShareCapital: MINIMUM_LOAN_SHARE_CAPITAL,
+    maximumByProduct,
+  }, 'Loan eligibility retrieved successfully');
+});
+
 const applyForLoan = asyncHandler(async (req, res) => {
   const member = await ensureMemberByUser(req.user);
   const balances = await getMemberExitBalances(member.id);
 
   if (balances.shareCapital < MINIMUM_LOAN_SHARE_CAPITAL) {
     throw new ForbiddenError(LOAN_ELIGIBILITY_MESSAGE);
+  }
+
+  if (String(member.status || '').toUpperCase() !== 'ACTIVE') {
+    throw new ForbiddenError('Your membership account must be active before applying for a loan.');
+  }
+  const applicantCapacity = await getMemberCapacity(member.id);
+  if (applicantCapacity?.ineligibilityReason === 'Member has an active exit request') {
+    throw new ForbiddenError('An active membership exit request prevents new loan applications.');
   }
 
   if (!req.body.amount || !req.body.type) {
@@ -1298,7 +1340,9 @@ const applyForLoan = asyncHandler(async (req, res) => {
   const payoutDestination = validateLoanPayoutDestination(req.body.payoutDestination);
   const guarantors = Array.isArray(req.body.guarantors) ? req.body.guarantors : [];
   await otpService.verifyOtp({ userId: req.user.id, purpose: 'LOAN_PAYOUT', otp: req.body.payoutDestination?.otp });
-  const applicantCapacity = selfGuarantee ? await getMemberCapacity(member.id) : null;
+  if (selfGuarantee && applicantCapacity?.ineligibilityReason === 'Member has a non-performing loan') {
+    throw new ForbiddenError('Resolve your overdue or defaulted loan before using self-guarantee.');
+  }
   const selfGuaranteedAmount = selfGuarantee
     ? Math.min(requestedAmount, Number(applicantCapacity?.freeSavings || 0))
     : 0;
@@ -1468,7 +1512,7 @@ const getGuarantees = asyncHandler(async (req, res) => {
   const guarantees = await db.Guarantor.findAll({
     where: { memberId: member.id },
     include: [
-      { model: db.Loan, attributes: ['id', 'type', 'amount', 'status'] },
+      { model: db.Loan, attributes: ['id', 'type', 'amount', 'status'], include: [{ model: db.Member, attributes: ['id', 'memberNumber'], include: [{ model: db.User, attributes: ['name', 'firstName', 'lastName'] }] }] },
     ],
     order: [['createdAt', 'DESC']],
   });
@@ -1486,6 +1530,11 @@ const getGuarantees = asyncHandler(async (req, res) => {
       type: guarantee.Loan.type,
       amount: guarantee.Loan.amount,
       status: guarantee.Loan.status,
+      applicantName: guarantee.Loan.Member?.User?.name
+        || [guarantee.Loan.Member?.User?.firstName, guarantee.Loan.Member?.User?.lastName].filter(Boolean).join(' ')
+        || guarantee.Loan.Member?.memberNumber
+        || null,
+      applicantMemberNumber: guarantee.Loan.Member?.memberNumber || null,
     } : null,
   }));
 
@@ -1591,6 +1640,7 @@ const searchGuarantors = asyncHandler(async (req, res) => {
         name: fullName,
         status: capacity.isEligibleToGuarantee ? 'Eligible' : 'Not Eligible',
         isEligibleToGuarantee: Boolean(capacity.isEligibleToGuarantee),
+        availableGuaranteeCapacity: Number(capacity.freeSavings || 0),
       };
     });
 
@@ -2278,6 +2328,7 @@ module.exports = {
   sendLoanPayoutOtp,
   cashOutWallet,
   getLoans,
+  getLoanEligibility,
   applyForLoan,
   cancelLoan,
   repayLoan,

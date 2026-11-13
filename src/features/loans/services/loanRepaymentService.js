@@ -24,6 +24,11 @@ const getNextDueDate = (loan, paymentDate, allocation) => {
 };
 
 const assertLoanPayable = (loan) => {
+  if (String(loan.disbursementStatus || '').toUpperCase() === 'DENIED') {
+    const error = new Error('Loan disbursement was denied and is not eligible for repayment');
+    error.statusCode = 400;
+    throw error;
+  }
   if (!['ACTIVE', 'APPROVED', 'DISBURSED'].includes(String(loan.status || '').toUpperCase())) {
     const error = new Error('Loan is not eligible for repayment');
     error.statusCode = 400;
@@ -124,6 +129,18 @@ const allocateLedgerRepayment = async ({
     nextPaymentDueAt,
     status: allocation.paidOff ? 'COMPLETED' : loan.status,
   }, { transaction });
+
+  if (allocation.paidOff) {
+    const acceptedPledges = await db.Guarantor.findAll({
+      where: { loanId: loan.id, status: 'ACCEPTED' },
+      transaction,
+    });
+    await Promise.all(acceptedPledges.map((pledge) => pledge.update({
+      status: 'RELEASED',
+      releasedAt: paymentDate,
+      cancellationReason: 'Underlying loan fully repaid',
+    }, { transaction })));
+  }
 
   loan.principalBalance = allocation.remainingPrincipal;
   loan.accruedInterest = allocation.remainingInterest;

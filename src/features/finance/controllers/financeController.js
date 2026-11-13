@@ -1,6 +1,7 @@
 const db = require('../../../models');
 const { calculateCurrentOutstandingBalance } = require('../../loans/services/loanCalculationEngine');
 const loanService = require('../../loans/services/loanService');
+const { calculateGuaranteeProgress } = require('../../loans/services/guaranteeCapacityService');
 const { postManualRepayment, voidRepayment } = require('../../loans/services/loanRepaymentService');
 const deductionService = require('../../deductions/services/deductionService');
 const asyncHandler = require('../../../shared/utils/asyncHandler');
@@ -140,11 +141,31 @@ const formatLoan = (loan) => {
   const duration = Number(loan.duration || 0);
   const outstandingBalance = calculateCurrentOutstandingBalance(loan);
   const rawStatus = String(loan.status || '').toUpperCase();
-  const financeStatus = ['PENDING', 'UNDER_REVIEW', 'FULLY_COVERED'].includes(rawStatus)
-    ? 'PENDING_FINANCE'
+  const financeStatus = rawStatus === 'FULLY_COVERED'
+    ? 'FULLY_GUARANTEED'
+    : ['PENDING', 'UNDER_REVIEW'].includes(rawStatus)
+      ? 'PENDING_FINANCE'
     : ['ACTIVE', 'DISBURSED'].includes(rawStatus)
       ? 'DISBURSED'
       : rawStatus || 'PENDING_FINANCE';
+  const guarantors = (loan.Guarantors || []).map((guarantor) => ({
+    id: guarantor.id,
+    memberId: guarantor.memberId,
+    amount: Number(guarantor.amount || 0),
+    status: guarantor.status,
+    respondedAt: guarantor.respondedAt,
+    releasedAt: guarantor.releasedAt,
+    memberName: guarantor.Member?.User?.name
+      || [guarantor.Member?.User?.firstName, guarantor.Member?.User?.lastName].filter(Boolean).join(' ')
+      || guarantor.Member?.memberNumber
+      || null,
+    memberNumber: guarantor.Member?.memberNumber || null,
+  }));
+  const guaranteeProgress = calculateGuaranteeProgress({
+    loanAmount: loan.amount,
+    selfGuaranteedAmount: loan.selfGuaranteedAmount,
+    pledges: guarantors,
+  });
   return {
     id: loan.id,
     memberId: loan.memberId,
@@ -183,6 +204,7 @@ const formatLoan = (loan) => {
     interestRate: loan.interestRate,
     interestGenerated: scheduledReducingBalanceInterest(amount, interestRate, duration),
     status: loan.type === 'EMERGENCY' && loan.status === 'APPROVED' ? 'AUTO_APPROVED_EMERGENCY' : loan.status,
+    disbursementStatus: String(loan.disbursementStatus || 'PENDING').toUpperCase(),
     autoApproved: loan.type === 'EMERGENCY' && loan.status === 'APPROVED',
     auditTimestamp: loan.decidedAt,
     nextPaymentDueAt: loan.nextPaymentDueAt,
@@ -193,7 +215,11 @@ const formatLoan = (loan) => {
     disbursedDate: ['ACTIVE', 'DISBURSED'].includes(String(loan.status || '').toUpperCase()) ? loan.updatedAt : null,
     createdAt: loan.createdAt,
     updatedAt: loan.updatedAt,
-    guarantors: loan.Guarantors || [],
+    selfGuaranteed: Boolean(loan.selfGuaranteed),
+    selfGuaranteedAmount: Number(loan.selfGuaranteedAmount || 0),
+    guarantors,
+    guaranteeProgress,
+    guaranteeCoverageSatisfied: String(loan.type || '').toUpperCase() === 'EMERGENCY' || guaranteeProgress.fullyGuaranteed,
   };
 };
 
@@ -387,7 +413,10 @@ const getAllLoans = asyncHandler(async (req, res) => {
   if (req.query.status) where.status = req.query.status;
   const loans = await db.Loan.findAll({
     where,
-    include: [db.Guarantor, { model: db.Member, include: [{ model: db.User, attributes: { exclude: ['password', 'otp', 'refreshToken'] } }] }],
+    include: [
+      { model: db.Guarantor, include: [{ model: db.Member, include: [{ model: db.User, attributes: ['id', 'name', 'firstName', 'lastName'] }] }] },
+      { model: db.Member, include: [{ model: db.User, attributes: { exclude: ['password', 'otp', 'refreshToken'] } }] },
+    ],
     order: [['createdAt', 'DESC']],
   });
   const loanIds = loans.map((loan) => loan.id);
@@ -454,6 +483,16 @@ const disburseLoan = asyncHandler(async (req, res) => {
     loan: LoanDTO.basic(result.loan, req.user),
     walletTransactionId: result.walletTransactionId,
   }, 'Loan disbursed successfully', 200);
+});
+
+const updateLoanDisbursement = asyncHandler(async (req, res) => {
+  const status = String(req.body?.status || '').toUpperCase();
+  if (!['COMPLETE', 'DENIED'].includes(status)) {
+    throw new ValidationError('Disbursement status must be COMPLETE or DENIED');
+  }
+  const loan = await loanService.updateLoanDisbursementStatus(req.params.loanId, status, { updatedById: req.user.id });
+  if (!loan) throw new NotFoundError('Loan not found');
+  return ResponseHandler.success(res, formatLoan(loan), `Loan disbursement marked ${status.toLowerCase()}`, 200);
 });
 
 const getAllShares = asyncHandler(async (req, res) => {
@@ -999,6 +1038,7 @@ module.exports = {
   approveLoan,
   rejectLoan,
   disburseLoan,
+  updateLoanDisbursement,
   getAllShares,
   getMemberShares,
   purchaseShares,

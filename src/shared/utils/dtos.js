@@ -268,6 +268,7 @@ const LoanDTO = {
       Object.assign(baseData, {
         approvedAmount: loan.approvedAmount,
         disbursedAmount: loan.disbursedAmount,
+        disbursementStatus: String(loan.disbursementStatus || 'PENDING').toUpperCase(),
         outstandingBalance: Number(loan.principalBalance ?? loan.amount ?? 0) + Number(loan.accruedInterest || 0),
         nextPaymentDate: loan.nextPaymentDate,
         approvedBy: loan.approvedBy,
