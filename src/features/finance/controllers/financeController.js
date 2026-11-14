@@ -4,6 +4,7 @@ const loanService = require('../../loans/services/loanService');
 const { calculateGuaranteeProgress } = require('../../loans/services/guaranteeCapacityService');
 const { postManualRepayment, voidRepayment } = require('../../loans/services/loanRepaymentService');
 const deductionService = require('../../deductions/services/deductionService');
+const saccoLedgerService = require('../../../shared/services/saccoLedgerService');
 const asyncHandler = require('../../../shared/utils/asyncHandler');
 const ResponseHandler = require('../../../shared/utils/response');
 const { ValidationError, NotFoundError, ForbiddenError } = require('../../../shared/utils/errors');
@@ -29,6 +30,9 @@ const classifyTransaction = (transaction) => {
   }
   if (source.includes('share') || source.includes('capital')) {
     return { category: 'SHARE_CAPITAL', destination: 'Share capital account' };
+  }
+  if (source.includes('employer_contribution') || source.includes('employer contribution')) {
+    return { category: 'EMPLOYER_CONTRIBUTION', destination: 'Employer contribution account' };
   }
   if (transaction.type === 'LOAN_REPAYMENT' || source.includes('loan_repayment') || source.includes('repayment')) {
     return { category: 'LOAN_REPAYMENT', destination: 'Loan repayment account' };
@@ -56,7 +60,7 @@ const formatTransaction = (transaction, member = null, user = null) => {
     category: classification.category,
     destination: classification.destination,
     amount: transaction.amount,
-    description: buildTransactionDescription(transaction),
+    description: transaction.description || buildTransactionDescription(transaction),
     createdAt: transaction.createdAt,
     createdAtEAT: formatEAT(transaction.createdAt),
     status: transaction.status,
@@ -619,7 +623,7 @@ const getAllMembers = asyncHandler(async (req, res) => {
     const shareAccount = shareAccounts.find((account) => account.memberId === member.id);
     const shareContributions = memberTransactions
       .filter((transaction) => classifyTransaction(transaction).category === 'SHARE_CAPITAL')
-      .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+      .reduce((sum, transaction) => sum + (String(transaction.type).toUpperCase() === 'WITHDRAWAL' ? -1 : 1) * Number(transaction.amount || 0), 0);
     const savingsDeposits = memberTransactions
       .filter((transaction) => classifyTransaction(transaction).category === 'SAVINGS')
       .reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
@@ -683,7 +687,7 @@ const getMemberFinancialProfile = asyncHandler(async (req, res) => {
   const formattedTransactions = transactions.map((transaction) => formatTransaction(transaction, member, user));
   const successful = formattedTransactions.filter((transaction) => transaction.status === 'SUCCESS');
   const shareHistory = successful.filter((transaction) => transaction.category === 'SHARE_CAPITAL');
-  const shareCapitalFromTransactions = shareHistory.reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+  const shareCapitalFromTransactions = shareHistory.reduce((sum, transaction) => sum + (String(transaction.type).toUpperCase() === 'WITHDRAWAL' ? -1 : 1) * Number(transaction.amount || 0), 0);
   const shareCapital = Math.max(
     shareCapitalFromTransactions,
     Number((shareAccount?.shares || 0) * (shareAccount?.shareValue || 0)),
@@ -784,7 +788,7 @@ const getAllCompanies = asyncHandler(async (req, res) => {
 });
 
 const getFinancialReports = asyncHandler(async (req, res) => {
-  const [transactions, groupTransactions, loans, dividends, transfers, loanTransactions, members, membershipApplications] = await Promise.all([
+  const [transactions, groupTransactions, loans, dividends, transfers, loanTransactions, members, membershipApplications, workbookSummary] = await Promise.all([
     db.Transaction.findAll({ where: { status: 'SUCCESS' }, order: [['createdAt', 'ASC']] }),
     db.GroupTransaction.findAll({ where: { status: 'SUCCESS' }, order: [['createdAt', 'ASC']] }),
     db.Loan.findAll({ order: [['createdAt', 'ASC']] }),
@@ -793,6 +797,7 @@ const getFinancialReports = asyncHandler(async (req, res) => {
     db.LoanTransaction.findAll({ attributes: ['id', 'loanId', 'memberId', 'ledgerTransactionId', 'amount', 'principalPaid', 'interestPaid', 'metadata', 'createdAt'] }),
     db.Member.findAll({ attributes: ['id', 'userId', 'applicationId', 'memberNumber'], include: [{ model: db.User, attributes: ['name', 'firstName', 'lastName', 'email'] }] }),
     db.MembershipApplication.findAll({ attributes: ['id', 'name', 'email'] }),
+    saccoLedgerService.getCurrentWorkbookSummary().catch(() => null),
   ]);
 
   const repaymentsByLoan = transactions.reduce((map, transaction) => {
@@ -815,7 +820,7 @@ const getFinancialReports = asyncHandler(async (req, res) => {
   const loanMap = new Map(loans.map((loan) => [loan.id, loan]));
   const products = ['EMERGENCY', 'EDUCATION', 'DEVELOPMENT', 'WELFARE'];
   const byProduct = Object.fromEntries(products.map((product) => [product, { repayments: 0, disbursements: 0 }]));
-  const flowTotals = { deposits: 0, shareCapitalDeposits: 0, savingsDeposits: 0, withdrawals: 0, repayments: 0, disbursements: 0 };
+  const flowTotals = { deposits: 0, shareCapitalDeposits: 0, savingsDeposits: 0, employerContributionDeposits: 0, withdrawals: 0, repayments: 0, disbursements: 0 };
   const applicationMap = new Map(membershipApplications.map((application) => [application.id, application]));
   const memberMap = new Map(members.map((member) => [member.id, {
     memberId: member.id, memberNumber: member.memberNumber,
@@ -886,7 +891,7 @@ const getFinancialReports = asyncHandler(async (req, res) => {
   const timeSeries = { daily: {}, monthly: {}, yearly: {} };
   const ensurePeriod = (bucket, key) => (bucket[key] ||= { label: key, deposits: 0, withdrawals: 0, repayments: 0, disbursements: 0, count: 0 });
   const reportTransactions = [
-    ...transactions,
+    ...transactions.filter((transaction) => transaction.paymentCategory !== 'workbook_sao'),
     ...groupTransactions.map((transaction) => ({
       ...transaction.toJSON(),
       paymentCategory: 'group_loan',
@@ -901,6 +906,7 @@ const getFinancialReports = asyncHandler(async (req, res) => {
     let metric = null;
     if (type === 'DEPOSIT') { metric = 'deposits'; flowTotals.deposits += amount; addMemberAmount('deposits', transaction.memberId, amount);
       if (classification.category === 'SHARE_CAPITAL') { flowTotals.shareCapitalDeposits += amount; addMemberAmount('shareCapitalDeposits', transaction.memberId, amount); }
+      else if (classification.category === 'EMPLOYER_CONTRIBUTION') { flowTotals.employerContributionDeposits += amount; addMemberAmount('employerContributionDeposits', transaction.memberId, amount); }
       else { flowTotals.savingsDeposits += amount; addMemberAmount('savingsDeposits', transaction.memberId, amount); }
     } else if (type === 'WITHDRAWAL') { metric = 'withdrawals'; flowTotals.withdrawals += amount; addMemberAmount('withdrawals', transaction.memberId, amount);
     } else if (type === 'LOAN_REPAYMENT') { metric = 'repayments'; flowTotals.repayments += amount; addMemberAmount('repayments', transaction.memberId, amount);
@@ -939,6 +945,7 @@ const getFinancialReports = asyncHandler(async (req, res) => {
       shareCapitalTransferFees: shareCapitalInterestBreakdown,
     },
     timeSeries: serializedSeries,
+    workbookSummary,
     generatedAt: new Date(),
     generatedAtEAT: formatEAT(new Date()),
   }, 'Financial reports retrieved successfully', 200);
