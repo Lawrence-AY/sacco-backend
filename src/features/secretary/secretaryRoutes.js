@@ -1,0 +1,12 @@
+const express = require('express');
+const { protect } = require('../../shared/middleware/authMiddleware');
+const controller = require('./secretaryController');
+const router = express.Router();
+router.use(protect);
+router.get('/members', controller.listMembers);
+router.get('/records', controller.listRecords);
+router.post('/records', controller.createRecord);
+router.put('/records/:id', controller.updateRecord);
+router.delete('/records/:id', controller.deleteRecord);
+router.post('/notices', controller.sendNotice);
+module.exports = router;
